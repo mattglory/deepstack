@@ -14,6 +14,8 @@ export interface PoolState {
   yDecimals: number;
   xReserve: number; // human units
   yReserve: number; // human units
+  providerFeeBps: number; // fee that accrues to LPs, in basis points
+  protocolFeeBps: number; // fee that accrues to the protocol, in basis points
   feeBps: number; // total swap fee (provider + protocol), in basis points
   midXinY: number; // price of 1 X in Y, from constant-product reserves
 }
@@ -28,8 +30,9 @@ export async function getPoolState(principal: string): Promise<PoolState> {
   const yToken = field("y-token");
   const xBalance = BigInt(field("x-balance"));
   const yBalance = BigInt(field("y-balance"));
-  const feeBps =
-    Number(field("x-provider-fee") ?? 0) + Number(field("x-protocol-fee") ?? 0);
+  const providerFeeBps = Number(field("x-provider-fee") ?? 0);
+  const protocolFeeBps = Number(field("x-protocol-fee") ?? 0);
+  const feeBps = providerFeeBps + protocolFeeBps;
 
   // Token decimals come from each token contract (not in the pool tuple).
   const [xDecimals, yDecimals] = await Promise.all([
@@ -48,6 +51,8 @@ export async function getPoolState(principal: string): Promise<PoolState> {
     yDecimals,
     xReserve,
     yReserve,
+    providerFeeBps,
+    protocolFeeBps,
     feeBps,
     midXinY: yReserve / xReserve, // constant-product spot price
   };

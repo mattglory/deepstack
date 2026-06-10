@@ -18,6 +18,7 @@ import {
 } from "./bitflow.js";
 import { getReadOnlyFunctions } from "./stacks.js";
 import { getPoolState } from "./pool.js";
+import { yieldScenarios } from "./feeYield.js";
 import { computeQuote } from "./mm.js";
 import { BTC_HINTS } from "./config.js";
 
@@ -62,6 +63,23 @@ async function main() {
       console.log(`  pool ${pool.poolSymbol}  (fee ${pool.feeBps} bps)`);
       console.log(`  reserves: ${pool.xReserve.toLocaleString()} ${xSym}  +  ${pool.yReserve.toLocaleString()} ${ySym}`);
       console.log(`  AMM mid (on-chain): 1 ${xSym} = ${mid.toLocaleString()} ${ySym}`);
+
+      // Projected LP fee yield (LPs earn the provider portion of the fee).
+      const tvlUsd = target.liquidity_in_usd;
+      console.log(
+        `\n  Projected LP yield on ${pool.poolSymbol} ` +
+          `(TVL ${usd(tvlUsd)}, ${pool.providerFeeBps} bps to LPs):`,
+      );
+      console.log("    daily turnover    daily volume      LP fees/day      APR");
+      for (const s of yieldScenarios(tvlUsd, pool.providerFeeBps)) {
+        const row = [
+          `${(s.turnover * 100).toFixed(0)}%`.padStart(12),
+          usd(s.dailyVolumeUsd).padStart(16),
+          usd(s.dailyFeesUsd).padStart(16),
+          `${s.aprPct.toFixed(1)}%`.padStart(11),
+        ].join("  ");
+        console.log(`    ${row}`);
+      }
     } catch (err) {
       console.log(`  (on-chain read skipped: ${(err as Error).message})`);
     }
