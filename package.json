@@ -1,0 +1,18 @@
+{
+  "name": "deepstack",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Bitcoin-native liquidity / market-making agent for Stacks DeFi (PoC spike)",
+  "scripts": {
+    "spike": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stacks/transactions": "^7.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

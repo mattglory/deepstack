@@ -1,0 +1,82 @@
+# DeepStack
+
+> A Bitcoin-native liquidity / market-making agent for Stacks DeFi.
+
+**Status:** proof-of-concept spike for a Stacks Endowment *Getting Started* grant (Q2 2026).
+
+## The problem
+
+Stacks holds ~**$545M of sBTC** but only ~**$5M of DEX TVL** (Q1 2026): a large pool of
+Bitcoin-backed capital with almost nowhere liquid to trade it. Bitcoin DeFi has lacked
+operators with real market-making experience. This project ports a proven CLOB/CEX-grade
+market-making stack (live on Dexalot/Avalanche) to Stacks to close that depth gap.
+
+## Architecture
+
+```
+                 ┌─────────────────────────────┐
+   on a cadence  │   AI strategy layer          │   regime classification,
+   (minutes)     │   (OpenRouter, OFF hot path) │   risk posture, param tuning
+                 └──────────────┬──────────────┘
+                                │ parameters only (spread, range, inventory)
+                                ▼
+   live data ──▶ ┌─────────────────────────────┐ ──▶ quotes / LP ranges
+   (pools,       │   Deterministic MM core      │     (the live bot acts on these)
+    reserves)    │   quoting · inventory · IL   │
+                 └──────────────┬──────────────┘
+                                │ read-only
+                                ▼
+                 ┌─────────────────────────────┐
+                 │  Stacks adapter              │  Bitflow/ALEX/Velar reads,
+                 │  (this repo)                 │  Clarity read-only calls,
+                 └─────────────────────────────┘  wallet/signing (later)
+```
+
+**Design rule:** an LLM is **never** in the hot quoting loop — only the deterministic
+core places/manages orders. The AI layer feeds it *parameters* on a slow cadence. This
+keeps execution fast, cheap, deterministic, and explainable (and grant-credible).
+
+## What the spike already does
+
+`src/index.ts` runs a real read-and-decide loop with **no API keys**:
+
+1. Pulls **live** Bitflow pools (`/ticker`, public) — real USD liquidity + prices.
+2. Surfaces BTC-flavoured pools (the thesis target).
+3. **Introspects** a pool's Clarity contract on-chain (Hiro interface endpoint) and
+   calls a no-arg read-only function via `@stacks/transactions`.
+4. Runs the deterministic MM core to emit a concrete **quote + LP range**.
+
+### Run it
+
+```bash
+npm install
+npm run spike      # live read-and-decide loop, prints quote + LP range
+npm run typecheck  # tsc --noEmit
+```
+
+Copy `.env.example` to `.env` to override defaults (all have safe public fallbacks).
+
+## Roadmap (grant milestones)
+
+- **M1 (wk 1–4):** Stacks adapter + testnet PoC (this repo → testnet reads, signing).
+- **M2 (wk 5–8):** live mainnet pilot on one sBTC pool (~$1K self-funded inventory) +
+  public dashboard (volume facilitated, fees, IL-adjusted return, uptime).
+- **M3 (wk 9–12):** publish 30-day results, open-source the adapter, Velar perps spike.
+
+## Layout
+
+| File | Role |
+|---|---|
+| `src/bitflow.ts` | live pool/liquidity data (public Bitflow ticker API) |
+| `src/stacks.ts`  | on-chain Clarity reads + contract introspection |
+| `src/mm.ts`      | deterministic market-making core (quote + LP range) |
+| `src/index.ts`   | end-to-end spike wiring the above together |
+
+## Prior art
+
+Built on a live Dexalot (Avalanche) AVAX/USDC market-making bot — proof of relevant
+skills. This repo ports that execution discipline to Bitcoin-native venues on Stacks.
+
+## License
+
+MIT (intended — adapter to be open-sourced as ecosystem infrastructure).
