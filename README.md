@@ -20,7 +20,7 @@ market-making stack (live on Dexalot/Avalanche) to Stacks to close that depth ga
                  └──────────────┬──────────────┘
                                 │ parameters only (spread, range, inventory)
                                 ▼
-   live data ──▶ ┌─────────────────────────────┐ ──▶ quotes / LP ranges
+   live data ──▶ ┌─────────────────────────────┐ ──▶ quotes / rebalance bands
    (pools,       │   Deterministic MM core      │     (the live bot acts on these)
     reserves)    │   quoting · inventory · IL   │
                  └──────────────┬──────────────┘
@@ -44,13 +44,13 @@ keeps execution fast, cheap, deterministic, and explainable (and grant-credible)
 2. Surfaces BTC-flavoured pools (the thesis target).
 3. **Introspects** a pool's Clarity contract on-chain (Hiro interface endpoint) and
    calls a no-arg read-only function via `@stacks/transactions`.
-4. Runs the deterministic MM core to emit a concrete **quote + LP range**.
+4. Runs the deterministic MM core to emit a concrete **quote + rebalance band**.
 
 ### Run it
 
 ```bash
 npm install
-npm run spike      # live read-and-decide loop, prints quote + LP range
+npm run spike      # live read-and-decide loop, prints quote + rebalance band
 npm run typecheck  # tsc --noEmit
 ```
 
