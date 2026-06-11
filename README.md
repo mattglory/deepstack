@@ -69,8 +69,13 @@ Copy `.env.example` to `.env` to override defaults (all have safe public fallbac
 |---|---|
 | `src/bitflow.ts` | live pool/liquidity data (public Bitflow ticker API) |
 | `src/stacks.ts`  | on-chain Clarity reads + contract introspection |
-| `src/mm.ts`      | deterministic market-making core (quote + LP range) |
+| `src/mm.ts`      | deterministic market-making core (quote + rebalance band) |
+| `src/feeYield.ts`| projected LP fee yield (APR) by daily turnover |
 | `src/index.ts`   | end-to-end spike wiring the above together |
+
+> Note: the Bitflow sBTC-STX pool is a **constant-product (XYK) full-range** AMM, so the
+> `mm.ts` band drives **rebalancing/hedging thresholds**, not a concentrated LP range.
+> The write-side plan (signing, post-conditions, slippage) is in [`docs/M1_PLAN.md`](docs/M1_PLAN.md).
 
 ## Prior art
 
