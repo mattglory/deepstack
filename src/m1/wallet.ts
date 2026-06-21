@@ -7,6 +7,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { getAddressFromPrivateKey } from "@stacks/transactions";
+import { generateWallet, generateNewAccount } from "@stacks/wallet-sdk";
 
 // Minimal zero-dependency .env loader (only sets vars not already in env).
 export function loadDotenv(path = ".env"): void {
@@ -48,15 +49,28 @@ export interface Wallet {
   network: Network;
 }
 
-export function getWallet(): Wallet {
+// Accepts either a raw hex private key OR a 12/24-word seed phrase in
+// STACKS_PRIVATE_KEY. A seed phrase is detected by whitespace (multiple words)
+// and the STX key for STACKS_ACCOUNT_INDEX (default 0) is derived from it.
+async function resolvePrivateKey(raw: string): Promise<string> {
+  const words = raw.trim().split(/\s+/).filter(Boolean);
+  if (words.length < 12) return raw.trim(); // raw hex key
+  const idx = Number(process.env.STACKS_ACCOUNT_INDEX ?? 0);
+  let wallet = await generateWallet({ secretKey: words.join(" "), password: "" });
+  while (wallet.accounts.length <= idx) wallet = generateNewAccount(wallet);
+  return wallet.accounts[idx].stxPrivateKey;
+}
+
+export async function getWallet(): Promise<Wallet> {
   loadDotenv();
-  const key = process.env.STACKS_PRIVATE_KEY;
-  if (!key) {
+  const raw = process.env.STACKS_PRIVATE_KEY;
+  if (!raw || !raw.trim()) {
     throw new Error(
-      "STACKS_PRIVATE_KEY not set. Add it to a local .env (gitignored) — never paste it anywhere shared.",
+      "STACKS_PRIVATE_KEY not set. Add a hex key OR a 12/24-word seed phrase to a local .env (gitignored) — never paste it anywhere shared.",
     );
   }
   const network = getNetwork();
+  const key = await resolvePrivateKey(raw);
   const address = getAddressFromPrivateKey(key, network);
   return { key, address, network };
 }

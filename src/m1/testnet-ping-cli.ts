@@ -13,7 +13,7 @@ import { getWallet, getStxBalance } from "./wallet.js";
 
 async function main() {
   console.log("=== DeepStack M1 — testnet broadcast plumbing test ===\n");
-  const w = getWallet();
+  const w = await getWallet();
   if (w.network !== "testnet") {
     throw new Error(`refusing to run on ${w.network}; this test is testnet-only`);
   }

@@ -9,7 +9,7 @@ import { getWallet, getStxBalance } from "./wallet.js";
 
 async function main() {
   console.log("=== DeepStack M1 — wallet preflight (read-only) ===\n");
-  const w = getWallet();
+  const w = await getWallet();
   console.log(`network: ${w.network}`);
   console.log(`address: ${w.address}`);
   const bal = await getStxBalance(w.address, w.network);
