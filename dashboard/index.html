@@ -5,44 +5,102 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DeepStack — live metrics</title>
     <style>
-      :root { --bg:#0b0e14; --card:#141925; --line:#222a3a; --fg:#e6e9ef; --muted:#8b93a7; --acc:#f5a623; --ok:#3fb950; --bad:#f85149; }
-      * { box-sizing: border-box; }
-      body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif; }
-      .wrap { max-width:980px; margin:0 auto; padding:28px 20px 60px; }
-      h1 { font-size:22px; margin:0 0 2px; }
-      .sub { color:var(--muted); margin:0 0 20px; }
-      .sub a { color:var(--acc); text-decoration:none; }
-      .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:22px; }
-      .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
-      .card .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
-      .card .v { font-size:20px; font-weight:600; margin-top:4px; }
-      table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-      th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums; }
-      th { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+      :root {
+        --bg:#0a0c12; --bg2:#0e1119; --card:#141a26; --card2:#171e2c; --line:#232c3d;
+        --fg:#eef1f6; --muted:#8a93a8; --faint:#5b6478; --acc:#f5a623; --acc2:#ffce6b;
+        --ok:#3fb950; --bad:#f85149; --blue:#4493f8; --btc:#f7931a; --stx:#5546ff;
+      }
+      * { box-sizing:border-box; }
+      html,body { margin:0; }
+      body { background:radial-gradient(1200px 600px at 50% -10%, #121a2b 0%, var(--bg) 55%); color:var(--fg);
+        font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; -webkit-font-smoothing:antialiased; }
+      .wrap { max-width:1080px; margin:0 auto; padding:26px 20px 70px; }
+      a { color:var(--acc); text-decoration:none; } a:hover { text-decoration:underline; }
+      .tnum { font-variant-numeric:tabular-nums; }
+
+      header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+      .logo { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--acc),#c97f12);
+        display:grid; place-items:center; font-weight:800; color:#1a1205; font-size:18px; }
+      h1 { font-size:20px; margin:0; letter-spacing:.2px; }
+      .live { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--muted);
+        border:1px solid var(--line); padding:3px 9px; border-radius:999px; }
+      .dot { width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 0 0 rgba(63,185,80,.6); animation:p 2s infinite; }
+      @keyframes p { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)} 70%{box-shadow:0 0 0 7px rgba(63,185,80,0)} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0)} }
+      .meta { color:var(--muted); margin:2px 0 22px; font-size:13px; }
+      .meta .sep { color:var(--faint); margin:0 8px; }
+
+      .hero { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:14px; }
+      .stat { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:22px; }
+      .card { background:linear-gradient(180deg,var(--card),var(--card2)); border:1px solid var(--line);
+        border-radius:13px; padding:15px 17px; }
+      .card.big .v { font-size:26px; }
+      .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+      .v { font-size:19px; font-weight:650; margin-top:5px; }
+      .v small { font-size:13px; color:var(--muted); font-weight:500; }
+      .sub2 { color:var(--faint); font-size:11px; margin-top:3px; }
+
+      .panel { background:linear-gradient(180deg,var(--card),var(--card2)); border:1px solid var(--line);
+        border-radius:13px; padding:18px; margin-bottom:18px; }
+      .panel h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 14px; font-weight:650; }
+
+      .alloc { height:16px; border-radius:8px; overflow:hidden; display:flex; border:1px solid var(--line); }
+      .alloc > span { display:block; height:100%; }
+      .legend { display:flex; gap:18px; margin-top:10px; color:var(--muted); font-size:12px; flex-wrap:wrap; }
+      .legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; vertical-align:-1px; }
+
+      .econ { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; }
+      .note { color:var(--muted); font-size:12px; margin-top:12px; padding-top:12px; border-top:1px solid var(--line); }
+
+      table { width:100%; border-collapse:collapse; }
+      th,td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); font-size:13px; }
+      th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
       tr:last-child td { border-bottom:none; }
-      td a { color:var(--acc); text-decoration:none; }
-      .ok { color:var(--ok); } .bad { color:var(--bad); }
-      .foot { color:var(--muted); margin-top:16px; font-size:12px; }
-      .pill { font-size:11px; padding:1px 7px; border:1px solid var(--line); border-radius:999px; color:var(--muted); }
+      .tag { font-size:11px; padding:2px 8px; border-radius:6px; border:1px solid var(--line); }
+      .tag.ok { color:var(--ok); border-color:rgba(63,185,80,.35); background:rgba(63,185,80,.08); }
+      .tag.bad { color:var(--bad); border-color:rgba(248,81,73,.35); background:rgba(248,81,73,.08); }
+      .foot { color:var(--faint); margin-top:22px; font-size:12px; line-height:1.7; }
+      @media (max-width:780px){ .hero{grid-template-columns:repeat(2,1fr)} }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <h1>DeepStack <span class="pill">live · on-chain</span></h1>
-      <p class="sub">
-        Bitcoin-native liquidity agent on Stacks ·
-        <a id="addrLink" target="_blank" rel="noopener"></a> ·
-        <span id="status">loading…</span>
+      <header>
+        <div class="logo">◆</div>
+        <h1>DeepStack</h1>
+        <span class="live"><span class="dot"></span> live · on-chain</span>
+      </header>
+      <p class="meta">
+        Bitcoin-native liquidity agent on Stacks
+        <span class="sep">·</span><a id="addrLink" target="_blank" rel="noopener"></a>
+        <span class="sep">·</span><span id="status">loading…</span>
       </p>
 
-      <div class="grid" id="cards"></div>
-      <table>
-        <thead><tr><th>Time (UTC)</th><th>Action</th><th>Detail</th><th>Fee</th><th>Status</th><th>Tx</th></tr></thead>
-        <tbody id="rows"><tr><td colspan="6">loading…</td></tr></tbody>
-      </table>
+      <div class="hero" id="hero"></div>
+
+      <div class="panel">
+        <h2>Inventory allocation</h2>
+        <div class="alloc" id="alloc"><span style="width:50%;background:var(--stx)"></span><span style="width:50%;background:var(--btc)"></span></div>
+        <div class="legend" id="legend"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Economics (fee-backed — not a guaranteed yield)</h2>
+        <div class="econ" id="econ"></div>
+        <div class="note" id="econNote"></div>
+      </div>
+
+      <div class="panel" style="padding:0;overflow:hidden">
+        <h2 style="padding:18px 18px 0">Recent activity</h2>
+        <table>
+          <thead><tr><th>Time (UTC)</th><th>Action</th><th>Detail</th><th>Fee</th><th>Status</th><th>Tx</th></tr></thead>
+          <tbody id="rows"><tr><td colspan="6" style="color:var(--muted)">loading…</td></tr></tbody>
+        </table>
+      </div>
+
       <p class="foot">
         Every figure is derived live from the Stacks blockchain (Hiro API) and is independently
-        verifiable on the explorer. No backend, no private data. Auto-refreshes every 30s.
+        verifiable on the explorer — no backend, no private data. Auto-refreshes every 30s.<br />
+        Open source: <a href="https://github.com/mattglory/deepstack" target="_blank" rel="noopener">github.com/mattglory/deepstack</a>
       </p>
     </div>
 
@@ -53,101 +111,92 @@
         sbtcAsset: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
         actions: ["swap-y-for-x", "swap-x-for-y", "add-liquidity", "withdraw-liquidity"],
       };
-      const uSTX = (n) => Number(n) / 1e6;
-      const baseBTC = (n) => Number(n) / 1e8;
+      const uSTX = (n) => Number(n) / 1e6, baseBTC = (n) => Number(n) / 1e8;
       const fmt = (n, d = 2) => Number(n).toLocaleString("en-US", { maximumFractionDigits: d });
-      const explorer = (txid) => `https://explorer.hiro.so/txid/${txid}?chain=mainnet`;
+      const ex = (t) => `https://explorer.hiro.so/txid/${t}?chain=mainnet`;
+      const tstr = (s) => (s ? new Date(s * 1000).toISOString().slice(0, 16).replace("T", " ") : "—");
+      const $ = (id) => document.getElementById(id);
 
-      async function getJson(path) {
-        const r = await fetch(CFG.api + path);
-        if (!r.ok) throw new Error(path + " → " + r.status);
-        return r.json();
-      }
+      async function getJson(p) { const r = await fetch(CFG.api + p); if (!r.ok) throw new Error(p + " → " + r.status); return r.json(); }
+      const sbtcLeg = (t) => { const f = (t.ft_transfers || []).find((x) => x.asset_identifier === CFG.sbtcAsset); return f ? Number(f.amount) : 0; };
 
-      function sbtcLeg(t) {
-        const ft = (t.ft_transfers || []).find((f) => f.asset_identifier === CFG.sbtcAsset);
-        return ft ? Number(ft.amount) : 0; // base units
-      }
+      function card(k, v, sub) { return `<div class="card big"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="sub2">${sub}</div>` : ""}</div>`; }
+      function small(k, v) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
 
-      function render(balances, txs) {
-        // balances
-        const stx = uSTX(balances.stx?.balance ?? 0);
-        const sbtc = baseBTC(balances.fungible_tokens?.[CFG.sbtcAsset]?.balance ?? 0);
+      function render(bal, txs) {
+        const stx = uSTX(bal.stx?.balance ?? 0);
+        const sbtc = baseBTC(bal.fungible_tokens?.[CFG.sbtcAsset]?.balance ?? 0);
+        const acts = txs.filter((r) => r.tx?.tx_type === "contract_call" && CFG.actions.includes(r.tx.contract_call?.function_name));
 
-        // filter DeepStack actions
-        const acts = txs.filter(
-          (r) => r.tx?.tx_type === "contract_call" && CFG.actions.includes(r.tx.contract_call?.function_name),
-        );
-        let volumeStx = 0, sbtcTraded = 0, fees = 0, ok = 0, aborts = 0, swaps = 0, lpOps = 0;
-        let impliedMid = 0, lastTs = 0;
-        for (const r of acts) {
-          const fn = r.tx.contract_call.function_name;
-          const success = r.tx.tx_status === "success";
-          fees += Number(r.tx.fee_rate || 0);
-          if (success) ok++; else aborts++;
-          lastTs = Math.max(lastTs, (r.tx.burn_block_time || 0));
+        let volume = 0, traded = 0, fees = 0, ok = 0, ab = 0, swaps = 0, lp = 0, mid = 0, last = 0;
+        const chrono = [...acts].reverse(); // oldest → newest
+        for (const r of chrono) {
+          const fn = r.tx.contract_call.function_name, s = r.tx.tx_status === "success";
+          fees += Number(r.tx.fee_rate || 0); s ? ok++ : ab++; last = Math.max(last, r.tx.burn_block_time || 0);
           const sb = sbtcLeg(r);
-          if (fn.startsWith("swap")) {
-            swaps++;
-            if (success) {
-              sbtcTraded += sb;
-              const legStx = fn === "swap-y-for-x"
-                ? Number(r.stx_sent || 0) - Number(r.tx.fee_rate || 0)
-                : Number(r.stx_received || 0);
-              volumeStx += Math.max(0, legStx);
-              if (sb > 0 && legStx > 0) impliedMid = uSTX(legStx) / baseBTC(sb);
-            }
-          } else lpOps++;
+          if (fn.startsWith("swap")) { swaps++; if (s) { traded += sb;
+            const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
+            volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); } }
+          else lp++;
         }
-        const portfolioStx = stx + (impliedMid ? sbtc * impliedMid : 0);
+        const portfolio = stx + (mid ? sbtc * mid : 0);
+        const successRate = acts.length ? Math.round((ok / acts.length) * 100) : 0;
 
-        const cards = [
-          ["STX balance", fmt(stx, 4)],
-          ["sBTC balance", fmt(sbtc, 8)],
-          ["Portfolio (STX-eq)", impliedMid ? fmt(portfolioStx, 1) : "—"],
-          ["Volume facilitated", fmt(uSTX(volumeStx), 2) + " STX"],
-          ["sBTC traded", fmt(baseBTC(sbtcTraded), 8)],
-          ["Network fees", fmt(uSTX(fees), 3) + " STX"],
-          ["Actions", `${acts.length} (${swaps} swap / ${lpOps} LP)`],
-          ["Success / abort", `${ok} / ${aborts}`],
-          ["Last active", lastTs ? new Date(lastTs * 1000).toISOString().slice(0, 16).replace("T", " ") : "—"],
-        ];
-        document.getElementById("cards").innerHTML = cards
-          .map(([k, v]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`)
-          .join("");
+        // hero
+        $("hero").innerHTML =
+          card("Portfolio", mid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", mid ? `≈ ${fmt(portfolio / mid, 6)} sBTC` : "") +
+          card("Volume facilitated", `${fmt(uSTX(volume), 2)} <small>STX</small>`, `${swaps} swaps`) +
+          card("Network fees paid", `${fmt(uSTX(fees), 3)} <small>STX</small>`, `${acts.length} txs`) +
+          card("Success rate", `${successRate}%`, `${ok} ok · ${ab} aborted`);
 
-        document.getElementById("rows").innerHTML = acts.length
+        // allocation
+        const sbtcVal = mid ? sbtc * mid : 0, total = stx + sbtcVal;
+        const stxPct = total ? (stx / total) * 100 : 50;
+        $("alloc").innerHTML = `<span style="width:${stxPct}%;background:var(--stx)"></span><span style="width:${100 - stxPct}%;background:var(--btc)"></span>`;
+        $("legend").innerHTML =
+          `<span><i style="background:var(--stx)"></i>STX ${fmt(stxPct, 1)}% · ${fmt(stx, 2)}</span>` +
+          `<span><i style="background:var(--btc)"></i>sBTC ${fmt(100 - stxPct, 1)}% · ${fmt(sbtc, 8)}</span>` +
+          `<span style="color:var(--faint)">target 50 / 50 · mid ${mid ? fmt(mid, 0) + " STX/sBTC" : "—"}</span>`;
+
+        // economics — honest
+        const feeIncome = 0; // accrues only from LP positions (none yet)
+        const net = feeIncome - uSTX(fees);
+        $("econ").innerHTML =
+          small("LP fee income", `${fmt(feeIncome, 3)} STX`) +
+          small("Fees paid", `${fmt(uSTX(fees), 3)} STX`) +
+          small("Net (fees)", `<span style="color:${net >= 0 ? "var(--ok)" : "var(--bad)"}">${fmt(net, 3)} STX</span>`) +
+          small("sBTC traded", `${fmt(baseBTC(traded), 8)}`);
+        $("econNote").innerHTML =
+          "Rebalancing swaps <b>pay</b> the pool fee — they manage inventory, they don't earn. " +
+          "Income begins when the agent <b>provides liquidity</b> (earns a share of the 0.5% pool fee) " +
+          "or captures incentives/arbitrage — net of impermanent loss. This panel will track that during the pilot.";
+
+        // table
+        $("rows").innerHTML = acts.length
           ? acts.slice(0, 25).map((r) => {
-              const t = r.tx, fn = t.contract_call.function_name;
-              const sb = sbtcLeg(r);
-              const detail = fn === "swap-y-for-x"
-                ? `${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 3)} STX → ${fmt(baseBTC(sb), 8)} sBTC`
-                : fn === "swap-x-for-y"
-                ? `${fmt(baseBTC(sb), 8)} sBTC → ${fmt(uSTX(r.stx_received), 3)} STX`
-                : fn;
-              const time = t.burn_block_time ? new Date(t.burn_block_time * 1000).toISOString().slice(0, 16).replace("T", " ") : "—";
-              const ok = t.tx_status === "success";
-              return `<tr><td>${time}</td><td>${fn}</td><td>${detail}</td><td>${fmt(uSTX(t.fee_rate), 3)}</td>
-                <td class="${ok ? "ok" : "bad"}">${ok ? "success" : t.tx_status}</td>
-                <td><a href="${explorer(t.tx_id)}" target="_blank" rel="noopener">${t.tx_id.slice(0, 8)}…</a></td></tr>`;
+              const t = r.tx, fn = t.contract_call.function_name, sb = sbtcLeg(r), s = t.tx_status === "success";
+              const detail = fn === "swap-y-for-x" ? `${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 3)} STX → ${fmt(baseBTC(sb), 8)} sBTC`
+                : fn === "swap-x-for-y" ? `${fmt(baseBTC(sb), 8)} sBTC → ${fmt(uSTX(r.stx_received), 3)} STX` : fn;
+              return `<tr><td class="tnum">${tstr(t.burn_block_time)}</td><td>${fn}</td><td class="tnum">${detail}</td>
+                <td class="tnum">${fmt(uSTX(t.fee_rate), 3)}</td>
+                <td><span class="tag ${s ? "ok" : "bad"}">${s ? "success" : t.tx_status.replace(/_/g, " ")}</span></td>
+                <td><a href="${ex(t.tx_id)}" target="_blank" rel="noopener">${t.tx_id.slice(0, 8)}…</a></td></tr>`;
             }).join("")
-          : `<tr><td colspan="6">no DeepStack transactions yet</td></tr>`;
+          : `<tr><td colspan="6" style="color:var(--muted)">no DeepStack transactions yet</td></tr>`;
       }
 
       async function load() {
         try {
           const a = CFG.wallet;
-          document.getElementById("addrLink").textContent = a.slice(0, 8) + "…" + a.slice(-4);
-          document.getElementById("addrLink").href = `https://explorer.hiro.so/address/${a}?chain=mainnet`;
+          $("addrLink").textContent = a.slice(0, 6) + "…" + a.slice(-4);
+          $("addrLink").href = `https://explorer.hiro.so/address/${a}?chain=mainnet`;
           const [bal, tt] = await Promise.all([
             getJson(`/extended/v1/address/${a}/balances`),
             getJson(`/extended/v1/address/${a}/transactions_with_transfers?limit=50`),
           ]);
           render(bal, tt.results || []);
-          document.getElementById("status").textContent = "updated " + new Date().toUTCString().slice(17, 25) + " UTC";
-        } catch (e) {
-          document.getElementById("status").textContent = "error: " + e.message;
-        }
+          $("status").innerHTML = `updated ${new Date().toUTCString().slice(17, 25)} UTC`;
+        } catch (e) { $("status").textContent = "error: " + e.message; }
       }
       load();
       setInterval(load, 30000);
