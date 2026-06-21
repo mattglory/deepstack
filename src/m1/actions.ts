@@ -62,6 +62,13 @@ const traitArgs = () => [
 const human = (amount: bigint, decimals: number) =>
   Number(amount) / 10 ** decimals;
 
+// Safety model for AMM ops: we bound the assets the SENDER sends with strict
+// post-conditions (so the user can never overspend), and rely on the contract's
+// on-chain min-* output args to bound what is received. Mode is Allow so the
+// pool's internal transfers (sBTC/STX out, protocol fee, LP mint) don't trip a
+// Deny abort — the input-cap PCs still fully protect the sender's funds.
+const MODE = PostConditionMode.Allow;
+
 // Shared: sign locally (ephemeral key in dry-run), serialize, optionally broadcast.
 async function finalize(
   action: string,
@@ -89,7 +96,7 @@ async function finalize(
     functionArgs,
     senderKey: key,
     network,
-    postConditionMode: PostConditionMode.Deny,
+    postConditionMode: MODE,
     postConditions: conditions,
     fee,
     nonce,
@@ -137,6 +144,7 @@ export async function buildAddLiquidity(
       human: [
         `sender sends ≤ ${human(xAmount, SBTC.decimals)} sBTC`,
         `sender sends ≤ ${human(maxY, STX.decimals)} STX (native)`,
+        `(LP received bounded on-chain by min-dlp=${minDlp})`,
       ],
     }),
     () => ({
@@ -167,12 +175,10 @@ export async function buildSwapXForY(
     (sender) => ({
       conditions: [
         Pc.principal(sender).willSendLte(xAmount).ft(contractId(SBTC), SBTC.asset),
-        // receive leg (verify sending principal on testnet):
-        Pc.principal(contractId(CORE)).willSendGte(minDy).ustx(),
       ],
       human: [
         `sender sends ≤ ${human(xAmount, SBTC.decimals)} sBTC`,
-        `sender receives ≥ ${human(minDy, STX.decimals)} STX (from core — verify on testnet)`,
+        `(STX received bounded on-chain by min-dy=${minDy})`,
       ],
     }),
     () => ({
@@ -199,14 +205,10 @@ export async function buildSwapYForX(
     "swap-y-for-x",
     [...traitArgs(), Cl.uint(yAmount), Cl.uint(minDx)],
     (sender) => ({
-      conditions: [
-        Pc.principal(sender).willSendLte(yAmount).ustx(),
-        // receive leg (verify on first mainnet smoke):
-        Pc.principal(contractId(CORE)).willSendGte(minDx).ft(contractId(SBTC), SBTC.asset),
-      ],
+      conditions: [Pc.principal(sender).willSendLte(yAmount).ustx()],
       human: [
         `sender sends ≤ ${human(yAmount, STX.decimals)} STX (native)`,
-        `sender receives ≥ ${human(minDx, SBTC.decimals)} sBTC (from core — verify on smoke)`,
+        `(sBTC received bounded on-chain by min-dx=${minDx})`,
       ],
     }),
     () => ({
@@ -237,14 +239,10 @@ export async function buildWithdrawLiquidity(
       conditions: [
         // burn leg: LP tokens leave the sender
         Pc.principal(sender).willSendLte(lpAmount).ft(contractId(POOL_LP), POOL_LP.asset),
-        // receive legs (verify sending principal on testnet):
-        Pc.principal(contractId(CORE)).willSendGte(minX).ft(contractId(SBTC), SBTC.asset),
-        Pc.principal(contractId(CORE)).willSendGte(minY).ustx(),
       ],
       human: [
         `sender sends ≤ ${human(lpAmount, POOL_LP.decimals)} LP (${POOL_LP.asset})`,
-        `sender receives ≥ ${human(minX, SBTC.decimals)} sBTC (from core — verify on testnet)`,
-        `sender receives ≥ ${human(minY, STX.decimals)} STX (from core — verify on testnet)`,
+        `(sBTC/STX received bounded on-chain by min-x=${minX}, min-y=${minY})`,
       ],
     }),
     () => ({

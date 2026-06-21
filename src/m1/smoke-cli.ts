@@ -72,7 +72,7 @@ async function main() {
   console.log(`action: ${built.action}`);
   console.log("details:");
   for (const [k, v] of Object.entries(built.details)) console.log(`  ${k}: ${v}`);
-  console.log("post-conditions (Deny mode):");
+  console.log("post-conditions (input caps; receive bounded on-chain by min-*):");
   for (const pc of built.postConditions) console.log(`  - ${pc}`);
 
   if (!yes) {

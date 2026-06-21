@@ -18,7 +18,7 @@ function print(b: BuiltTx) {
   console.log(`sender: ${b.sender}`);
   console.log("details:");
   for (const [k, v] of Object.entries(b.details)) console.log(`  ${k}: ${v}`);
-  console.log("post-conditions (Deny mode):");
+  console.log("post-conditions (input caps; receive bounded on-chain by min-*):");
   for (const pc of b.postConditions) console.log(`  - ${pc}`);
   console.log(`serialized: ${b.serializedTx.length / 2} bytes (${b.serializedTx.slice(0, 48)}…)`);
 }
