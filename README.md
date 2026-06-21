@@ -51,8 +51,18 @@ keeps execution fast, cheap, deterministic, and explainable (and grant-credible)
 ```bash
 npm install
 npm run spike      # live read-and-decide loop, prints quote + rebalance band
+npm run yield      # idle-capital yield scan (Stacks lending, read-only)
+npm run m1:dryrun  # build+sign an add-liquidity tx locally, NOT broadcast (M1)
 npm run typecheck  # tsc --noEmit
 ```
+
+### Idle-capital yield (`npm run yield`)
+DeepStack's inventory isn't always fully deployed in market-making. The `src/yield/`
+module ranks where idle inventory could earn the best **risk-adjusted** yield on
+Stacks (currently Zest V2, via DefiLlama's public API) behind a venue-agnostic
+`YieldVenue` interface — no bridge, read-only, no funds move. Note: Stacks lending
+yields are very low today, so this is a monitor that auto-surfaces opportunities as
+rates rise; execution (supply/withdraw) is deferred behind the same interface.
 
 Copy `.env.example` to `.env` to override defaults (all have safe public fallbacks).
 
