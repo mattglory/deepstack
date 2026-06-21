@@ -113,11 +113,19 @@ Verified `Pc` builder chain: `Pc.principal(addr).willSendLte|willSendGte|willSen
 
 ## 5. M1 task breakdown (~3–4 weeks with help)
 
-> **Status (in progress):** ✅ quote wrappers (`get-dlp`/`get-dy`/`get-dx` + proportional
-> withdraw) and ✅ **dry-run builders** for add-liquidity / swap-x-for-y / withdraw-liquidity
-> (`npm run m1:dryrun`) — sign locally with an ephemeral key, Deny-mode post-conditions,
-> never broadcast. ⏳ Remaining: funded testnet key → broadcast on testnet (confirm the
-> receive-leg post-conditions), then mainnet smoke, then the agent loop.
+> **Status:** ✅ quote wrappers (`get-dlp`/`get-dy`/`get-dx` + proportional withdraw);
+> ✅ dry-run builders (`npm run m1:dryrun`); ✅ wallet wiring + testnet plumbing
+> (`m1:wallet`, `m1:testnet-ping`); ✅ **MAINNET write-side VALIDATED** — a live
+> `swap-y-for-x` succeeded (txid `cedda90…caa0b`, `(ok u1411)`, 5 STX → 0.00001411 sBTC).
+>
+> **Post-condition model (learned from on-chain events):** the **pool** sends the output
+> token (not core), and a swap also makes a **protocol-fee** transfer (sender → fee-address,
+> ~10 bps). So we use **Allow mode + strict input-cap post-conditions** (bound what the
+> sender sends), and rely on the contract's on-chain `min-*` args to bound what is received.
+> A first Deny-mode attempt aborted safely (fail-closed; cost 0.05 STX) — confirming the guard.
+>
+> ⏳ Remaining: add/withdraw use the same validated pattern (mainnet-test during the M2 pilot),
+> then the agent loop (read → AI params → decide → act).
 
 1. **`src/wallet.ts`** — load key from env, derive address, nonce/fee handling.
 2. **`src/quotes.ts`** — wrap `get-dlp` / `get-dy` / `get-dx` read-only calls → `min-*`.
