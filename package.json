@@ -8,6 +8,7 @@
     "spike": "tsx src/index.ts",
     "yield": "tsx src/yield/cli.ts",
     "m1:dryrun": "tsx src/m1/cli.ts",
+    "m1:wallet": "tsx src/m1/wallet-cli.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
