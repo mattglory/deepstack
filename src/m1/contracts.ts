@@ -31,6 +31,14 @@ export const STX = {
   native: true, // post-condition uses .ustx()
 } as const;
 
+// LP token is a SIP-010 FT minted by the pool contract (asset name "pool-token").
+export const POOL_LP = {
+  address: POOL.address,
+  name: POOL.name,
+  asset: "pool-token",
+  decimals: 6,
+} as const;
+
 export const contractId = (c: {
   address: string;
   name: string;

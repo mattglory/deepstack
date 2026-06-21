@@ -48,6 +48,42 @@ export async function getSwapYForXQuote(yAmount: bigint): Promise<bigint> {
   return BigInt(j.value.value);
 }
 
+// Raw pool reserves + total shares (base units), read from the pool's get-pool.
+export async function getPoolRaw(): Promise<{
+  xBalance: bigint;
+  yBalance: bigint;
+  totalShares: bigint;
+}> {
+  const cv = await fetchCallReadOnlyFunction({
+    contractAddress: POOL.address,
+    contractName: POOL.name,
+    functionName: "get-pool",
+    functionArgs: [],
+    network: "mainnet",
+    senderAddress: config.senderAddress,
+  });
+  const t = (cvToJSON(cv) as any)?.value?.value;
+  if (!t) throw new Error("get-pool returned no tuple");
+  return {
+    xBalance: BigInt(t["x-balance"].value),
+    yBalance: BigInt(t["y-balance"].value),
+    totalShares: BigInt(t["total-shares"].value),
+  };
+}
+
+// Proportional withdrawal: burning lpAmount returns its share of both reserves.
+// No dedicated core helper exists, so compute from on-chain reserves + shares.
+export async function getWithdrawQuote(
+  lpAmount: bigint,
+): Promise<{ xOut: bigint; yOut: bigint }> {
+  const { xBalance, yBalance, totalShares } = await getPoolRaw();
+  if (totalShares === 0n) throw new Error("pool has no shares");
+  return {
+    xOut: (lpAmount * xBalance) / totalShares,
+    yOut: (lpAmount * yBalance) / totalShares,
+  };
+}
+
 // slippage helpers (bps): floor for outputs we receive, ceiling for inputs we send
 export const minusSlippage = (amount: bigint, bps: number): bigint =>
   (amount * BigInt(10_000 - bps)) / 10_000n;

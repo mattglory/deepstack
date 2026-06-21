@@ -113,6 +113,12 @@ Verified `Pc` builder chain: `Pc.principal(addr).willSendLte|willSendGte|willSen
 
 ## 5. M1 task breakdown (~3–4 weeks with help)
 
+> **Status (in progress):** ✅ quote wrappers (`get-dlp`/`get-dy`/`get-dx` + proportional
+> withdraw) and ✅ **dry-run builders** for add-liquidity / swap-x-for-y / withdraw-liquidity
+> (`npm run m1:dryrun`) — sign locally with an ephemeral key, Deny-mode post-conditions,
+> never broadcast. ⏳ Remaining: funded testnet key → broadcast on testnet (confirm the
+> receive-leg post-conditions), then mainnet smoke, then the agent loop.
+
 1. **`src/wallet.ts`** — load key from env, derive address, nonce/fee handling.
 2. **`src/quotes.ts`** — wrap `get-dlp` / `get-dy` / `get-dx` read-only calls → `min-*`.
 3. **`src/actions.ts`** — `addLiquidity`, `withdrawLiquidity`, `swap` builders with
