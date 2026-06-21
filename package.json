@@ -6,6 +6,7 @@
   "description": "Bitcoin-native liquidity / market-making agent for Stacks DeFi (PoC spike)",
   "scripts": {
     "spike": "tsx src/index.ts",
+    "yield": "tsx src/yield/cli.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
