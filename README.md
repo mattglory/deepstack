@@ -68,6 +68,15 @@ rates rise; execution (supply/withdraw) is deferred behind the same interface.
 
 Copy `.env.example` to `.env` to override defaults (all have safe public fallbacks).
 
+## Public dashboard (`dashboard/`)
+A backend-free, single-file metrics dashboard (`dashboard/index.html`) that reads **live
+on-chain data** (Hiro API) for the agent's wallet and renders volume facilitated, sBTC
+traded, network fees, success/abort counts, balances, portfolio value, and a verifiable
+transaction table (each row links to the explorer). No private data, no server.
+
+- Preview locally: open `dashboard/index.html`, or `npx serve dashboard`.
+- Deploy publicly (pick one): `vercel deploy dashboard` · GitHub Pages · Netlify drop.
+
 ## Roadmap (grant milestones)
 
 - **M1 (wk 1–4):** Stacks adapter + testnet PoC (this repo → testnet reads, signing).
