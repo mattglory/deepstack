@@ -14,6 +14,7 @@
 import {
   makeContractCall,
   broadcastTransaction,
+  fetchNonce,
   Cl,
   Pc,
   PostConditionMode,
@@ -27,6 +28,7 @@ import { CORE, POOL, SBTC, STX, POOL_LP, contractId } from "./contracts.js";
 import {
   getAddLiquidityQuote,
   getSwapXForYQuote,
+  getSwapYForXQuote,
   getWithdrawQuote,
   minusSlippage,
   plusSlippage,
@@ -34,10 +36,11 @@ import {
 
 export interface BuildOpts {
   senderKey?: string; // real key only needed to broadcast
+  network?: "mainnet" | "testnet"; // default mainnet (pool is mainnet-only)
   slippageBps?: number; // default 100 = 1%
   broadcast?: boolean; // default false (dry-run)
-  feeMicroStx?: bigint; // explicit fee keeps dry-run hermetic (no network calls)
-  nonce?: bigint;
+  feeMicroStx?: bigint; // explicit fee; auto-defaults differ for dry-run vs broadcast
+  nonce?: bigint; // fetched automatically when broadcasting if omitted
 }
 
 export interface BuiltTx {
@@ -68,10 +71,16 @@ async function finalize(
   detailsFor: (sender: string) => Record<string, string>,
   opts: BuildOpts,
 ): Promise<BuiltTx> {
+  const network = opts.network ?? "mainnet";
   const broadcasting = !!opts.broadcast && !!opts.senderKey;
   const key = opts.senderKey ?? randomPrivateKey();
-  const sender = getAddressFromPrivateKey(key);
+  const sender = getAddressFromPrivateKey(key, network);
   const { conditions, human: pcHuman } = pcFor(sender);
+
+  // Real nonce/fee only matter when broadcasting; dry-run stays hermetic.
+  const nonce =
+    opts.nonce ?? (broadcasting ? await fetchNonce({ address: sender, network }) : 0n);
+  const fee = opts.feeMicroStx ?? (broadcasting ? 50_000n : 10_000n);
 
   const tx = await makeContractCall({
     contractAddress: CORE.address,
@@ -79,11 +88,11 @@ async function finalize(
     functionName,
     functionArgs,
     senderKey: key,
-    network: "mainnet",
+    network,
     postConditionMode: PostConditionMode.Deny,
     postConditions: conditions,
-    fee: opts.feeMicroStx ?? 10_000n,
-    nonce: opts.nonce ?? 0n,
+    fee,
+    nonce,
   });
 
   const built: BuiltTx = {
@@ -96,8 +105,9 @@ async function finalize(
   };
   if (broadcasting) {
     try {
-      const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-      built.broadcast = { txid: (res as any).txid };
+      const res = await broadcastTransaction({ transaction: tx, network });
+      const r = res as any;
+      built.broadcast = r.txid ? { txid: r.txid } : { error: JSON.stringify(r) };
     } catch (err) {
       built.broadcast = { error: (err as Error).message };
     }
@@ -169,6 +179,40 @@ export async function buildSwapXForY(
       xAmount_sBTC: `${human(xAmount, SBTC.decimals)} (${xAmount} base)`,
       expectedSTXout: `${human(dy, STX.decimals)} (${dy} uSTX)`,
       minSTXout_afterSlippage: `${human(minDy, STX.decimals)}`,
+      slippageBps: String(slip),
+    }),
+    opts,
+  );
+}
+
+// swap-y-for-x(pool, x, y, y-amount, min-dx) — sell STX for sBTC (cheapest smoke)
+export async function buildSwapYForX(
+  yAmount: bigint,
+  opts: BuildOpts = {},
+): Promise<BuiltTx> {
+  const slip = opts.slippageBps ?? 100;
+  const dx = await getSwapYForXQuote(yAmount);
+  const minDx = minusSlippage(dx, slip);
+
+  return finalize(
+    "swap-y-for-x",
+    "swap-y-for-x",
+    [...traitArgs(), Cl.uint(yAmount), Cl.uint(minDx)],
+    (sender) => ({
+      conditions: [
+        Pc.principal(sender).willSendLte(yAmount).ustx(),
+        // receive leg (verify on first mainnet smoke):
+        Pc.principal(contractId(CORE)).willSendGte(minDx).ft(contractId(SBTC), SBTC.asset),
+      ],
+      human: [
+        `sender sends ≤ ${human(yAmount, STX.decimals)} STX (native)`,
+        `sender receives ≥ ${human(minDx, SBTC.decimals)} sBTC (from core — verify on smoke)`,
+      ],
+    }),
+    () => ({
+      yAmount_STX: `${human(yAmount, STX.decimals)} (${yAmount} uSTX)`,
+      expected_sBTCout: `${human(dx, SBTC.decimals)} (${dx} base)`,
+      min_sBTCout_afterSlippage: `${human(minDx, SBTC.decimals)}`,
       slippageBps: String(slip),
     }),
     opts,

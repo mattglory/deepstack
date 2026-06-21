@@ -10,6 +10,7 @@
     "m1:dryrun": "tsx src/m1/cli.ts",
     "m1:wallet": "tsx src/m1/wallet-cli.ts",
     "m1:testnet-ping": "tsx src/m1/testnet-ping-cli.ts",
+    "m1:smoke": "tsx src/m1/smoke-cli.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
