@@ -53,7 +53,8 @@ npm install
 npm run spike      # live read-and-decide loop, prints quote + rebalance band
 npm run yield      # idle-capital yield scan (Stacks lending, read-only)
 npm run m1:dryrun  # build+sign an add-liquidity tx locally, NOT broadcast (M1)
-npm run m1:agent   # agent loop: read mid+inventory -> decide rebalance (observe-only)
+npm run m1:agent   # agent loop: read mid+inventory -> decide rebalance (observe)
+                   #   add --live --yes-mainnet to execute (guarded, capped, mainnet-only)
 npm run typecheck  # tsc --noEmit
 ```
 

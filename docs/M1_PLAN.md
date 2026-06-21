@@ -124,12 +124,14 @@ Verified `Pc` builder chain: `Pc.principal(addr).willSendLte|willSendGte|willSen
 > sender sends), and rely on the contract's on-chain `min-*` args to bound what is received.
 > A first Deny-mode attempt aborted safely (fail-closed; cost 0.05 STX) — confirming the guard.
 >
-> ✅ **Agent loop (observe)** — `npm run m1:agent` reads the on-chain mid + wallet inventory
-> and runs a deterministic rebalance decision (target sBTC/STX split, drift band); execution
-> reuses the validated guarded builders and is intentionally not wired (observe-only) yet.
+> ✅ **Agent loop** — `npm run m1:agent` reads the on-chain mid + wallet inventory and runs a
+> deterministic rebalance decision (target sBTC/STX split, drift band). OBSERVE by default;
+> **LIVE execution wired** behind double opt-in (`--live --yes-mainnet`), mainnet-only, hard
+> caps, balance checks, and per-tx confirmation polling (no double-trading on stale balances),
+> capped at `--max-trades` per run.
 >
-> ⏳ Remaining: add/withdraw mainnet-tested during the M2 pilot; wire agent execution
-> (live mode behind the smoke-style guards); AI param tuning (OpenRouter) on a cadence.
+> ⏳ Remaining: add/withdraw mainnet-tested during the M2 pilot; AI param tuning (OpenRouter)
+> feeding `defaultParams()` on a cadence.
 
 1. **`src/wallet.ts`** — load key from env, derive address, nonce/fee handling.
 2. **`src/quotes.ts`** — wrap `get-dlp` / `get-dy` / `get-dx` read-only calls → `min-*`.
