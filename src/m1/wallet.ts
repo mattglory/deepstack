@@ -8,6 +8,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { getAddressFromPrivateKey } from "@stacks/transactions";
 import { generateWallet, generateNewAccount } from "@stacks/wallet-sdk";
+import { SBTC, contractId } from "./contracts.js";
 
 // Minimal zero-dependency .env loader (only sets vars not already in env).
 export function loadDotenv(path = ".env"): void {
@@ -89,4 +90,18 @@ export async function getStxBalance(
   const j = (await res.json()) as { stx?: { balance?: string } };
   const micro = BigInt(j.stx?.balance ?? "0");
   return { stx: Number(micro) / 1e6, microStx: micro };
+}
+
+// sBTC balance (base units, 8 dp). Reads the SIP-010 FT entry from the balances API.
+export async function getSbtcBalance(
+  address: string,
+  network: Network,
+): Promise<bigint> {
+  const res = await fetch(`${apiBase(network)}/extended/v1/address/${address}/balances`);
+  if (!res.ok) throw new Error(`balance fetch failed: ${res.status}`);
+  const j = (await res.json()) as {
+    fungible_tokens?: Record<string, { balance?: string }>;
+  };
+  const assetId = `${contractId(SBTC)}::${SBTC.asset}`;
+  return BigInt(j.fungible_tokens?.[assetId]?.balance ?? "0");
 }
