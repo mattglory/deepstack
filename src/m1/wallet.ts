@@ -8,7 +8,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { getAddressFromPrivateKey } from "@stacks/transactions";
 import { generateWallet, generateNewAccount } from "@stacks/wallet-sdk";
-import { SBTC, contractId } from "./contracts.js";
+import { SBTC, POOL_LP, contractId } from "./contracts.js";
 
 // Minimal zero-dependency .env loader (only sets vars not already in env).
 export function loadDotenv(path = ".env"): void {
@@ -103,5 +103,19 @@ export async function getSbtcBalance(
     fungible_tokens?: Record<string, { balance?: string }>;
   };
   const assetId = `${contractId(SBTC)}::${SBTC.asset}`;
+  return BigInt(j.fungible_tokens?.[assetId]?.balance ?? "0");
+}
+
+// LP token (pool-token) balance, base units (6 dp) — the agent's liquidity position.
+export async function getLpBalance(
+  address: string,
+  network: Network,
+): Promise<bigint> {
+  const res = await fetch(`${apiBase(network)}/extended/v1/address/${address}/balances`);
+  if (!res.ok) throw new Error(`balance fetch failed: ${res.status}`);
+  const j = (await res.json()) as {
+    fungible_tokens?: Record<string, { balance?: string }>;
+  };
+  const assetId = `${contractId(POOL_LP)}::${POOL_LP.asset}`;
   return BigInt(j.fungible_tokens?.[assetId]?.balance ?? "0");
 }

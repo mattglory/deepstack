@@ -11,6 +11,18 @@ export interface AgentParams {
   maxSwapStxUstx: bigint; // cap on a single STX->sBTC swap (microSTX)
   maxSwapSbtcBase: bigint; // cap on a single sBTC->STX swap (base, 8dp)
   slippageBps: number; // slippage guard passed to the action builders
+  // --- liquidity provision (earns the pool fee). Opt-in: 0 disables LPing. ---
+  targetLpFraction: number; // target share of portfolio value deployed as LP (0..1)
+  lpBandBps: number; // tolerance before adding/withdrawing LP (bps)
+  maxAddSbtcBase: bigint; // cap on a single add-liquidity (sBTC base, 8dp)
+  maxWithdrawLpBase: bigint; // cap on a single withdraw (LP base, 6dp)
+}
+
+export interface LpDecision {
+  action: "none" | "add-liquidity" | "withdraw-liquidity";
+  sbtcBase: bigint; // for add-liquidity: sBTC to provide (paired STX pulled by the pool)
+  lpBase: bigint; // for withdraw-liquidity: LP tokens to burn
+  reason: string;
 }
 
 export interface Inventory {
@@ -40,7 +52,69 @@ export function defaultParams(): AgentParams {
     maxSwapStxUstx: 10_000_000n, // 10 STX
     maxSwapSbtcBase: 30_000n, // 0.0003 sBTC
     slippageBps: 100,
+    // LP disabled by default; enable with TARGET_LP_FRACTION (e.g. 0.3)
+    targetLpFraction: Number(process.env.TARGET_LP_FRACTION ?? 0),
+    lpBandBps: 1000, // 10%
+    maxAddSbtcBase: 30_000n, // 0.0003 sBTC per add
+    maxWithdrawLpBase: 100_000_000n, // 100 LP per withdraw
   };
+}
+
+// Decide whether to add or withdraw liquidity to track the target LP allocation.
+// Conservative + multi-step: each call moves toward the target within caps and
+// available inventory (so it converges over cycles rather than one big move).
+export function decideLp(
+  portfolioStx: number, // total value (free inventory + LP), in STX
+  lpBalanceBase: bigint, // current LP token balance (6 dp)
+  lpValueStx: number, // current LP position value, in STX
+  availSbtcBase: bigint, // free sBTC (8 dp)
+  availStxMicro: bigint, // free STX (6 dp)
+  midXinY: number, // STX per sBTC
+  params: AgentParams,
+): LpDecision {
+  if (params.targetLpFraction <= 0 || portfolioStx <= 0) {
+    return { action: "none", sbtcBase: 0n, lpBase: 0n, reason: "LP disabled (targetLpFraction=0)" };
+  }
+  const targetLp = params.targetLpFraction * portfolioStx;
+  const band = (params.lpBandBps / 10_000) * portfolioStx;
+
+  if (lpValueStx < targetLp - band) {
+    // ADD: size to the gap (half the gap value in sBTC for a 50/50 pool), then
+    // constrain by available sBTC, available paired STX (1 STX fee buffer), and cap.
+    const sbtcValueToAdd = (targetLp - lpValueStx) / 2; // in STX value
+    let sbtc = BigInt(Math.floor((sbtcValueToAdd / midXinY) * 1e8));
+    if (sbtc > availSbtcBase) sbtc = availSbtcBase;
+    const freeStxForLp = availStxMicro > 1_000_000n ? availStxMicro - 1_000_000n : 0n;
+    const affordableByStx = BigInt(Math.floor((Number(freeStxForLp) / 1e6 / midXinY) * 1e8));
+    if (affordableByStx < sbtc) sbtc = affordableByStx;
+    if (sbtc > params.maxAddSbtcBase) sbtc = params.maxAddSbtcBase;
+    if (sbtc <= 0n) {
+      return { action: "none", sbtcBase: 0n, lpBase: 0n, reason: "under LP target but insufficient paired inventory" };
+    }
+    return {
+      action: "add-liquidity",
+      sbtcBase: sbtc,
+      lpBase: 0n,
+      reason: `LP ${((lpValueStx / portfolioStx) * 100).toFixed(1)}% < target ${(params.targetLpFraction * 100).toFixed(0)}% → add`,
+    };
+  }
+
+  if (lpValueStx > targetLp + band && lpBalanceBase > 0n) {
+    const removeFrac = Math.min(1, (lpValueStx - targetLp) / lpValueStx);
+    let lp = BigInt(Math.floor(Number(lpBalanceBase) * removeFrac));
+    if (lp > params.maxWithdrawLpBase) lp = params.maxWithdrawLpBase;
+    if (lp <= 0n) {
+      return { action: "none", sbtcBase: 0n, lpBase: 0n, reason: "over LP target but withdraw rounds to zero" };
+    }
+    return {
+      action: "withdraw-liquidity",
+      sbtcBase: 0n,
+      lpBase: lp,
+      reason: `LP ${((lpValueStx / portfolioStx) * 100).toFixed(1)}% > target ${(params.targetLpFraction * 100).toFixed(0)}% → withdraw`,
+    };
+  }
+
+  return { action: "none", sbtcBase: 0n, lpBase: 0n, reason: "LP within band" };
 }
 
 // Decide whether/how to rebalance toward the target split.

@@ -1,31 +1,49 @@
-// DeepStack agent loop — read → (AI-tune on a cadence) → decide → (optionally) act.
+// DeepStack agent loop — read → (AI-tune) → decide → (optionally) act.
 //
-// Modes:
-//   OBSERVE (default): read mid+inventory, decide, log. Nothing broadcasts.
-//   LIVE: execute the rebalance swap — requires BOTH --live AND --yes-mainnet,
-//         STACKS_NETWORK=mainnet, passes hard caps, waits for each tx to confirm
-//         before the next cycle, capped at --max-trades per run.
+// Each cycle: (1) if LP is enabled (TARGET_LP_FRACTION>0), move toward the target
+// liquidity allocation via add/withdraw — this is what EARNS the pool fee; then
+// (2) rebalance free inventory toward the target sBTC/STX split via swaps.
 //
-// AI tuning: if OPENROUTER_API_KEY is set, params are tuned every --tune-every
-// cycles (default 10). The LLM is off the hot path and its output is clamped;
-// without a key the agent uses safe deterministic defaults.
+// OBSERVE by default. LIVE execution requires --live AND --yes-mainnet,
+// mainnet-only, hard caps, balance checks, and per-tx confirmation (no
+// double-trading on stale balances), capped at --max-trades per run.
 //
 //   npm run m1:agent
-//   npm run m1:agent -- --interval 30
-//   npm run m1:agent -- --live --yes-mainnet --interval 60 --max-trades 3
+//   npm run m1:agent -- --interval 60
+//   TARGET_LP_FRACTION=0.3 npm run m1:agent -- --live --yes-mainnet
 
-import { getWallet, getStxBalance, getSbtcBalance, type Wallet } from "./wallet.js";
+import {
+  getWallet,
+  getStxBalance,
+  getSbtcBalance,
+  getLpBalance,
+  type Wallet,
+} from "./wallet.js";
 import { getPoolState } from "../pool.js";
-import { buildSwapYForX, buildSwapXForY } from "./actions.js";
-import { decide, defaultParams, type Inventory, type AgentParams } from "./agent.js";
+import { getWithdrawQuote } from "./quotes.js";
+import {
+  buildSwapYForX,
+  buildSwapXForY,
+  buildAddLiquidity,
+  buildWithdrawLiquidity,
+  type BuiltTx,
+} from "./actions.js";
+import {
+  decide,
+  decideLp,
+  defaultParams,
+  type Inventory,
+  type AgentParams,
+} from "./agent.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 
 const POOL_ID = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1";
-const CAP_STX_USTX = 25_000_000n; // 25 STX
-const CAP_SBTC_BASE = 50_000n; // 0.0005 sBTC
+const CAP_STX_USTX = 25_000_000n;
+const CAP_SBTC_BASE = 50_000n;
 const FEE_USTX = 50_000n;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const lpH = (b: bigint) => Number(b) / 1e6;
 
 function flags() {
   const a = process.argv.slice(2);
@@ -56,65 +74,67 @@ async function waitForTx(txid: string) {
 
 interface Snapshot {
   midXinY: number;
-  inv: Inventory;
+  inv: Inventory; // free wallet inventory
   stxHuman: number;
   sbtcHuman: number;
+  lpBalanceBase: bigint;
+  lpValueStx: number;
+  portfolioStx: number;
   market: MarketState;
 }
 
 async function readMarket(w: Wallet): Promise<Snapshot> {
-  const [pool, stx, sbtc] = await Promise.all([
+  const [pool, stx, sbtc, lp] = await Promise.all([
     getPoolState(POOL_ID),
     getStxBalance(w.address, w.network),
     getSbtcBalance(w.address, w.network),
+    getLpBalance(w.address, w.network),
   ]);
-  const sbtcValueStx = (Number(sbtc) / 1e8) * pool.midXinY;
-  const total = sbtcValueStx + stx.stx;
-  const stxFraction = total > 0 ? stx.stx / total : 0;
+  let lpValueStx = 0;
+  if (lp > 0n) {
+    const q = await getWithdrawQuote(lp);
+    lpValueStx = (Number(q.xOut) / 1e8) * pool.midXinY + Number(q.yOut) / 1e6;
+  }
+  const freeValue = (Number(sbtc) / 1e8) * pool.midXinY + stx.stx;
+  const portfolioStx = freeValue + lpValueStx;
+  const stxFraction = freeValue > 0 ? stx.stx / freeValue : 0;
   return {
     midXinY: pool.midXinY,
     inv: { sbtcBase: sbtc, stxMicro: stx.microStx },
     stxHuman: stx.stx,
     sbtcHuman: Number(sbtc) / 1e8,
-    market: { midXinY: pool.midXinY, stxFraction, drift: stxFraction - 0.5, totalStx: total },
+    lpBalanceBase: lp,
+    lpValueStx,
+    portfolioStx,
+    market: { midXinY: pool.midXinY, stxFraction, drift: stxFraction - 0.5, totalStx: freeValue },
   };
 }
 
-// Returns true if a live trade was executed.
-async function act(
-  w: Wallet,
-  s: Snapshot,
-  params: AgentParams,
-  canTrade: boolean,
-): Promise<boolean> {
-  const d = decide(s.inv, s.midXinY, params);
+function refuse(why: string): boolean {
+  console.log(`  ✗ refusing live trade: ${why}`);
+  return false;
+}
+
+async function broadcastResult(built: BuiltTx): Promise<boolean> {
+  if (!built.broadcast?.txid) {
+    console.log(`  ✗ broadcast failed/aborted: ${built.broadcast?.error}`);
+    return false;
+  }
+  console.log(`  ✓ txid: ${built.broadcast.txid} — confirming…`);
+  const res = await waitForTx(built.broadcast.txid);
+  console.log(`  status: ${res.tx_status}${res.tx_result?.repr ? ` ${res.tx_result.repr}` : ""}`);
+  return res.tx_status === "success";
+}
+
+// Returns true if a live trade executed.
+async function act(w: Wallet, s: Snapshot, params: AgentParams, canTrade: boolean): Promise<boolean> {
   const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
   console.log(`\n[${ts}] mid 1 sBTC = ${s.midXinY.toLocaleString()} STX`);
   console.log(
-    `  inventory: ${s.sbtcHuman.toFixed(8)} sBTC + ${s.stxHuman} STX  ` +
-      `(${(d.metrics.stxFraction * 100).toFixed(1)}% STX / ${((1 - d.metrics.stxFraction) * 100).toFixed(1)}% sBTC)`,
+    `  free: ${s.sbtcHuman.toFixed(8)} sBTC + ${s.stxHuman} STX | ` +
+      `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueStx.toFixed(1)} STX) | ` +
+      `portfolio ~${s.portfolioStx.toFixed(1)} STX`,
   );
-  if (d.action === "none") {
-    console.log(`  decision: HOLD — ${d.reason}`);
-    return false;
-  }
-  const amtHuman =
-    d.action === "swap-y-for-x"
-      ? `${Number(d.amountBase) / 1e6} STX → sBTC`
-      : `${Number(d.amountBase) / 1e8} sBTC → STX`;
-  console.log(`  decision: ${d.action}  ${amtHuman}  (${d.reason})`);
-
-  if (!canTrade) {
-    console.log("  observe mode — not executing (add --live --yes-mainnet to act)");
-    return false;
-  }
-  if (w.network !== "mainnet") return refuse("network is not mainnet");
-  if (d.action === "swap-y-for-x" && d.amountBase > CAP_STX_USTX) return refuse("STX over hard cap");
-  if (d.action === "swap-x-for-y" && d.amountBase > CAP_SBTC_BASE) return refuse("sBTC over hard cap");
-  if (d.action === "swap-y-for-x" && s.inv.stxMicro < d.amountBase + FEE_USTX)
-    return refuse("insufficient STX for amount + fee");
-
-  console.log("  → broadcasting…");
   const opts = {
     senderKey: w.key,
     network: "mainnet" as const,
@@ -122,23 +142,54 @@ async function act(
     slippageBps: params.slippageBps,
     feeMicroStx: FEE_USTX,
   };
+
+  // 1) Liquidity allocation (earns the pool fee) — only if enabled.
+  if (params.targetLpFraction > 0) {
+    const lp = decideLp(
+      s.portfolioStx, s.lpBalanceBase, s.lpValueStx,
+      s.inv.sbtcBase, s.inv.stxMicro, s.midXinY, params,
+    );
+    if (lp.action !== "none") {
+      const detail =
+        lp.action === "add-liquidity"
+          ? `${Number(lp.sbtcBase) / 1e8} sBTC (+ paired STX)`
+          : `${lpH(lp.lpBase)} LP`;
+      console.log(`  LP: ${lp.action}  ${detail}  (${lp.reason})`);
+      if (!canTrade) { console.log("  observe mode — not executing"); return false; }
+      if (w.network !== "mainnet") return refuse("not mainnet");
+      console.log("  → broadcasting…");
+      const built =
+        lp.action === "add-liquidity"
+          ? await buildAddLiquidity(lp.sbtcBase, opts)
+          : await buildWithdrawLiquidity(lp.lpBase, opts);
+      return broadcastResult(built);
+    }
+    console.log(`  LP: hold — ${lp.reason}`);
+  }
+
+  // 2) Rebalance free inventory via swap.
+  const d = decide(s.inv, s.midXinY, params);
+  if (d.action === "none") {
+    console.log(`  rebalance: HOLD — ${d.reason}`);
+    return false;
+  }
+  const amt =
+    d.action === "swap-y-for-x"
+      ? `${Number(d.amountBase) / 1e6} STX → sBTC`
+      : `${Number(d.amountBase) / 1e8} sBTC → STX`;
+  console.log(`  rebalance: ${d.action}  ${amt}  (${d.reason})`);
+  if (!canTrade) { console.log("  observe mode — not executing"); return false; }
+  if (w.network !== "mainnet") return refuse("not mainnet");
+  if (d.action === "swap-y-for-x" && d.amountBase > CAP_STX_USTX) return refuse("STX over cap");
+  if (d.action === "swap-x-for-y" && d.amountBase > CAP_SBTC_BASE) return refuse("sBTC over cap");
+  if (d.action === "swap-y-for-x" && s.inv.stxMicro < d.amountBase + FEE_USTX)
+    return refuse("insufficient STX for amount + fee");
+  console.log("  → broadcasting…");
   const built =
     d.action === "swap-y-for-x"
       ? await buildSwapYForX(d.amountBase, opts)
       : await buildSwapXForY(d.amountBase, opts);
-  if (!built.broadcast?.txid) {
-    console.log(`  ✗ broadcast failed/aborted: ${built.broadcast?.error}`);
-    return false;
-  }
-  console.log(`  ✓ txid: ${built.broadcast.txid} — waiting for confirmation…`);
-  const res = await waitForTx(built.broadcast.txid);
-  console.log(`  status: ${res.tx_status}${res.tx_result?.repr ? ` ${res.tx_result.repr}` : ""}`);
-  return res.tx_status === "success";
-}
-
-function refuse(why: string): boolean {
-  console.log(`  ✗ refusing live trade: ${why}`);
-  return false;
+  return broadcastResult(built);
 }
 
 function printTune(p: TunedParams) {
@@ -152,17 +203,19 @@ async function main() {
   const f = flags();
   const live = f.live && f.yesMainnet;
   console.log(
-    `=== DeepStack agent — ${live ? "LIVE (executes real swaps)" : "OBSERVE (no broadcasting)"} ===`,
+    `=== DeepStack agent — ${live ? "LIVE (executes real txs)" : "OBSERVE (no broadcasting)"} ===`,
   );
   const w = await getWallet();
   console.log(`network: ${w.network} | address: ${w.address}`);
   if (f.live && !f.yesMainnet)
-    console.log("note: --live needs --yes-mainnet to actually execute; running observe-only.");
+    console.log("note: --live needs --yes-mainnet; running observe-only.");
 
   let params: AgentParams = defaultParams();
+  if (params.targetLpFraction > 0)
+    console.log(`LP enabled: target ${(params.targetLpFraction * 100).toFixed(0)}% of portfolio`);
+
   let trades = 0;
   let i = 0;
-
   const step = async () => {
     const snap = await readMarket(w);
     if (i % f.tuneEvery === 0) {
@@ -171,8 +224,7 @@ async function main() {
       printTune(tuned);
     }
     i++;
-    const traded = await act(w, snap, params, live && trades < f.maxTrades);
-    if (traded) trades++;
+    if (await act(w, snap, params, live && trades < f.maxTrades)) trades++;
   };
 
   await step();
