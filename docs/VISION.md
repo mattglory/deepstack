@@ -1,16 +1,18 @@
 # DeepStack — Vision
 
-> **The automated liquidity infrastructure layer for Bitcoin DeFi.**
-> Steer / Gamma / Arrakis exist for 40+ EVM chains. None serve Bitcoin. DeepStack
-> is building that layer for Stacks — the chain they skipped.
+> **The independent, AI-driven market-making layer for Bitcoin DeFi.**
+> Stacks now has first-party LP keepers (Bitflow) and yield-routing agents (AIBTC) —
+> but no independent, AI-tuned, cross-venue market-maker, especially for perps.
+> That is the niche DeepStack fills. See [COMPETITIVE.md](COMPETITIVE.md).
 
 ## The problem
 
-Stacks holds ~**$545M of sBTC**, yet the deepest BTC DEX pool is only ~**$619k** — a
->800:1 gap between Bitcoin-backed capital and tradable on-chain depth. Liquidity is
-thin, spreads are wide, and there is **no automated liquidity management (ALM)
-infrastructure** on Stacks. Bitcoin DeFi has lacked operators with real
-market-making experience and the tooling to deploy it.
+Stacks holds ~**$545M of sBTC**, yet on-chain trading depth is thin and concentrated in
+a few venues. First-party tooling now exists for *passive* liquidity — Bitflow's HODLMM
+Keepers (auto-rebalancing concentrated-LP, live Mar 2026) and AIBTC's yield daemon
+(idle-sBTC routing) — but there is **no independent, AI-driven *active* market-maker**,
+and **no order-book market-making for perps** (Velar). Bitcoin DeFi still lacks operators
+with real market-making experience deploying it as cross-venue, open infrastructure.
 
 ## What DeepStack is
 
