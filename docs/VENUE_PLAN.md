@@ -18,20 +18,26 @@ kill-switch.
 |---|---|---|---|
 | **Bitflow XYK** | Spot AMM | LP + inventory | ✅ validated on mainnet — keep as base |
 | **ALEX order-book** | Limit + market orders | ⭐ two-sided quoting (the edge) | live per docs; **verify contracts/API + 3rd-party access** |
-| **Velar / Arkadiko AMM** | Spot AMM | inventory / routing | spot side usable |
+| **Velar spot AMM** | Spot AMM | inventory / routing | ✅ **UN-GATED** — separate system, CoinFabrik-audited (Feb 2024), NOT the exploited component |
+| **Arkadiko AMM** | Spot AMM | inventory / routing | usable spot |
 | **Velar PerpDEX** | Perps | ⭐ quoting — *but* | 🚫 **GATED** — see incident below |
 | Zest / Granite | Lending | idle-capital yield (not MM) | already in `yield` module |
 
-### Why Velar perps is gated (not removed)
+### Decision (2026-06): Velar SPOT un-gated, PERPS stay gated
 
-Velar PerpDEX suffered an **oracle-manipulation exploit on Feb 19 2026** (~$401k drained;
-contracts lacked Pyth price-timestamp checks; a pause/slowdown system was missing and had
-been auditor-flagged; affected Stacks + Mezo). Remediation is **partial**: the EVM (Vyper)
-contracts were audited by Thesis Defense, but the **Stacks (Clarity) re-audit/relaunch
-status is unconfirmed**, and recovery was a community "REKT" airdrop rather than confirmed
-restitution. **Do not deploy DeepStack capital on Velar perps until the Stacks deployment
-is confirmed fixed, re-audited, pause/oracle-guarded, and operating cleanly** (see
-`docs/VELAR_VERIFY.md` for the check-yourself list).
+**Spot AMM — un-gated.** Velar's spot AMM is a *separate* system (CoinFabrik Clarity
+audit, Feb 2024) and was **not** the exploited component. Treat it like any other audited
+Stacks AMM (Bitflow, Arkadiko) for inventory/routing — modest exposure, behind DeepStack's
+own oracle-sanity + caps.
+
+**PerpDEX — stays gated.** The Feb 19 2026 exploit (~$401k; oracle manipulation via
+missing Pyth price-timestamp checks; no pause system) hit the perp pools. The **only**
+PerpDex Clarity audit is **Thesis Defense, July 11 2024 — pre-exploit** — and it had
+already **recommended strengthening the oracle and adding emergency controls**, i.e. the
+very issues that caused the hack were flagged and not remediated. **No post-Feb-2026
+Clarity re-audit exists.** Recovery was a "REKT" airdrop, not confirmed restitution. Do
+**not** deploy capital/leveraged positions on Velar perps until a post-exploit Clarity
+re-audit + oracle-timestamp + pause guard are confirmed (see `docs/VELAR_VERIFY.md`).
 
 ## The order-book quoting module (DeepStack's actual edge)
 
