@@ -17,7 +17,7 @@ kill-switch.
 | Venue | Type | Fit | Status / gate |
 |---|---|---|---|
 | **Bitflow XYK** | Spot AMM | LP + inventory | ✅ validated on mainnet — keep as base |
-| **ALEX order-book** | Limit + market orders | ⭐ two-sided quoting (the edge) | live per docs; **verify contracts/API + 3rd-party access** |
+| **ALEX order-book (STXDX)** | Limit + market orders | quoting — *but* | 🚫 **NOT recommended** — permissioned/whitelist, BUSL license, RedStone oracle, **2 prior exploits ($4.3M Lazarus 2024, $8.3M 2025)**; v1 likely being replaced by "ALEX2" (testnet) |
 | **Velar spot AMM** | Spot AMM | inventory / routing | ✅ **UN-GATED** — separate system, CoinFabrik-audited (Feb 2024), NOT the exploited component |
 | **Arkadiko AMM** | Spot AMM | inventory / routing | usable spot |
 | **Velar PerpDEX** | Perps | ⭐ quoting — *but* | 🚫 **GATED** — see incident below |
@@ -39,9 +39,28 @@ Clarity re-audit exists.** Recovery was a "REKT" airdrop, not confirmed restitut
 **not** deploy capital/leveraged positions on Velar perps until a post-exploit Clarity
 re-audit + oracle-timestamp + pause guard are confirmed (see `docs/VELAR_VERIFY.md`).
 
-## The order-book quoting module (DeepStack's actual edge)
+## ⚠️ Hard reality (researched 2026-06): no clean, open order-book venue exists yet
 
-Applies to **ALEX order-book** now, and **Velar perps** once un-gated:
+DeepStack's true edge is **order-book quoting**, but as of mid-2026 every order-book/perp
+venue on Stacks has a blocking issue:
+
+| Venue | Quoting? | Security | Open to 3rd-party MM? |
+|---|---|---|---|
+| Bitflow HODLMM | orderbook-style CL | clean (audited) | ❌ first-party Keepers only |
+| Velar perps | yes | 1 exploit ($401k, pre-flagged) | open contracts but **gated** |
+| ALEX STXDX | yes | **2 exploits ($4.3M+$8.3M)** | ❌ permissioned/whitelist, BUSL |
+
+**Conclusion:** the quoting moat is currently **blocked by venue immaturity/insecurity, not
+by DeepStack.** Near-term, operate AMM LP + inventory on **Bitflow XYK spot** (safe) behind
+the oracle-sanity + kill-switch layer, and *monitor* for a venue to open up: a Velar perps
+post-exploit re-audit, **ALEX2** maturing + opening, HODLMM exposing third-party strategies,
+or a new clean perp/orderbook venue. Order-book MM on Stacks is **relationship-gated**
+(whitelisting/partnership), so treat it as BD + monitoring, not an immediate build.
+
+## The order-book quoting module (DeepStack's actual edge — venue-gated)
+
+Built once a safe, open venue exists (currently none — see above). Applies to **Velar
+perps once un-gated** or **ALEX2 once live/audited/open**:
 
 - Two-sided quotes around a fair price with a target spread; inventory/skew management;
   for perps, funding-rate awareness and delta control.
@@ -72,8 +91,10 @@ daily-loss cap) and runs paper/observe until risk controls are proven.
 
 - **Phase A — Bitflow spot, hardened.** Extend the live agent; ship the oracle-sanity +
   kill-switch module. Lowest risk, immediate.
-- **Phase B — ALEX order-book quoting.** Prove the two-sided quoting edge on a real
-  order book, cross-venue inventory with Bitflow. *(No perp/leverage risk.)*
+- **Phase B — order-book quoting, when a venue opens (BD + monitoring).** No safe, open
+  order-book venue exists today (ALEX = exploited+permissioned; Velar perps = gated;
+  HODLMM = closed). Monitor ALEX2, Velar remediation, and HODLMM; build the relationship/
+  whitelist path. Build the quoting module only once a venue is safe AND open.
 - **Phase C — Velar perps, gated.** Only after the Stacks deployment's remediation is
   confirmed: small, risk-limited perp market-making with the kill-switch in front.
 
