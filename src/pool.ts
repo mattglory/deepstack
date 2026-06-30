@@ -18,6 +18,7 @@ export interface PoolState {
   protocolFeeBps: number; // fee that accrues to the protocol, in basis points
   feeBps: number; // total swap fee (provider + protocol), in basis points
   midXinY: number; // price of 1 X in Y, from constant-product reserves
+  poolActive: boolean; // pool-status flag — false means the venue paused the pool
 }
 
 export async function getPoolState(principal: string): Promise<PoolState> {
@@ -55,5 +56,6 @@ export async function getPoolState(principal: string): Promise<PoolState> {
     protocolFeeBps,
     feeBps,
     midXinY: yReserve / xReserve, // constant-product spot price
+    poolActive: Boolean(tuple["pool-status"]?.value),
   };
 }

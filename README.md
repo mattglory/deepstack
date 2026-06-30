@@ -56,6 +56,7 @@ npm run m1:dryrun  # build+sign an add-liquidity tx locally, NOT broadcast (M1)
 npm run m1:agent   # agent loop: LP allocation + rebalance (observe)
                    #   TARGET_LP_FRACTION=0.3 enables liquidity provision (earns fees)
                    #   add --live --yes-mainnet to execute (guarded, capped, mainnet-only)
+npm run m1:safety  # oracle-sanity + kill-switch check (pool mid vs independent price)
 npm run typecheck  # tsc --noEmit
 ```
 

@@ -36,6 +36,7 @@ import {
   type AgentParams,
 } from "./agent.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
+import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 
 const POOL_ID = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1";
 const CAP_STX_USTX = 25_000_000n;
@@ -80,15 +81,18 @@ interface Snapshot {
   lpBalanceBase: bigint;
   lpValueStx: number;
   portfolioStx: number;
+  externalMid: number | null;
+  poolActive: boolean;
   market: MarketState;
 }
 
 async function readMarket(w: Wallet): Promise<Snapshot> {
-  const [pool, stx, sbtc, lp] = await Promise.all([
+  const [pool, stx, sbtc, lp, ext] = await Promise.all([
     getPoolState(POOL_ID),
     getStxBalance(w.address, w.network),
     getSbtcBalance(w.address, w.network),
     getLpBalance(w.address, w.network),
+    getExternalMid(),
   ]);
   let lpValueStx = 0;
   if (lp > 0n) {
@@ -106,6 +110,8 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     lpBalanceBase: lp,
     lpValueStx,
     portfolioStx,
+    externalMid: ext?.midXinY ?? null,
+    poolActive: pool.poolActive,
     market: { midXinY: pool.midXinY, stxFraction, drift: stxFraction - 0.5, totalStx: freeValue },
   };
 }
@@ -127,7 +133,13 @@ async function broadcastResult(built: BuiltTx): Promise<boolean> {
 }
 
 // Returns true if a live trade executed.
-async function act(w: Wallet, s: Snapshot, params: AgentParams, canTrade: boolean): Promise<boolean> {
+async function act(
+  w: Wallet,
+  s: Snapshot,
+  params: AgentParams,
+  canTrade: boolean,
+  sessionStartStx: number,
+): Promise<boolean> {
   const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
   console.log(`\n[${ts}] mid 1 sBTC = ${s.midXinY.toLocaleString()} STX`);
   console.log(
@@ -135,6 +147,27 @@ async function act(w: Wallet, s: Snapshot, params: AgentParams, canTrade: boolea
       `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueStx.toFixed(1)} STX) | ` +
       `portfolio ~${s.portfolioStx.toFixed(1)} STX`,
   );
+
+  // Oracle-sanity + kill-switch gate — never trade on a manipulated/paused venue.
+  const safety = assessSafety(
+    {
+      poolMid: s.midXinY,
+      externalMid: s.externalMid,
+      poolActive: s.poolActive,
+      portfolioStx: s.portfolioStx,
+      sessionStartStx,
+    },
+    defaultSafetyParams(),
+  );
+  const div = safety.divergenceBps != null ? `${(safety.divergenceBps / 100).toFixed(2)}%` : "n/a";
+  console.log(
+    `  safety: external ${s.externalMid ? s.externalMid.toLocaleString() : "n/a"} STX/sBTC | divergence ${div} | pool ${s.poolActive ? "active" : "PAUSED"}`,
+  );
+  if (!safety.safe) {
+    console.log(`  ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no trading this cycle)`);
+    return false;
+  }
+
   const opts = {
     senderKey: w.key,
     network: "mainnet" as const,
@@ -216,15 +249,17 @@ async function main() {
 
   let trades = 0;
   let i = 0;
+  let sessionStartStx = 0;
   const step = async () => {
     const snap = await readMarket(w);
+    if (sessionStartStx === 0) sessionStartStx = snap.portfolioStx; // drawdown baseline
     if (i % f.tuneEvery === 0) {
       const tuned = await tuneParams(snap.market, defaultParams());
       params = tuned;
       printTune(tuned);
     }
     i++;
-    if (await act(w, snap, params, live && trades < f.maxTrades)) trades++;
+    if (await act(w, snap, params, live && trades < f.maxTrades, sessionStartStx)) trades++;
   };
 
   await step();
