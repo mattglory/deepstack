@@ -9,28 +9,29 @@
 // Fail-closed: if the external reference is missing, do not trade.
 
 import { existsSync } from "node:fs";
+import { activePool } from "./contracts.js";
 
 export interface ExternalMid {
-  btcUsd: number;
-  stxUsd: number;
-  midXinY: number; // implied STX per sBTC = btcUsd / stxUsd (sBTC ≈ BTC)
+  xUsd: number;
+  yUsd: number;
+  midXinY: number; // implied y per x = xUsd / yUsd
 }
 
-// Independent reference price (CoinGecko, public, no key). Returns null on failure.
+// Independent reference price (CoinGecko, public, no key) for the active pair's
+// two tokens. Returns null on failure. Fail-closed handling lives in assessSafety.
 export async function getExternalMid(): Promise<ExternalMid | null> {
   try {
+    const p = activePool();
+    const ids = [p.x.coingecko, p.y.coingecko];
     const r = await fetch(
-      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,blockstack&vs_currencies=usd",
+      `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd`,
     );
     if (!r.ok) return null;
-    const j = (await r.json()) as {
-      bitcoin?: { usd?: number };
-      blockstack?: { usd?: number };
-    };
-    const btcUsd = Number(j.bitcoin?.usd);
-    const stxUsd = Number(j.blockstack?.usd);
-    if (!(btcUsd > 0 && stxUsd > 0)) return null;
-    return { btcUsd, stxUsd, midXinY: btcUsd / stxUsd };
+    const j = (await r.json()) as Record<string, { usd?: number }>;
+    const xUsd = Number(j[p.x.coingecko]?.usd);
+    const yUsd = Number(j[p.y.coingecko]?.usd);
+    if (!(xUsd > 0 && yUsd > 0)) return null;
+    return { xUsd, yUsd, midXinY: xUsd / yUsd };
   } catch {
     return null;
   }

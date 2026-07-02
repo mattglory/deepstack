@@ -14,11 +14,11 @@
 
 import { getWallet, getStxBalance } from "./wallet.js";
 import { buildSwapYForX, buildSwapXForY, type BuiltTx } from "./actions.js";
-import { SBTC, STX } from "./contracts.js";
+import { activePool } from "./contracts.js";
 
-// Hard ceilings — a smoke is meant to be tiny.
-const CAP_STX_USTX = 25_000_000n; // 25 STX
-const CAP_SBTC_BASE = 50_000n; // 0.0005 sBTC
+// Hard base-unit ceilings — a smoke is meant to be tiny (conservative for any pair).
+const CAP_Y_BASE = 25_000_000n;
+const CAP_X_BASE = 50_000n;
 const FEE_USTX = 50_000n; // 0.05 STX
 
 function parseArgs() {
@@ -42,9 +42,10 @@ async function main() {
   const amt = Number(amount);
   if (!(amt > 0)) throw new Error(`bad amount: ${amount}`);
 
-  console.log(`network: mainnet\naddress: ${w.address}`);
+  const { x, y, poolSymbol } = activePool();
+  console.log(`pair: ${poolSymbol}\nnetwork: mainnet\naddress: ${w.address}`);
   const bal = await getStxBalance(w.address, w.network);
-  console.log(`STX balance: ${bal.stx} STX\n`);
+  console.log(`native STX balance: ${bal.stx} STX\n`);
 
   let built: BuiltTx;
   const opts = {
@@ -55,15 +56,16 @@ async function main() {
   };
 
   if (action === "swap-y-for-x") {
-    const yAmount = BigInt(Math.round(amt * 10 ** STX.decimals));
-    if (yAmount > CAP_STX_USTX) throw new Error(`amount exceeds cap (${CAP_STX_USTX} uSTX)`);
-    if (bal.microStx < yAmount + FEE_USTX)
-      throw new Error("insufficient STX for amount + fee");
+    const yAmount = BigInt(Math.round(amt * 10 ** y.decimals));
+    if (yAmount > CAP_Y_BASE) throw new Error(`amount exceeds cap (${CAP_Y_BASE} base ${y.symbol})`);
+    const need = FEE_USTX + (y.native ? yAmount : 0n);
+    if (bal.microStx < need) throw new Error("insufficient native STX for amount + fee");
     built = await buildSwapYForX(yAmount, opts);
   } else if (action === "swap-x-for-y") {
-    const xAmount = BigInt(Math.round(amt * 10 ** SBTC.decimals));
-    if (xAmount > CAP_SBTC_BASE) throw new Error(`amount exceeds cap (${CAP_SBTC_BASE} base sBTC)`);
-    if (bal.microStx < FEE_USTX) throw new Error("insufficient STX for fee");
+    const xAmount = BigInt(Math.round(amt * 10 ** x.decimals));
+    if (xAmount > CAP_X_BASE) throw new Error(`amount exceeds cap (${CAP_X_BASE} base ${x.symbol})`);
+    const need = FEE_USTX + (x.native ? xAmount : 0n);
+    if (bal.microStx < need) throw new Error("insufficient native STX for amount + fee");
     built = await buildSwapXForY(xAmount, opts);
   } else {
     throw new Error(`unknown action: ${action}`);

@@ -1,15 +1,11 @@
-// Write-side transaction builders for the sBTC-STX pool.
+// Write-side transaction builders for the active XYK pair (see contracts.ts).
 //
-// SAFETY: default mode is DRY-RUN — we build and sign with an ephemeral random
-// key and DO NOT broadcast. Nothing touches mainnet and no real key is needed.
-// Broadcasting requires both `broadcast: true` AND a real `senderKey`, and is
-// the only path that moves funds. Every write uses PostConditionMode.Deny.
-//
-// On post-conditions: the INPUT leg (what the sender sends) is certain. The
-// RECEIVE/burn legs are asserted against the CORE contract and marked
-// "(verify on testnet)" — the exact sending principal (core vs pool) and LP
-// burn semantics must be confirmed before broadcasting. Because Deny mode fails
-// CLOSED, a wrong receive post-condition simply aborts the tx — no funds at risk.
+// SAFETY: default mode is DRY-RUN — build + sign with an ephemeral key, no broadcast.
+// Broadcasting requires broadcast:true AND a real senderKey. Post-conditions bound
+// what the SENDER sends (input caps, so it can never overspend); the contract's on-chain
+// min-* args bound what is received. Mode is Allow so the pool's internal transfers
+// (output leg, protocol fee, LP mint) don't trip a Deny abort. Post-conditions branch on
+// token.native (native STX -> .ustx(), SIP-010 -> .ft()), so this works for ANY pair.
 
 import {
   makeContractCall,
@@ -24,7 +20,7 @@ import {
   type ClarityValue,
   type PostCondition,
 } from "@stacks/transactions";
-import { CORE, POOL, SBTC, STX, POOL_LP, contractId } from "./contracts.js";
+import { CORE, activePool, contractId, tokenId, type Token } from "./contracts.js";
 import {
   getAddLiquidityQuote,
   getSwapXForYQuote,
@@ -35,12 +31,12 @@ import {
 } from "./quotes.js";
 
 export interface BuildOpts {
-  senderKey?: string; // real key only needed to broadcast
-  network?: "mainnet" | "testnet"; // default mainnet (pool is mainnet-only)
-  slippageBps?: number; // default 100 = 1%
-  broadcast?: boolean; // default false (dry-run)
-  feeMicroStx?: bigint; // explicit fee; auto-defaults differ for dry-run vs broadcast
-  nonce?: bigint; // fetched automatically when broadcasting if omitted
+  senderKey?: string;
+  network?: "mainnet" | "testnet";
+  slippageBps?: number;
+  broadcast?: boolean;
+  feeMicroStx?: bigint;
+  nonce?: bigint;
 }
 
 export interface BuiltTx {
@@ -48,28 +44,33 @@ export interface BuiltTx {
   sender: string;
   dryRun: boolean;
   details: Record<string, string>;
-  postConditions: string[]; // human-readable
+  postConditions: string[];
   serializedTx: string;
   broadcast?: { txid?: string; error?: string };
 }
 
-const traitArgs = () => [
-  Cl.contractPrincipal(POOL.address, POOL.name),
-  Cl.contractPrincipal(SBTC.address, SBTC.name),
-  Cl.contractPrincipal(STX.address, STX.name),
-];
+const traitArgs = () => {
+  const p = activePool();
+  return [
+    Cl.contractPrincipal(p.pool.address, p.pool.name),
+    Cl.contractPrincipal(p.x.address, p.x.name),
+    Cl.contractPrincipal(p.y.address, p.y.name),
+  ];
+};
 
-const human = (amount: bigint, decimals: number) =>
-  Number(amount) / 10 ** decimals;
+const human = (amount: bigint, decimals: number) => Number(amount) / 10 ** decimals;
 
-// Safety model for AMM ops: we bound the assets the SENDER sends with strict
-// post-conditions (so the user can never overspend), and rely on the contract's
-// on-chain min-* output args to bound what is received. Mode is Allow so the
-// pool's internal transfers (sBTC/STX out, protocol fee, LP mint) don't trip a
-// Deny abort — the input-cap PCs still fully protect the sender's funds.
+// "sender sends ≤ amount of token" — native STX vs SIP-010 FT.
+function sendCapPC(sender: string, amount: bigint, t: Token): PostCondition {
+  return t.native
+    ? Pc.principal(sender).willSendLte(amount).ustx()
+    : Pc.principal(sender).willSendLte(amount).ft(tokenId(t), t.asset!);
+}
+const humanLeg = (amount: bigint, t: Token) =>
+  `${human(amount, t.decimals)} ${t.symbol}${t.native ? " (native)" : ""}`;
+
 const MODE = PostConditionMode.Allow;
 
-// Shared: sign locally (ephemeral key in dry-run), serialize, optionally broadcast.
 async function finalize(
   action: string,
   functionName: string,
@@ -84,7 +85,6 @@ async function finalize(
   const sender = getAddressFromPrivateKey(key, network);
   const { conditions, human: pcHuman } = pcFor(sender);
 
-  // Real nonce/fee only matter when broadcasting; dry-run stays hermetic.
   const nonce =
     opts.nonce ?? (broadcasting ? await fetchNonce({ address: sender, network }) : 0n);
   const fee = opts.feeMicroStx ?? (broadcasting ? 50_000n : 10_000n);
@@ -122,11 +122,9 @@ async function finalize(
   return built;
 }
 
-// add-liquidity(pool, x, y, x-amount, min-dlp)
-export async function buildAddLiquidity(
-  xAmount: bigint,
-  opts: BuildOpts = {},
-): Promise<BuiltTx> {
+// add-liquidity(pool, x, y, x-amount, min-dlp) — provide xAmount of x + paired y
+export async function buildAddLiquidity(xAmount: bigint, opts: BuildOpts = {}): Promise<BuiltTx> {
+  const { x, y } = activePool();
   const slip = opts.slippageBps ?? 100;
   const q = await getAddLiquidityQuote(xAmount);
   const minDlp = minusSlippage(q.dlp, slip);
@@ -137,33 +135,28 @@ export async function buildAddLiquidity(
     "add-liquidity",
     [...traitArgs(), Cl.uint(xAmount), Cl.uint(minDlp)],
     (sender) => ({
-      conditions: [
-        Pc.principal(sender).willSendLte(xAmount).ft(contractId(SBTC), SBTC.asset),
-        Pc.principal(sender).willSendLte(maxY).ustx(),
-      ],
+      conditions: [sendCapPC(sender, xAmount, x), sendCapPC(sender, maxY, y)],
       human: [
-        `sender sends ≤ ${human(xAmount, SBTC.decimals)} sBTC`,
-        `sender sends ≤ ${human(maxY, STX.decimals)} STX (native)`,
+        `sender sends ≤ ${humanLeg(xAmount, x)}`,
+        `sender sends ≤ ${humanLeg(maxY, y)}`,
         `(LP received bounded on-chain by min-dlp=${minDlp})`,
       ],
     }),
     () => ({
-      xAmount_sBTC: `${human(xAmount, SBTC.decimals)} (${xAmount} base)`,
+      [`xAmount_${x.symbol}`]: `${human(xAmount, x.decimals)} (${xAmount} base)`,
       expectedDlp: q.dlp.toString(),
       minDlp_afterSlippage: minDlp.toString(),
-      pairedSTX: `${human(q.yAmount, STX.decimals)} (${q.yAmount} uSTX)`,
-      maxSTX_afterSlippage: `${human(maxY, STX.decimals)}`,
+      [`paired_${y.symbol}`]: `${human(q.yAmount, y.decimals)} (${q.yAmount} base)`,
+      [`max_${y.symbol}_afterSlippage`]: `${human(maxY, y.decimals)}`,
       slippageBps: String(slip),
     }),
     opts,
   );
 }
 
-// swap-x-for-y(pool, x, y, x-amount, min-dy) — sell sBTC for STX
-export async function buildSwapXForY(
-  xAmount: bigint,
-  opts: BuildOpts = {},
-): Promise<BuiltTx> {
+// swap-x-for-y(pool, x, y, x-amount, min-dy) — sell x for y
+export async function buildSwapXForY(xAmount: bigint, opts: BuildOpts = {}): Promise<BuiltTx> {
+  const { x, y } = activePool();
   const slip = opts.slippageBps ?? 100;
   const dy = await getSwapXForYQuote(xAmount);
   const minDy = minusSlippage(dy, slip);
@@ -173,29 +166,22 @@ export async function buildSwapXForY(
     "swap-x-for-y",
     [...traitArgs(), Cl.uint(xAmount), Cl.uint(minDy)],
     (sender) => ({
-      conditions: [
-        Pc.principal(sender).willSendLte(xAmount).ft(contractId(SBTC), SBTC.asset),
-      ],
-      human: [
-        `sender sends ≤ ${human(xAmount, SBTC.decimals)} sBTC`,
-        `(STX received bounded on-chain by min-dy=${minDy})`,
-      ],
+      conditions: [sendCapPC(sender, xAmount, x)],
+      human: [`sender sends ≤ ${humanLeg(xAmount, x)}`, `(${y.symbol} received bounded on-chain by min-dy=${minDy})`],
     }),
     () => ({
-      xAmount_sBTC: `${human(xAmount, SBTC.decimals)} (${xAmount} base)`,
-      expectedSTXout: `${human(dy, STX.decimals)} (${dy} uSTX)`,
-      minSTXout_afterSlippage: `${human(minDy, STX.decimals)}`,
+      [`xAmount_${x.symbol}`]: `${human(xAmount, x.decimals)} (${xAmount} base)`,
+      [`expected_${y.symbol}_out`]: `${human(dy, y.decimals)} (${dy} base)`,
+      [`min_${y.symbol}_afterSlippage`]: `${human(minDy, y.decimals)}`,
       slippageBps: String(slip),
     }),
     opts,
   );
 }
 
-// swap-y-for-x(pool, x, y, y-amount, min-dx) — sell STX for sBTC (cheapest smoke)
-export async function buildSwapYForX(
-  yAmount: bigint,
-  opts: BuildOpts = {},
-): Promise<BuiltTx> {
+// swap-y-for-x(pool, x, y, y-amount, min-dx) — sell y for x
+export async function buildSwapYForX(yAmount: bigint, opts: BuildOpts = {}): Promise<BuiltTx> {
+  const { x, y } = activePool();
   const slip = opts.slippageBps ?? 100;
   const dx = await getSwapYForXQuote(yAmount);
   const minDx = minusSlippage(dx, slip);
@@ -205,16 +191,13 @@ export async function buildSwapYForX(
     "swap-y-for-x",
     [...traitArgs(), Cl.uint(yAmount), Cl.uint(minDx)],
     (sender) => ({
-      conditions: [Pc.principal(sender).willSendLte(yAmount).ustx()],
-      human: [
-        `sender sends ≤ ${human(yAmount, STX.decimals)} STX (native)`,
-        `(sBTC received bounded on-chain by min-dx=${minDx})`,
-      ],
+      conditions: [sendCapPC(sender, yAmount, y)],
+      human: [`sender sends ≤ ${humanLeg(yAmount, y)}`, `(${x.symbol} received bounded on-chain by min-dx=${minDx})`],
     }),
     () => ({
-      yAmount_STX: `${human(yAmount, STX.decimals)} (${yAmount} uSTX)`,
-      expected_sBTCout: `${human(dx, SBTC.decimals)} (${dx} base)`,
-      min_sBTCout_afterSlippage: `${human(minDx, SBTC.decimals)}`,
+      [`yAmount_${y.symbol}`]: `${human(yAmount, y.decimals)} (${yAmount} base)`,
+      [`expected_${x.symbol}_out`]: `${human(dx, x.decimals)} (${dx} base)`,
+      [`min_${x.symbol}_afterSlippage`]: `${human(minDx, x.decimals)}`,
       slippageBps: String(slip),
     }),
     opts,
@@ -222,10 +205,8 @@ export async function buildSwapYForX(
 }
 
 // withdraw-liquidity(pool, x, y, amount, min-x-amount, min-y-amount)
-export async function buildWithdrawLiquidity(
-  lpAmount: bigint,
-  opts: BuildOpts = {},
-): Promise<BuiltTx> {
+export async function buildWithdrawLiquidity(lpAmount: bigint, opts: BuildOpts = {}): Promise<BuiltTx> {
+  const { x, y, lp } = activePool();
   const slip = opts.slippageBps ?? 100;
   const q = await getWithdrawQuote(lpAmount);
   const minX = minusSlippage(q.xOut, slip);
@@ -236,21 +217,16 @@ export async function buildWithdrawLiquidity(
     "withdraw-liquidity",
     [...traitArgs(), Cl.uint(lpAmount), Cl.uint(minX), Cl.uint(minY)],
     (sender) => ({
-      conditions: [
-        // burn leg: LP tokens leave the sender
-        Pc.principal(sender).willSendLte(lpAmount).ft(contractId(POOL_LP), POOL_LP.asset),
-      ],
+      conditions: [Pc.principal(sender).willSendLte(lpAmount).ft(contractId(lp), lp.asset)],
       human: [
-        `sender sends ≤ ${human(lpAmount, POOL_LP.decimals)} LP (${POOL_LP.asset})`,
-        `(sBTC/STX received bounded on-chain by min-x=${minX}, min-y=${minY})`,
+        `sender sends ≤ ${human(lpAmount, lp.decimals)} LP (${lp.asset})`,
+        `(${x.symbol}/${y.symbol} received bounded on-chain by min-x=${minX}, min-y=${minY})`,
       ],
     }),
     () => ({
-      lpAmount: `${human(lpAmount, POOL_LP.decimals)} (${lpAmount} base)`,
-      expected_sBTCout: `${human(q.xOut, SBTC.decimals)} (${q.xOut} base)`,
-      expected_STXout: `${human(q.yOut, STX.decimals)} (${q.yOut} uSTX)`,
-      minX_afterSlippage: `${human(minX, SBTC.decimals)} sBTC`,
-      minY_afterSlippage: `${human(minY, STX.decimals)} STX`,
+      lpAmount: `${human(lpAmount, lp.decimals)} (${lpAmount} base)`,
+      [`expected_${x.symbol}_out`]: `${human(q.xOut, x.decimals)} (${q.xOut} base)`,
+      [`expected_${y.symbol}_out`]: `${human(q.yOut, y.decimals)} (${q.yOut} base)`,
       slippageBps: String(slip),
     }),
     opts,

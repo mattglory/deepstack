@@ -58,6 +58,11 @@ npm run m1:agent   # agent loop: LP allocation + rebalance (observe)
                    #   add --live --yes-mainnet to execute (guarded, capped, mainnet-only)
 npm run m1:safety  # oracle-sanity + kill-switch check (pool mid vs independent price)
 npm run typecheck  # tsc --noEmit
+
+# Multi-pair: every command honours PAIR (default sbtc-stx). Adding a pair is a
+# one-entry config change in src/m1/contracts.ts (PAIRS), no code edits.
+PAIR=stx-aeusdc npm run m1:agent      # run the agent on STX-aeUSDC
+PAIR=stx-aeusdc npm run m1:safety     # safety check on STX-aeUSDC
 ```
 
 ### Idle-capital yield (`npm run yield`)

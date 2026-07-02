@@ -3,13 +3,16 @@
 
 import { fetchCallReadOnlyFunction, Cl, cvToJSON } from "@stacks/transactions";
 import { config } from "../config.js";
-import { CORE, POOL, SBTC, STX } from "./contracts.js";
+import { CORE, activePool } from "./contracts.js";
 
-const poolTraitArgs = () => [
-  Cl.contractPrincipal(POOL.address, POOL.name),
-  Cl.contractPrincipal(SBTC.address, SBTC.name),
-  Cl.contractPrincipal(STX.address, STX.name),
-];
+const poolTraitArgs = () => {
+  const p = activePool();
+  return [
+    Cl.contractPrincipal(p.pool.address, p.pool.name),
+    Cl.contractPrincipal(p.x.address, p.x.name),
+    Cl.contractPrincipal(p.y.address, p.y.name),
+  ];
+};
 
 async function callCore(functionName: string, extraArgs: ReturnType<typeof Cl.uint>[]) {
   const cv = await fetchCallReadOnlyFunction({
@@ -54,9 +57,10 @@ export async function getPoolRaw(): Promise<{
   yBalance: bigint;
   totalShares: bigint;
 }> {
+  const p = activePool();
   const cv = await fetchCallReadOnlyFunction({
-    contractAddress: POOL.address,
-    contractName: POOL.name,
+    contractAddress: p.pool.address,
+    contractName: p.pool.name,
     functionName: "get-pool",
     functionArgs: [],
     network: "mainnet",

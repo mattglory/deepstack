@@ -8,7 +8,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { getAddressFromPrivateKey } from "@stacks/transactions";
 import { generateWallet, generateNewAccount } from "@stacks/wallet-sdk";
-import { SBTC, POOL_LP, contractId } from "./contracts.js";
+import { activePool, contractId, tokenId, type Token } from "./contracts.js";
 
 // Minimal zero-dependency .env loader (only sets vars not already in env).
 export function loadDotenv(path = ".env"): void {
@@ -92,30 +92,26 @@ export async function getStxBalance(
   return { stx: Number(micro) / 1e6, microStx: micro };
 }
 
-// sBTC balance (base units, 8 dp). Reads the SIP-010 FT entry from the balances API.
-export async function getSbtcBalance(
-  address: string,
-  network: Network,
-): Promise<bigint> {
+async function ftBalance(address: string, network: Network, assetId: string): Promise<bigint> {
   const res = await fetch(`${apiBase(network)}/extended/v1/address/${address}/balances`);
   if (!res.ok) throw new Error(`balance fetch failed: ${res.status}`);
-  const j = (await res.json()) as {
-    fungible_tokens?: Record<string, { balance?: string }>;
-  };
-  const assetId = `${contractId(SBTC)}::${SBTC.asset}`;
+  const j = (await res.json()) as { fungible_tokens?: Record<string, { balance?: string }> };
   return BigInt(j.fungible_tokens?.[assetId]?.balance ?? "0");
 }
 
-// LP token (pool-token) balance, base units (6 dp) — the agent's liquidity position.
-export async function getLpBalance(
+// Balance of any pool token (base units). Native STX -> the native balance;
+// SIP-010 -> the FT balance. Works for either leg of any pair.
+export async function getTokenBalance(
   address: string,
   network: Network,
+  token: Token,
 ): Promise<bigint> {
-  const res = await fetch(`${apiBase(network)}/extended/v1/address/${address}/balances`);
-  if (!res.ok) throw new Error(`balance fetch failed: ${res.status}`);
-  const j = (await res.json()) as {
-    fungible_tokens?: Record<string, { balance?: string }>;
-  };
-  const assetId = `${contractId(POOL_LP)}::${POOL_LP.asset}`;
-  return BigInt(j.fungible_tokens?.[assetId]?.balance ?? "0");
+  if (token.native) return (await getStxBalance(address, network)).microStx;
+  return ftBalance(address, network, `${tokenId(token)}::${token.asset}`);
+}
+
+// LP token balance (base units) for the active pair.
+export async function getLpBalance(address: string, network: Network): Promise<bigint> {
+  const lp = activePool().lp;
+  return ftBalance(address, network, `${contractId(lp)}::${lp.asset}`);
 }

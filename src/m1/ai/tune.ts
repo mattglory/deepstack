@@ -13,9 +13,9 @@ import type { AgentParams } from "../agent.js";
 
 export interface MarketState {
   midXinY: number;
-  stxFraction: number;
+  yFraction: number; // value share held in the quote (y) asset
   drift: number;
-  totalStx: number;
+  totalY: number; // total free-inventory value in y
 }
 
 export interface TunedParams extends AgentParams {
@@ -48,16 +48,16 @@ export async function tuneParams(
 
   try {
     const prompt = [
-      "You tune a market-making agent on a Stacks sBTC/STX constant-product AMM.",
-      "The agent holds a target value split between STX and sBTC and rebalances via",
+      "You tune a market-making agent on a Stacks constant-product AMM (x/y pair).",
+      "The agent holds a target value split between the two assets and rebalances via",
       "swaps when it drifts past a band. Given the state, classify the regime and",
       "suggest parameters. Wider band in choppy/volatile markets (less churn);",
       "tighter band + lower slippage in calm markets.",
       "",
-      `State: mid=${market.midXinY.toFixed(0)} STX/sBTC; STX value share=${(market.stxFraction * 100).toFixed(1)}%; drift from 50/50=${(market.drift * 100).toFixed(1)}%; inventory≈${market.totalStx.toFixed(0)} STX.`,
-      `Current params: targetStxFraction=${base.targetStxFraction}, rebalanceBandBps=${base.rebalanceBandBps}, slippageBps=${base.slippageBps}.`,
+      `State: mid=${market.midXinY.toFixed(4)} (y per x); quote(y) value share=${(market.yFraction * 100).toFixed(1)}%; drift from 50/50=${(market.drift * 100).toFixed(1)}%; inventory≈${market.totalY.toFixed(2)} (y).`,
+      `Current params: targetYFraction=${base.targetYFraction}, rebalanceBandBps=${base.rebalanceBandBps}, slippageBps=${base.slippageBps}.`,
       "",
-      'Respond with ONLY JSON: {"regime":"...","rationale":"one short sentence","targetStxFraction":0.5,"rebalanceBandBps":500,"slippageBps":100}',
+      'Respond with ONLY JSON: {"regime":"...","rationale":"one short sentence","targetYFraction":0.5,"rebalanceBandBps":500,"slippageBps":100}',
     ].join("\n");
 
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -75,7 +75,7 @@ export async function tuneParams(
 
     return {
       ...base, // keeps the hard caps (maxSwap*) — AI cannot change these
-      targetStxFraction: clamp(Number(p.targetStxFraction ?? base.targetStxFraction), 0.3, 0.7),
+      targetYFraction: clamp(Number(p.targetYFraction ?? base.targetYFraction), 0.3, 0.7),
       rebalanceBandBps: Math.round(
         clamp(Number(p.rebalanceBandBps ?? base.rebalanceBandBps), 100, 2000),
       ),

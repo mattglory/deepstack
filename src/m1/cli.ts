@@ -11,6 +11,7 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
+import { activePool } from "./contracts.js";
 
 function print(b: BuiltTx) {
   console.log(`\n── ${b.action} ──`);
@@ -24,10 +25,11 @@ function print(b: BuiltTx) {
 }
 
 async function main() {
-  console.log("=== DeepStack M1 — write-side DRY RUN (no broadcast) ===");
+  const cfg = activePool();
+  console.log(`=== DeepStack M1 [${cfg.poolSymbol}] — write-side DRY RUN (no broadcast) ===`);
 
-  print(await buildAddLiquidity(100_000n)); // 0.001 sBTC
-  print(await buildSwapXForY(100_000n)); // sell 0.001 sBTC for STX
+  print(await buildAddLiquidity(100_000n)); // small x amount (base units)
+  print(await buildSwapXForY(100_000n)); // sell a small x amount for y
   print(await buildWithdrawLiquidity(1_000_000n)); // burn 1.0 LP
 
   console.log("\n✓ all built and signed locally; NOTHING broadcast.");

@@ -1,26 +1,19 @@
 // DeepStack agent loop — read → (AI-tune) → decide → (optionally) act.
+// Pair-agnostic: operates on whichever pair PAIR selects (default sbtc-stx).
 //
-// Each cycle: (1) if LP is enabled (TARGET_LP_FRACTION>0), move toward the target
-// liquidity allocation via add/withdraw — this is what EARNS the pool fee; then
-// (2) rebalance free inventory toward the target sBTC/STX split via swaps.
-//
-// OBSERVE by default. LIVE execution requires --live AND --yes-mainnet,
-// mainnet-only, hard caps, balance checks, and per-tx confirmation (no
-// double-trading on stale balances), capped at --max-trades per run.
+// Each cycle: safety gate → (if LP enabled) move toward target LP allocation →
+// else rebalance free inventory toward the target x/y value split via swaps.
+// OBSERVE by default; LIVE requires --live AND --yes-mainnet, mainnet-only, caps,
+// fee headroom, and per-tx confirmation, capped at --max-trades per run.
 //
 //   npm run m1:agent
-//   npm run m1:agent -- --interval 60
+//   PAIR=stx-aeusdc npm run m1:agent -- --interval 60
 //   TARGET_LP_FRACTION=0.3 npm run m1:agent -- --live --yes-mainnet
 
-import {
-  getWallet,
-  getStxBalance,
-  getSbtcBalance,
-  getLpBalance,
-  type Wallet,
-} from "./wallet.js";
+import { getWallet, getStxBalance, getTokenBalance, getLpBalance, type Wallet } from "./wallet.js";
 import { getPoolState } from "../pool.js";
 import { getWithdrawQuote } from "./quotes.js";
+import { activePool, contractId } from "./contracts.js";
 import {
   buildSwapYForX,
   buildSwapXForY,
@@ -28,21 +21,11 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import {
-  decide,
-  decideLp,
-  defaultParams,
-  type Inventory,
-  type AgentParams,
-} from "./agent.js";
+import { decide, decideLp, defaultParams, type Inventory, type AgentParams } from "./agent.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 
-const POOL_ID = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1";
-const CAP_STX_USTX = 25_000_000n;
-const CAP_SBTC_BASE = 50_000n;
 const FEE_USTX = 50_000n;
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const lpH = (b: bigint) => Number(b) / 1e6;
 
@@ -75,44 +58,50 @@ async function waitForTx(txid: string) {
 
 interface Snapshot {
   midXinY: number;
-  inv: Inventory; // free wallet inventory
-  stxHuman: number;
-  sbtcHuman: number;
+  inv: Inventory;
+  xHuman: number;
+  yHuman: number;
+  nativeStxMicro: bigint;
   lpBalanceBase: bigint;
-  lpValueStx: number;
-  portfolioStx: number;
+  lpValueY: number;
+  portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
   market: MarketState;
 }
 
 async function readMarket(w: Wallet): Promise<Snapshot> {
-  const [pool, stx, sbtc, lp, ext] = await Promise.all([
-    getPoolState(POOL_ID),
-    getStxBalance(w.address, w.network),
-    getSbtcBalance(w.address, w.network),
+  const cfg = activePool();
+  const [pool, xBase, yBase, lp, ext, stx] = await Promise.all([
+    getPoolState(contractId(cfg.pool)),
+    getTokenBalance(w.address, w.network, cfg.x),
+    getTokenBalance(w.address, w.network, cfg.y),
     getLpBalance(w.address, w.network),
     getExternalMid(),
+    getStxBalance(w.address, w.network),
   ]);
-  let lpValueStx = 0;
+  const xH = Number(xBase) / 10 ** cfg.x.decimals;
+  const yH = Number(yBase) / 10 ** cfg.y.decimals;
+  let lpValueY = 0;
   if (lp > 0n) {
     const q = await getWithdrawQuote(lp);
-    lpValueStx = (Number(q.xOut) / 1e8) * pool.midXinY + Number(q.yOut) / 1e6;
+    lpValueY = (Number(q.xOut) / 10 ** cfg.x.decimals) * pool.midXinY + Number(q.yOut) / 10 ** cfg.y.decimals;
   }
-  const freeValue = (Number(sbtc) / 1e8) * pool.midXinY + stx.stx;
-  const portfolioStx = freeValue + lpValueStx;
-  const stxFraction = freeValue > 0 ? stx.stx / freeValue : 0;
+  const freeValueY = xH * pool.midXinY + yH;
+  const portfolioY = freeValueY + lpValueY;
+  const yFraction = freeValueY > 0 ? yH / freeValueY : 0;
   return {
     midXinY: pool.midXinY,
-    inv: { sbtcBase: sbtc, stxMicro: stx.microStx },
-    stxHuman: stx.stx,
-    sbtcHuman: Number(sbtc) / 1e8,
+    inv: { xBase, yBase },
+    xHuman: xH,
+    yHuman: yH,
+    nativeStxMicro: stx.microStx,
     lpBalanceBase: lp,
-    lpValueStx,
-    portfolioStx,
+    lpValueY,
+    portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
-    market: { midXinY: pool.midXinY, stxFraction, drift: stxFraction - 0.5, totalStx: freeValue },
+    market: { midXinY: pool.midXinY, yFraction, drift: yFraction - 0.5, totalY: freeValueY },
   };
 }
 
@@ -132,36 +121,37 @@ async function broadcastResult(built: BuiltTx): Promise<boolean> {
   return res.tx_status === "success";
 }
 
-// Returns true if a live trade executed.
 async function act(
   w: Wallet,
   s: Snapshot,
   params: AgentParams,
   canTrade: boolean,
-  sessionStartStx: number,
+  sessionStart: number,
 ): Promise<boolean> {
+  const cfg = activePool();
+  const { x, y } = cfg;
   const ts = new Date().toISOString().replace("T", " ").slice(0, 19);
-  console.log(`\n[${ts}] mid 1 sBTC = ${s.midXinY.toLocaleString()} STX`);
+  console.log(`\n[${ts}] mid 1 ${x.symbol} = ${s.midXinY.toLocaleString()} ${y.symbol}`);
   console.log(
-    `  free: ${s.sbtcHuman.toFixed(8)} sBTC + ${s.stxHuman} STX | ` +
-      `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueStx.toFixed(1)} STX) | ` +
-      `portfolio ~${s.portfolioStx.toFixed(1)} STX`,
+    `  free: ${s.xHuman} ${x.symbol} + ${s.yHuman} ${y.symbol} | ` +
+      `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueY.toFixed(2)} ${y.symbol}) | ` +
+      `portfolio ~${s.portfolioY.toFixed(2)} ${y.symbol}`,
   );
 
-  // Oracle-sanity + kill-switch gate — never trade on a manipulated/paused venue.
+  // Oracle-sanity + kill-switch gate.
   const safety = assessSafety(
     {
       poolMid: s.midXinY,
       externalMid: s.externalMid,
       poolActive: s.poolActive,
-      portfolioStx: s.portfolioStx,
-      sessionStartStx,
+      portfolioStx: s.portfolioY,
+      sessionStartStx: sessionStart,
     },
     defaultSafetyParams(),
   );
   const div = safety.divergenceBps != null ? `${(safety.divergenceBps / 100).toFixed(2)}%` : "n/a";
   console.log(
-    `  safety: external ${s.externalMid ? s.externalMid.toLocaleString() : "n/a"} STX/sBTC | divergence ${div} | pool ${s.poolActive ? "active" : "PAUSED"}`,
+    `  safety: external ${s.externalMid ? s.externalMid.toLocaleString() : "n/a"} ${y.symbol}/${x.symbol} | divergence ${div} | pool ${s.poolActive ? "active" : "PAUSED"}`,
   );
   if (!safety.safe) {
     console.log(`  ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no trading this cycle)`);
@@ -176,24 +166,26 @@ async function act(
     feeMicroStx: FEE_USTX,
   };
 
-  // 1) Liquidity allocation (earns the pool fee) — only if enabled.
+  // 1) LP allocation (earns the pool fee) — only if enabled.
   if (params.targetLpFraction > 0) {
     const lp = decideLp(
-      s.portfolioStx, s.lpBalanceBase, s.lpValueStx,
-      s.inv.sbtcBase, s.inv.stxMicro, s.midXinY, params,
+      s.portfolioY, s.lpBalanceBase, s.lpValueY,
+      s.inv.xBase, s.inv.yBase, s.midXinY, x.decimals, y.decimals, params,
     );
     if (lp.action !== "none") {
       const detail =
         lp.action === "add-liquidity"
-          ? `${Number(lp.sbtcBase) / 1e8} sBTC (+ paired STX)`
+          ? `${Number(lp.xBase) / 10 ** x.decimals} ${x.symbol} (+ paired ${y.symbol})`
           : `${lpH(lp.lpBase)} LP`;
       console.log(`  LP: ${lp.action}  ${detail}  (${lp.reason})`);
       if (!canTrade) { console.log("  observe mode — not executing"); return false; }
       if (w.network !== "mainnet") return refuse("not mainnet");
+      const nativeNeed = FEE_USTX + (lp.action === "add-liquidity" && x.native ? lp.xBase : 0n);
+      if (s.nativeStxMicro < nativeNeed) return refuse("insufficient native STX for fee");
       console.log("  → broadcasting…");
       const built =
         lp.action === "add-liquidity"
-          ? await buildAddLiquidity(lp.sbtcBase, opts)
+          ? await buildAddLiquidity(lp.xBase, opts)
           : await buildWithdrawLiquidity(lp.lpBase, opts);
       return broadcastResult(built);
     }
@@ -201,22 +193,24 @@ async function act(
   }
 
   // 2) Rebalance free inventory via swap.
-  const d = decide(s.inv, s.midXinY, params);
+  const d = decide(s.inv, s.midXinY, x.decimals, y.decimals, params);
   if (d.action === "none") {
     console.log(`  rebalance: HOLD — ${d.reason}`);
     return false;
   }
   const amt =
     d.action === "swap-y-for-x"
-      ? `${Number(d.amountBase) / 1e6} STX → sBTC`
-      : `${Number(d.amountBase) / 1e8} sBTC → STX`;
+      ? `${Number(d.amountBase) / 10 ** y.decimals} ${y.symbol} → ${x.symbol}`
+      : `${Number(d.amountBase) / 10 ** x.decimals} ${x.symbol} → ${y.symbol}`;
   console.log(`  rebalance: ${d.action}  ${amt}  (${d.reason})`);
   if (!canTrade) { console.log("  observe mode — not executing"); return false; }
   if (w.network !== "mainnet") return refuse("not mainnet");
-  if (d.action === "swap-y-for-x" && d.amountBase > CAP_STX_USTX) return refuse("STX over cap");
-  if (d.action === "swap-x-for-y" && d.amountBase > CAP_SBTC_BASE) return refuse("sBTC over cap");
-  if (d.action === "swap-y-for-x" && s.inv.stxMicro < d.amountBase + FEE_USTX)
-    return refuse("insufficient STX for amount + fee");
+  if (d.action === "swap-y-for-x" && d.amountBase > params.maxSwapYBase) return refuse("y over cap");
+  if (d.action === "swap-x-for-y" && d.amountBase > params.maxSwapXBase) return refuse("x over cap");
+  // native STX fee headroom (+ input if the input leg is native STX)
+  const inputNative = d.action === "swap-y-for-x" ? y.native : x.native;
+  const nativeNeed = FEE_USTX + (inputNative ? d.amountBase : 0n);
+  if (s.nativeStxMicro < nativeNeed) return refuse("insufficient native STX for amount + fee");
   console.log("  → broadcasting…");
   const built =
     d.action === "swap-y-for-x"
@@ -227,7 +221,7 @@ async function act(
 
 function printTune(p: TunedParams) {
   console.log(
-    `  [AI] regime=${p.regime} → band=${p.rebalanceBandBps}bps, target=${p.targetStxFraction}, slip=${p.slippageBps}bps` +
+    `  [AI] regime=${p.regime} → band=${p.rebalanceBandBps}bps, targetY=${p.targetYFraction}, slip=${p.slippageBps}bps` +
       (p.rationale ? `\n       ${p.rationale}` : ""),
   );
 }
@@ -235,13 +229,13 @@ function printTune(p: TunedParams) {
 async function main() {
   const f = flags();
   const live = f.live && f.yesMainnet;
+  const cfg = activePool();
   console.log(
-    `=== DeepStack agent — ${live ? "LIVE (executes real txs)" : "OBSERVE (no broadcasting)"} ===`,
+    `=== DeepStack agent [${cfg.poolSymbol}] — ${live ? "LIVE (executes real txs)" : "OBSERVE (no broadcasting)"} ===`,
   );
   const w = await getWallet();
   console.log(`network: ${w.network} | address: ${w.address}`);
-  if (f.live && !f.yesMainnet)
-    console.log("note: --live needs --yes-mainnet; running observe-only.");
+  if (f.live && !f.yesMainnet) console.log("note: --live needs --yes-mainnet; running observe-only.");
 
   let params: AgentParams = defaultParams();
   if (params.targetLpFraction > 0)
@@ -249,17 +243,17 @@ async function main() {
 
   let trades = 0;
   let i = 0;
-  let sessionStartStx = 0;
+  let sessionStart = 0;
   const step = async () => {
     const snap = await readMarket(w);
-    if (sessionStartStx === 0) sessionStartStx = snap.portfolioStx; // drawdown baseline
+    if (sessionStart === 0) sessionStart = snap.portfolioY;
     if (i % f.tuneEvery === 0) {
       const tuned = await tuneParams(snap.market, defaultParams());
       params = tuned;
       printTune(tuned);
     }
     i++;
-    if (await act(w, snap, params, live && trades < f.maxTrades, sessionStartStx)) trades++;
+    if (await act(w, snap, params, live && trades < f.maxTrades, sessionStart)) trades++;
   };
 
   await step();
