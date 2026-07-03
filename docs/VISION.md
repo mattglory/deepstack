@@ -48,6 +48,31 @@ a single operator's balance.
 | **3. Vaults** | Non-custodial Clarity vaults others deposit into; fee on AUM | the revenue model |
 | **4. Infrastructure** | White-label ALM for Stacks protocols bootstrapping liquidity | the platform |
 
+## The Steer model, precisely (what their live playbook teaches)
+
+Steer's homepage says "vaults." Their actual behaviour on-chain and on X is sharper and
+**two-sided** — and it's the shape DeepStack should grow into:
+
+1. **User-deposit vaults ("Smart Pools").** Anyone deposits; the protocol manages the
+   position and harvests fees; depositors earn, the protocol takes a fee on AUM. This is
+   DeepStack's Stage 3 — the multi-user, scalable revenue model.
+2. **"Powered by" white-label.** DEXs embed Steer as their liquidity-management engine and
+   offer it to *their own* users ("*you don't need to manage liquidity — [DEX] can do it
+   for you, powered by Steer*"). Steer doesn't compete with the venue; it **powers** it.
+
+The lesson for DeepStack: the durable win is being **infrastructure other venues embed**,
+not a standalone competitor. Concretely, this reframes venue BD:
+
+- Venues that already have first-party ALM (Bitflow HODLMM Keepers) → complement, don't
+  compete: offer what their keeper doesn't (perps quoting, cross-venue routing) or just
+  be an independent LP.
+- Venues **without** their own ALM (Velar, ALEX2, newer/smaller Stacks DEXs) → the
+  "powered by DeepStack" pitch fits: be the liquidity engine they embed.
+
+Caveat: both the vault and white-label models require an **audited, multi-tenant** product
+— a direction anchor for after the pilot, not a near-term build. Steer is a mature, funded,
+multi-chain team; this is the shape to grow toward, not a race to match today.
+
 ## Why only on Stacks
 
 Bitcoin-native AMM liquidity to make markets on exists only here (sBTC + Clarity +
@@ -61,4 +86,4 @@ vault model applies directly — and DeepStack will be the ALM already in place.
   is for EVM, for the chain it doesn't cover.
 
 We are not claiming to *be* Steer. We are building it for Bitcoin — and the whitespace
-(no ALM on Stacks, $545M idle sBTC) is real and measurable.
+(no independent / cross-venue ALM on Stacks, $545M idle sBTC) is real and measurable.
