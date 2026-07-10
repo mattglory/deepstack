@@ -75,3 +75,18 @@ Regardless of score, DeepStack always runs its own **oracle-sanity + kill-switch
 
 Re-score whenever a venue changes: a Velar perps re-audit, ALEX2 launch, or HODLMM opening
 to third parties. Keep this table current; it is the single gate for new-venue decisions.
+
+## Active watch triggers (as of Jul 2026)
+
+- **Stacks Q3 Pyth migration** (per the Endowment's June 2026 treasury update). Velar's
+  Feb 2026 exploit was a Pyth price-timestamp gap — a chain-level Pyth migration is the
+  most likely moment Velar's oracle posture changes. When it lands: re-run this checklist
+  on Velar PerpDEX (look for a post-migration Clarity re-audit + pause mechanism).
+- **aeUSDC wind-down** (Bitflow, Jul 2026): STX-aeUSDC pools draining; pair marked
+  deprecated/exit-only in `contracts.ts`. Successor asset is **USDCx** (Circle USDC via
+  xReserve). **No meaningful STX-USDCx pool exists yet** ($<500 dust) — when a real
+  STX-USDCx XYK pool launches, vet it here and add to `PAIRS`.
+- **ALEX2 orderbook** — if/when it launches audited + open, score it fresh (v1 verdict
+  does not carry over).
+- **PoX-5 / Bitcoin Staking launch (Q3)** — expected sBTC inflow; not a venue trigger but
+  raises the value of sBTC-pair depth (thesis tailwind).

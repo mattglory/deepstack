@@ -24,6 +24,7 @@ import {
 import { decide, decideLp, defaultParams, type Inventory, type AgentParams } from "./agent.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
+import { recordSample } from "./metrics.js";
 
 const FEE_USTX = 50_000n;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -127,6 +128,7 @@ async function act(
   params: AgentParams,
   canTrade: boolean,
   sessionStart: number,
+  intervalSec: number,
 ): Promise<boolean> {
   const cfg = activePool();
   const { x, y } = cfg;
@@ -153,6 +155,18 @@ async function act(
   console.log(
     `  safety: external ${s.externalMid ? s.externalMid.toLocaleString() : "n/a"} ${y.symbol}/${x.symbol} | divergence ${div} | pool ${s.poolActive ? "active" : "PAUSED"}`,
   );
+
+  // Pilot evidence trail: heartbeat + mid + inventory (see metrics.ts).
+  recordSample(cfg.key, w.address, intervalSec, {
+    t: ts.replace(" ", "T") + "Z",
+    mid: s.midXinY,
+    ext: s.externalMid,
+    xBase: s.inv.xBase.toString(),
+    yBase: s.inv.yBase.toString(),
+    lpValueY: s.lpValueY,
+    portfolioY: s.portfolioY,
+    safe: safety.safe,
+  });
   if (!safety.safe) {
     console.log(`  ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no trading this cycle)`);
     return false;
@@ -253,7 +267,7 @@ async function main() {
       printTune(tuned);
     }
     i++;
-    if (await act(w, snap, params, live && trades < f.maxTrades, sessionStart)) trades++;
+    if (await act(w, snap, params, live && trades < f.maxTrades, sessionStart, f.interval)) trades++;
   };
 
   await step();

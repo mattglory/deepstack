@@ -30,6 +30,7 @@ export interface PoolConfig {
   lp: { address: string; name: string; asset: string; decimals: number };
   x: Token; // base token
   y: Token; // quote token; midXinY = y per 1 x
+  deprecated?: string; // reason — kept selectable so users can EXIT positions
 }
 
 const BF = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR"; // Bitflow deployer
@@ -46,6 +47,8 @@ export const PAIRS: Record<string, PoolConfig> = {
   "stx-aeusdc": {
     key: "stx-aeusdc",
     poolSymbol: "STX-aeUSDC",
+    deprecated:
+      "aeUSDC is winding down on Stacks (Bitflow announcement, Jul 2026). Pool depth is draining ($56k→$10k). EXIT-ONLY: use to remove liquidity / swap out, do not open new positions. Successor asset is USDCx (Circle via xReserve); no meaningful STX-USDCx pool exists yet — add it to PAIRS when one launches.",
     pool: { address: BF, name: "xyk-pool-stx-aeusdc-v-1-2" },
     lp: { address: BF, name: "xyk-pool-stx-aeusdc-v-1-2", asset: "pool-token", decimals: 6 },
     x: { address: BF, name: "token-stx-v-1-2", decimals: 6, native: true, symbol: "STX", coingecko: "blockstack" },
@@ -53,11 +56,17 @@ export const PAIRS: Record<string, PoolConfig> = {
   },
 };
 
+let warnedDeprecated = false;
+
 export function activePool(): PoolConfig {
   const key = (process.env.PAIR ?? "sbtc-stx").toLowerCase();
   const cfg = PAIRS[key];
   if (!cfg) {
     throw new Error(`unknown PAIR "${key}"; known: ${Object.keys(PAIRS).join(", ")}`);
+  }
+  if (cfg.deprecated && !warnedDeprecated) {
+    warnedDeprecated = true; // once per process, not per call
+    console.warn(`⚠ PAIR "${cfg.key}" is DEPRECATED: ${cfg.deprecated}`);
   }
   return cfg;
 }
