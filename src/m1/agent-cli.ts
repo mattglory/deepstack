@@ -25,6 +25,11 @@ import { decide, decideLp, defaultParams, type Inventory, type AgentParams } fro
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample } from "./metrics.js";
+import { appendJournal, pingHealthcheck } from "./journal.js";
+
+// Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
+// and flushed once per tick in step(). See src/m1/journal.ts.
+let tickJournal: Record<string, unknown> = {};
 
 const FEE_USTX = 50_000n;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -108,17 +113,22 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
 
 function refuse(why: string): boolean {
   console.log(`  ✗ refusing live trade: ${why}`);
+  tickJournal.refused = why;
   return false;
 }
 
 async function broadcastResult(built: BuiltTx): Promise<boolean> {
+  tickJournal.action = built.action;
   if (!built.broadcast?.txid) {
     console.log(`  ✗ broadcast failed/aborted: ${built.broadcast?.error}`);
+    tickJournal.broadcastError = built.broadcast?.error;
     return false;
   }
   console.log(`  ✓ txid: ${built.broadcast.txid} — confirming…`);
   const res = await waitForTx(built.broadcast.txid);
   console.log(`  status: ${res.tx_status}${res.tx_result?.repr ? ` ${res.tx_result.repr}` : ""}`);
+  tickJournal.txid = built.broadcast.txid;
+  tickJournal.status = res.tx_status;
   return res.tx_status === "success";
 }
 
@@ -156,6 +166,24 @@ async function act(
     `  safety: external ${s.externalMid ? s.externalMid.toLocaleString() : "n/a"} ${y.symbol}/${x.symbol} | divergence ${div} | pool ${s.poolActive ? "active" : "PAUSED"}`,
   );
 
+  tickJournal = {
+    t: ts,
+    pair: cfg.key,
+    mode: canTrade ? "live" : "observe",
+    mid: +s.midXinY.toFixed(4),
+    ext: s.externalMid ? +s.externalMid.toFixed(4) : null,
+    portfolioY: +s.portfolioY.toFixed(4),
+    lpValueY: +s.lpValueY.toFixed(4),
+    safe: safety.safe,
+    ...(safety.reasons.length ? { haltReasons: safety.reasons } : {}),
+    params: {
+      targetY: params.targetYFraction,
+      bandBps: params.rebalanceBandBps,
+      slipBps: params.slippageBps,
+      targetLp: params.targetLpFraction,
+    },
+  };
+
   // Pilot evidence trail: heartbeat + mid + inventory (see metrics.ts).
   recordSample(cfg.key, w.address, intervalSec, {
     t: ts.replace(" ", "T") + "Z",
@@ -192,6 +220,7 @@ async function act(
           ? `${Number(lp.xBase) / 10 ** x.decimals} ${x.symbol} (+ paired ${y.symbol})`
           : `${lpH(lp.lpBase)} LP`;
       console.log(`  LP: ${lp.action}  ${detail}  (${lp.reason})`);
+      tickJournal.lpDecision = { action: lp.action, detail, reason: lp.reason };
       if (!canTrade) { console.log("  observe mode — not executing"); return false; }
       if (w.network !== "mainnet") return refuse("not mainnet");
       const nativeNeed = FEE_USTX + (lp.action === "add-liquidity" && x.native ? lp.xBase : 0n);
@@ -208,6 +237,7 @@ async function act(
 
   // 2) Rebalance free inventory via swap.
   const d = decide(s.inv, s.midXinY, x.decimals, y.decimals, params);
+  tickJournal.rebalance = { action: d.action, reason: d.reason };
   if (d.action === "none") {
     console.log(`  rebalance: HOLD — ${d.reason}`);
     return false;
@@ -265,9 +295,22 @@ async function main() {
       const tuned = await tuneParams(snap.market, defaultParams());
       params = tuned;
       printTune(tuned);
+      // Evidence that the AI tuning layer is active: regime + rationale + params set.
+      appendJournal({
+        t: new Date().toISOString(),
+        type: "tune",
+        regime: tuned.regime,
+        rationale: tuned.rationale,
+        set: { targetY: tuned.targetYFraction, bandBps: tuned.rebalanceBandBps, slipBps: tuned.slippageBps },
+      });
     }
     i++;
-    if (await act(w, snap, params, live && trades < f.maxTrades, sessionStart, f.interval)) trades++;
+    try {
+      if (await act(w, snap, params, live && trades < f.maxTrades, sessionStart, f.interval)) trades++;
+    } finally {
+      appendJournal(tickJournal); // one journal line per tick, whatever happened
+      await pingHealthcheck(); // dead-man's switch: silence = alert
+    }
   };
 
   await step();
