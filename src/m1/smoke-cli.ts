@@ -12,13 +12,21 @@
 //   swap-y-for-x <stx>   sell <stx> STX for sBTC   (cheapest: needs only STX)
 //   swap-x-for-y <sbtc>  sell <sbtc> sBTC for STX
 
-import { getWallet, getStxBalance } from "./wallet.js";
-import { buildSwapYForX, buildSwapXForY, type BuiltTx } from "./actions.js";
+import { getWallet, getStxBalance, getLpBalance } from "./wallet.js";
+import {
+  buildSwapYForX,
+  buildSwapXForY,
+  buildAddLiquidity,
+  buildWithdrawLiquidity,
+  type BuiltTx,
+} from "./actions.js";
+import { getAddLiquidityQuote, plusSlippage } from "./quotes.js";
 import { activePool } from "./contracts.js";
 
 // Hard base-unit ceilings — a smoke is meant to be tiny (conservative for any pair).
 const CAP_Y_BASE = 25_000_000n;
 const CAP_X_BASE = 50_000n;
+const CAP_LP_BASE = 100_000_000n; // 100 LP tokens (6 dp)
 const FEE_USTX = 50_000n; // 0.05 STX
 
 function parseArgs() {
@@ -33,7 +41,13 @@ async function main() {
   const { action, amount, yes } = parseArgs();
 
   if (!action || !amount) {
-    throw new Error("usage: m1:smoke -- <swap-y-for-x|swap-x-for-y> <amount> [--yes-mainnet]");
+    throw new Error(
+      "usage: m1:smoke -- <swap-y-for-x|swap-x-for-y|add-liquidity|withdraw-liquidity> <amount> [--yes-mainnet]\n" +
+        "  swap-y-for-x <y>        sell y (e.g. STX) for x\n" +
+        "  swap-x-for-y <x>        sell x (e.g. sBTC) for y\n" +
+        "  add-liquidity <x>       provide x + paired y to the pool (amount in x units)\n" +
+        "  withdraw-liquidity <lp> burn LP tokens, receive both legs (amount in LP tokens)",
+    );
   }
   const w = await getWallet();
   if (w.network !== "mainnet") {
@@ -67,6 +81,26 @@ async function main() {
     const need = FEE_USTX + (x.native ? xAmount : 0n);
     if (bal.microStx < need) throw new Error("insufficient native STX for amount + fee");
     built = await buildSwapXForY(xAmount, opts);
+  } else if (action === "add-liquidity") {
+    const xAmount = BigInt(Math.round(amt * 10 ** x.decimals));
+    if (xAmount > CAP_X_BASE) throw new Error(`amount exceeds cap (${CAP_X_BASE} base ${x.symbol})`);
+    // Pre-check the paired y leg the pool will pull (plus fee headroom).
+    const q = await getAddLiquidityQuote(xAmount);
+    const maxY = plusSlippage(q.yAmount, 100);
+    const nativeNeed = FEE_USTX + (y.native ? maxY : 0n) + (x.native ? xAmount : 0n);
+    if (bal.microStx < nativeNeed)
+      throw new Error(
+        `insufficient native STX: need ~${Number(nativeNeed) / 1e6} (paired ${y.symbol} + fee), have ${bal.stx}`,
+      );
+    built = await buildAddLiquidity(xAmount, opts);
+  } else if (action === "withdraw-liquidity") {
+    const lpAmount = BigInt(Math.round(amt * 1e6)); // LP tokens are 6 dp
+    if (lpAmount > CAP_LP_BASE) throw new Error(`amount exceeds cap (${CAP_LP_BASE} base LP)`);
+    const lpBal = await getLpBalance(w.address, w.network);
+    if (lpBal < lpAmount)
+      throw new Error(`insufficient LP: have ${Number(lpBal) / 1e6}, asked ${Number(lpAmount) / 1e6}`);
+    if (bal.microStx < FEE_USTX) throw new Error("insufficient STX for fee");
+    built = await buildWithdrawLiquidity(lpAmount, opts);
   } else {
     throw new Error(`unknown action: ${action}`);
   }
