@@ -6,9 +6,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, decideLp, defaultParams, type AgentParams } from "./agent.ts";
-import { minusSlippage, plusSlippage } from "./quotes.ts";
-import { assessSafety, defaultSafetyParams } from "./safety.ts";
+import { decide, decideLp, defaultParams, type AgentParams } from "./agent.js";
+import { minusSlippage, plusSlippage } from "./quotes.js";
+import { assessSafety, defaultSafetyParams } from "./safety.js";
 
 // sBTC-STX-like decimals for readability: x=sBTC (8dp), y=STX (6dp), mid≈350k
 const XD = 8;
