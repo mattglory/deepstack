@@ -13,6 +13,7 @@
     "m1:smoke": "tsx src/m1/smoke-cli.ts",
     "m1:agent": "tsx src/m1/agent-cli.ts",
     "m1:safety": "tsx src/m1/safety-cli.ts",
+    "test": "node --import tsx --test src/m1/agent.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
