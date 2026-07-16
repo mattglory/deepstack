@@ -131,7 +131,10 @@
       const $ = (id) => document.getElementById(id);
 
       async function getJson(p) { const r = await fetch(CFG.api + p); if (!r.ok) throw new Error(p + " → " + r.status); return r.json(); }
-      const sbtcLeg = (t) => { const f = (t.ft_transfers || []).find((x) => x.asset_identifier === CFG.sbtcAsset); return f ? Number(f.amount) : 0; };
+      // A Bitflow swap emits TWO sBTC transfers: the trade principal and a tiny protocol-fee
+      // transfer. Take the LARGEST so the fee dust never gets mistaken for the trade leg
+      // (picking the dust would blow up the implied mid by ~1000x).
+      const sbtcLeg = (t) => Math.max(0, ...(t.ft_transfers || []).filter((x) => x.asset_identifier === CFG.sbtcAsset).map((x) => Number(x.amount)));
 
       function card(k, v, sub) { return `<div class="card big"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="sub2">${sub}</div>` : ""}</div>`; }
       function small(k, v) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
@@ -142,7 +145,7 @@
         const lp = uSTX(bal.fungible_tokens?.[CFG.lpAsset]?.balance ?? 0); // LP token, 6dp
         const acts = txs.filter((r) => r.tx?.tx_type === "contract_call" && CFG.actions.includes(r.tx.contract_call?.function_name));
 
-        let volume = 0, traded = 0, fees = 0, ok = 0, ab = 0, swaps = 0, lp = 0, mid = 0, last = 0;
+        let volume = 0, traded = 0, fees = 0, ok = 0, ab = 0, swaps = 0, mid = 0, last = 0;
         const chrono = [...acts].reverse(); // oldest → newest
         for (const r of chrono) {
           const fn = r.tx.contract_call.function_name, s = r.tx.tx_status === "success";
@@ -151,7 +154,6 @@
           if (fn.startsWith("swap")) { swaps++; if (s) { traded += sb;
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
             volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); } }
-          else lp++;
         }
         const portfolio = stx + (mid ? sbtc * mid : 0);
         const successRate = acts.length ? Math.round((ok / acts.length) * 100) : 0;
@@ -222,15 +224,22 @@
         }
 
         // IL-adjusted return: current portfolio vs HODLing the baseline inventory at the current mid.
+        // Only meaningful over a continuous pilot with a fixed starting inventory. During ad-hoc
+        // runs the operator tops up capital between sittings, so the baseline is not comparable and
+        // the figure is misleading — gate it behind cadence, exactly like uptime.
         const b = m.baseline;
         const hodlNow = (Number(b.xBase) / 1e8) * last.mid + Number(b.yBase) / 1e6;
         const ilAdj = hodlNow > 0 ? ((last.portfolioY - hodlNow) / hodlNow) * 100 : 0;
         const ilCol = ilAdj >= 0 ? "var(--ok)" : "var(--bad)";
         const staleMin = (Date.now() - t1) / 6e4;
+        const ilTile =
+          m.intervalSec > 0
+            ? small("IL-adjusted return", `<span style="color:${ilCol}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs HODL baseline (${fmt(last.portfolioY, 1)} vs ${fmt(hodlNow, 1)} STX)</div>`)
+            : small("IL-adjusted return", `n/a<div class="sub2">baselined at pilot start</div>`);
 
         tiles.innerHTML =
           small("Uptime", `${uptime}<div class="sub2">${upSub}</div>`) +
-          small("IL-adjusted return", `<span style="color:${ilCol}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs HODL baseline (${fmt(last.portfolioY, 1)} vs ${fmt(hodlNow, 1)} STX)</div>`) +
+          ilTile +
           small("Last heartbeat", `${tstr(t1 / 1000)}<div class="sub2">${staleMin < 90 ? "live" : `stale ${fmt(staleMin, 0)}m`}</div>`) +
           small("Cadence", m.intervalSec > 0 ? `${m.intervalSec}s` : "manual");
         note.textContent = "Derived from the agent's heartbeat log (metrics.json). On-chain transactions remain the independently verifiable record; this panel evidences cadence, uptime, and price context.";
