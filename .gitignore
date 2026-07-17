@@ -6,3 +6,5 @@ dist/
 
 # Decision journals — local evidence; excerpts published at milestone time
 journal/
+clarinet/.cache/
+clarinet/history/

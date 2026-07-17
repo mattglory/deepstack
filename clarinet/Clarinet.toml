@@ -1,0 +1,15 @@
+[project]
+name = "deepstack-receiver"
+requirements = [
+  { contract_id = "SP3TGRVG7DKGFVRTTVGGS60S59R916FWB4DAB9STZ.stx-flash-receiver-trait" },
+  { contract_id = "SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5.flashstack-stx-core" },
+  { contract_id = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2" },
+  { contract_id = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1" },
+  { contract_id = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token" },
+  { contract_id = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2" },
+]
+
+[contracts.deepstack-rebalance-receiver]
+path = "../contracts/deepstack-rebalance-receiver.clar"
+clarity_version = 3
+epoch = "3.4"

@@ -1,0 +1,8 @@
+# Devnet-ONLY simulation account for `clarinet check` — public throwaway, never funded,
+# never used on mainnet. The pilot wallet lives in .env and is not part of this project.
+[network]
+name = "devnet"
+
+[accounts.deployer]
+mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
+balance = 100000000000000
