@@ -126,7 +126,7 @@
         // Gist raw URL the pilot agent mirrors metrics.json to (see src/m1/publish.ts).
         // Same-origin metrics.json only updates when the dashboard is redeployed; during
         // the 30-day pilot the mirror is the live copy. Empty = same-origin only.
-        metricsMirror: "",
+        metricsMirror: "https://gist.githubusercontent.com/mattglory/1a5267576ac7629c15917ebb211f849f/raw/metrics.json",
       };
       const uSTX = (n) => Number(n) / 1e6, baseBTC = (n) => Number(n) / 1e8;
       const fmt = (n, d = 2) => Number(n).toLocaleString("en-US", { maximumFractionDigits: d });
