@@ -81,6 +81,14 @@ METRICS_GIST_ID=...             # telemetry mirror — see step 5b
 METRICS_GIST_TOKEN=ghp_...      # classic PAT, `gist` scope ONLY (see step 5b)
 ```
 
+Recommended: a second RPC provider, so a Hiro outage degrades to a warning instead of
+eating the uptime budget. Any endpoint speaking the Stacks/Hiro API works (QuickNode-style
+provider or a self-hosted stacks-blockchain-api):
+
+```ini
+STACKS_API_FALLBACKS=https://<your-second-provider>   # comma-separated, tried in order
+```
+
 > **The `.env` trap.** `loadDotenv()` in `src/m1/wallet.ts` reads `.env` **relative to the
 > working directory**. If systemd's `WorkingDirectory` is wrong, the agent does not error —
 > it starts on testnet defaults with no key and quietly does nothing for days. Verify with
@@ -188,12 +196,13 @@ discovered in October. **Tightening the band to manufacture trades is wash-tradi
 If honest activity falls short, that is a conversation with the Endowment, and it is much
 cheaper in August than in October.
 
-**Sampling rate trades off against evidence.** 30-minute cadence keeps all 30 days inside
-the 2000-sample cap, but coarse sampling under-estimates realised volatility, which feeds
-both the band and the LVR figure. Raising `MAX_SAMPLES` would allow finer sampling and a
-better volatility estimate. Worth deciding deliberately.
+**~~Sampling rate trades off against evidence.~~ Decided** — the pilot runs at the 30-minute
+cadence (matches the healthcheck period; all 30 days fit the 2000-sample cap with margin).
+`MAX_SAMPLES` is now env-tunable for anyone wanting finer sampling, but cadence and cap
+must move together, and mid-pilot is not the time.
 
-**`STACKS_API` does not redirect chain reads.** `src/stacks.ts` hardcodes
-`network: "mainnet"` in `fetchCallReadOnlyFunction`, so the library resolves its own
-endpoint. Harmless today, but it means there is no way to fail over to a backup RPC — which
-is a live concern for a 95% uptime target that depends on one provider.
+**~~No way to fail over to a backup RPC.~~ Resolved** — every agent read (Clarity
+read-onlys, balances, tx confirmation) now routes through `src/m1/rpc.ts`, which tries
+`STACKS_API` then each `STACKS_API_FALLBACKS` entry and sticks with whatever works.
+Remaining setup is operational: pick a second provider and put it in `.env` (see §4).
+With no fallback configured, behaviour is unchanged — one provider, one point of failure.

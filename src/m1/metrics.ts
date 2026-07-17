@@ -12,7 +12,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json";
-const MAX_SAMPLES = 2000; // ~1.4 days @60s, ~41 days @30min — enough for the pilot at a sane cadence
+// 2000 holds ~41 days at the pilot's 30-min cadence — the whole run fits with margin.
+// Raise via env only alongside a finer --interval; the two must be decided together
+// (finer sampling improves the realised-vol estimate that sizes the band and LVR).
+const MAX_SAMPLES = Number(process.env.MAX_SAMPLES ?? 2000);
 
 export interface MetricsSample {
   t: string; // ISO timestamp

@@ -28,6 +28,7 @@ import { recordSample, loadHistory } from "./metrics.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics } from "./publish.js";
+import { withRpc } from "./rpc.js";
 import { createSupervisor } from "./supervise.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
@@ -56,10 +57,15 @@ function flags() {
 async function waitForTx(txid: string) {
   for (let i = 0; i < 24; i++) {
     await sleep(5000);
-    const r = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txid}`);
-    if (r.ok) {
-      const j = (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
+    try {
+      const j = await withRpc(async (base) => {
+        const r = await fetch(`${base}/extended/v1/tx/${txid}`);
+        if (!r.ok) throw new Error(`tx fetch → ${r.status}`);
+        return (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
+      });
       if (j.tx_status && j.tx_status !== "pending") return j;
+    } catch {
+      // transient — every endpoint down this poll; the next iteration retries
     }
   }
   return { tx_status: "timeout" } as { tx_status: string; tx_result?: { repr?: string } };

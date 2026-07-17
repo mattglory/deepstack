@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { getAddressFromPrivateKey } from "@stacks/transactions";
 import { generateWallet, generateNewAccount } from "@stacks/wallet-sdk";
 import { activePool, contractId, tokenId, type Token } from "./contracts.js";
+import { withRpc } from "./rpc.js";
 
 // Minimal zero-dependency .env loader (only sets vars not already in env).
 export function loadDotenv(path = ".env"): void {
@@ -42,6 +43,17 @@ export function apiBase(network: Network): string {
   return network === "mainnet"
     ? "https://api.mainnet.hiro.so"
     : "https://api.testnet.hiro.so";
+}
+
+// Mainnet reads go through the RPC failover (rpc.ts) — one provider must not take the
+// pilot down. Testnet keeps the single public endpoint; it carries no uptime SLA.
+async function hiroJson<T>(network: Network, path: string): Promise<T> {
+  const get = async (base: string) => {
+    const res = await fetch(base + path);
+    if (!res.ok) throw new Error(`fetch failed: ${res.status} (${path})`);
+    return (await res.json()) as T;
+  };
+  return network === "mainnet" ? withRpc(get) : get(apiBase(network));
 }
 
 export interface Wallet {
@@ -85,17 +97,19 @@ export async function getStxBalance(
   address: string,
   network: Network,
 ): Promise<StxBalance> {
-  const res = await fetch(`${apiBase(network)}/extended/v1/address/${address}/balances`);
-  if (!res.ok) throw new Error(`balance fetch failed: ${res.status}`);
-  const j = (await res.json()) as { stx?: { balance?: string } };
+  const j = await hiroJson<{ stx?: { balance?: string } }>(
+    network,
+    `/extended/v1/address/${address}/balances`,
+  );
   const micro = BigInt(j.stx?.balance ?? "0");
   return { stx: Number(micro) / 1e6, microStx: micro };
 }
 
 async function ftBalance(address: string, network: Network, assetId: string): Promise<bigint> {
-  const res = await fetch(`${apiBase(network)}/extended/v1/address/${address}/balances`);
-  if (!res.ok) throw new Error(`balance fetch failed: ${res.status}`);
-  const j = (await res.json()) as { fungible_tokens?: Record<string, { balance?: string }> };
+  const j = await hiroJson<{ fungible_tokens?: Record<string, { balance?: string }> }>(
+    network,
+    `/extended/v1/address/${address}/balances`,
+  );
   return BigInt(j.fungible_tokens?.[assetId]?.balance ?? "0");
 }
 

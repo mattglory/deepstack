@@ -4,6 +4,7 @@
 import { fetchCallReadOnlyFunction, Cl, cvToJSON } from "@stacks/transactions";
 import { config } from "../config.js";
 import { CORE, activePool } from "./contracts.js";
+import { withRpc } from "./rpc.js";
 
 const poolTraitArgs = () => {
   const p = activePool();
@@ -15,14 +16,17 @@ const poolTraitArgs = () => {
 };
 
 async function callCore(functionName: string, extraArgs: ReturnType<typeof Cl.uint>[]) {
-  const cv = await fetchCallReadOnlyFunction({
-    contractAddress: CORE.address,
-    contractName: CORE.name,
-    functionName,
-    functionArgs: [...poolTraitArgs(), ...extraArgs],
-    network: "mainnet",
-    senderAddress: config.senderAddress,
-  });
+  const cv = await withRpc((baseUrl) =>
+    fetchCallReadOnlyFunction({
+      contractAddress: CORE.address,
+      contractName: CORE.name,
+      functionName,
+      functionArgs: [...poolTraitArgs(), ...extraArgs],
+      network: "mainnet",
+      client: { baseUrl },
+      senderAddress: config.senderAddress,
+    }),
+  );
   return cvToJSON(cv) as any;
 }
 
@@ -58,14 +62,17 @@ export async function getPoolRaw(): Promise<{
   totalShares: bigint;
 }> {
   const p = activePool();
-  const cv = await fetchCallReadOnlyFunction({
-    contractAddress: p.pool.address,
-    contractName: p.pool.name,
-    functionName: "get-pool",
-    functionArgs: [],
-    network: "mainnet",
-    senderAddress: config.senderAddress,
-  });
+  const cv = await withRpc((baseUrl) =>
+    fetchCallReadOnlyFunction({
+      contractAddress: p.pool.address,
+      contractName: p.pool.name,
+      functionName: "get-pool",
+      functionArgs: [],
+      network: "mainnet",
+      client: { baseUrl },
+      senderAddress: config.senderAddress,
+    }),
+  );
   const t = (cvToJSON(cv) as any)?.value?.value;
   if (!t) throw new Error("get-pool returned no tuple");
   return {
