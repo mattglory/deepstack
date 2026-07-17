@@ -48,10 +48,29 @@ does nothing (losing only the network fee).
    opportunity each cycle (`"arb"` entries, detection only) — by pilot end this is a
    measured record of how much capturable edge actually existed, the honest counterpart
    to the LVR estimate in `src/m1/lvr.ts`.
-2. **Receiver contract / call path** — DeepStack invokes FlashStack's flash-loan entry
-   point with a receiver that performs the rebalance and repays in-transaction.
-   *(Verify FlashStack's current flash-loan function signature + receiver interface from
-   the FlashStack repo before coding — same discipline as the Bitflow adapter.)*
+2. **Receiver contract / call path — interface VERIFIED from FlashStack source**
+   (github.com/mattglory/Flashstack, read 2026-07-17):
+   - Entry point: `flashstack-stx-core.flash-loan(amount uint, receiver <stx-flash-receiver-trait>)`.
+   - Receiver implements `(execute-stx-flash (uint principal) (response bool uint))` from
+     `SP3TGRVG7DKGFVRTTVGGS60S59R916FWB4DAB9STZ.stx-flash-receiver-trait`; the core
+     transfers the STX first, invokes the callback, then asserts its reserve grew by ≥ fee.
+   - Fee: `fee-basis-points` (default 5bps, floor 1 µSTX), read on-chain — matches
+     `FLASH_FEE_BPS` in `src/m1/arb.ts`.
+   - **Receivers are whitelisted** (`approved-receivers` map, owner-set): the DeepStack
+     receiver must be approved on the core after deployment.
+   - Template: `bitflow-arb-receiver.clar` (STX→stSTX→STX round-trip on a Bitflow
+     stableswap) is the closest working pattern. One discipline difference for DeepStack:
+     the template uses `min-out = u1` legs and relies on the repay assert as its only
+     gate; the DeepStack receiver should carry real min-outs quoted from `get-dy`/`get-dx`,
+     same as every other DeepStack transaction.
+   - **Second-leg answer (rebalance case):** the core invokes the callback *outside*
+     `as-contract`, so inside the receiver `tx-sender` is still the agent wallet. The
+     receiver can therefore repay from the agent's own inventory
+     (`stx-transfer? shortfall tx-sender core`) — borrow STX, buy sBTC in the pool at a
+     size larger than free inventory, repay from inventory + proceeds. Own-inventory IS
+     the second leg for a market maker; no second venue required for the rebalance
+     deliverable. (Cross-venue capture — e.g. via `multidex-arbitrage-receiver.clar` —
+     remains the later, at-scale path.)
 3. **Guards carry over** — the same input-cap post-conditions, on-chain min-output guards,
    and the oracle-sanity + kill-switch gate wrap the flash-rebalance path.
 4. **Deliverable** — **≥1 live FlashStack flash-rebalance transaction on mainnet**, linked
