@@ -21,10 +21,11 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import { decide, decideLp, defaultParams, type Inventory, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, type Inventory, type AgentParams } from "./agent.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
-import { recordSample } from "./metrics.js";
+import { recordSample, loadHistory } from "./metrics.js";
+import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
@@ -270,6 +271,26 @@ function printTune(p: TunedParams) {
   );
 }
 
+/**
+ * Replace the AI's qualitative band with one measured from realised volatility.
+ *
+ * Rebalancing pays the pool fee, so the band is a fee budget and belongs in units of
+ * volatility (see bandBpsFromVol). The LLM's regime call was a proxy for exactly this;
+ * where there is enough history to measure sigma, the measurement wins and the LLM's band
+ * stays advisory. Every other AI-proposed parameter is untouched.
+ *
+ * Returns the params to use plus what happened, so the caller can log both bands side by
+ * side — the comparison is the evidence that the deterministic core, not the model, is in
+ * control of risk.
+ */
+function applyVolBand(params: AgentParams): { params: AgentParams; sigmaDaily: number | null; bandBps: number } {
+  const history = loadHistory().map((s) => ({ t: s.t, mid: s.mid, lpValueY: s.lpValueY }));
+  const sigmaDaily = realizedVolDaily(history);
+  if (sigmaDaily === null) return { params, sigmaDaily: null, bandBps: params.rebalanceBandBps };
+  const bandBps = bandBpsFromVol(sigmaDaily);
+  return { params: { ...params, rebalanceBandBps: bandBps }, sigmaDaily, bandBps };
+}
+
 async function main() {
   const f = flags();
   const live = f.live && f.yesMainnet;
@@ -293,8 +314,19 @@ async function main() {
     if (sessionStart === 0) sessionStart = snap.portfolioY;
     if (i % f.tuneEvery === 0) {
       const tuned = await tuneParams(snap.market, defaultParams());
-      params = tuned;
       printTune(tuned);
+      // Measured volatility overrides the AI's band where history allows; the model's
+      // other proposals stand. Deterministic risk control, model-assisted parameters.
+      const vol = applyVolBand(tuned);
+      params = vol.params;
+      if (vol.sigmaDaily === null) {
+        console.log(`  [vol] no mid history yet → band=${vol.bandBps}bps (AI advisory, in force)`);
+      } else {
+        console.log(
+          `  [vol] realised ${(vol.sigmaDaily * 100).toFixed(2)}%/day → band=${vol.bandBps}bps (measured, in force)` +
+            (vol.bandBps !== tuned.rebalanceBandBps ? ` — overrides AI's ${tuned.rebalanceBandBps}bps` : ""),
+        );
+      }
       // Evidence that the AI tuning layer is active: regime + rationale + params set.
       appendJournal({
         t: new Date().toISOString(),
@@ -302,6 +334,7 @@ async function main() {
         regime: tuned.regime,
         rationale: tuned.rationale,
         set: { targetY: tuned.targetYFraction, bandBps: tuned.rebalanceBandBps, slipBps: tuned.slippageBps },
+        measured: { sigmaDaily: vol.sigmaDaily, bandBps: vol.bandBps, source: vol.sigmaDaily === null ? "ai" : "vol" },
       });
     }
     i++;

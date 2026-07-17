@@ -6,7 +6,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decide, decideLp, defaultParams, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, type AgentParams } from "./agent.js";
 import { minusSlippage, plusSlippage } from "./quotes.js";
 import { assessSafety, defaultSafetyParams } from "./safety.js";
 
@@ -87,6 +87,45 @@ test("decideLp: over target → withdraw-liquidity", () => {
   const d = decideLp(100, 1_000_000n, 80, 0n, 0n, MID, XD, YD, params);
   assert.equal(d.action, "withdraw-liquidity");
   assert.ok(d.lpBase > 0n && d.lpBase <= 1_000_000n);
+});
+
+test("bandBpsFromVol: the df/d(ln m) = -1/4 sensitivity the formula rests on is real", () => {
+  // Verify numerically rather than trusting the algebra in the docstring: at a 50/50
+  // split, a small mid move should shift the y-fraction by about a quarter of it.
+  const yFrac = (xBase: bigint, yBase: bigint, m: number) => {
+    const xv = (Number(xBase) / 10 ** XD) * m, yv = Number(yBase) / 10 ** YD;
+    return yv / (yv + xv);
+  };
+  const x = xBaseForValueY(50), y = yBaseForValueY(50); // balanced at MID
+  const r = 0.001; // small log-return
+  const drift = yFrac(x, y, MID * Math.exp(r)) - yFrac(x, y, MID);
+  assert.ok(Math.abs(drift - -r / 4) < 1e-6, `expected ~${-r / 4}, got ${drift}`);
+});
+
+test("bandBpsFromVol: reproduces the AI layer's own calm/volatile mapping", () => {
+  // The calibration claim in the docstring: 6 sigmas ≈ 300bps calm, 900bps volatile.
+  assert.equal(bandBpsFromVol(0.02), 300); // 6 * 2% / 4 = 3%
+  assert.equal(bandBpsFromVol(0.06), 900); // 6 * 6% / 4 = 9%
+});
+
+test("bandBpsFromVol: band widens with volatility", () => {
+  assert.ok(bandBpsFromVol(0.05) > bandBpsFromVol(0.03));
+});
+
+test("bandBpsFromVol: clamped at both ends — a risk control must not switch itself off", () => {
+  assert.equal(bandBpsFromVol(0.0001), 300); // dead-calm cannot collapse the band to zero
+  assert.equal(bandBpsFromVol(10), 900); // a vol blow-up cannot widen it without limit
+});
+
+test("bandBpsFromVol: degenerate vol falls back to the floor, never NaN", () => {
+  assert.equal(bandBpsFromVol(0), 300);
+  assert.equal(bandBpsFromVol(-1), 300);
+  assert.equal(bandBpsFromVol(NaN), 300);
+});
+
+test("bandBpsFromVol: honours custom risk appetite and clamps", () => {
+  assert.equal(bandBpsFromVol(0.04, 6, 100, 2000), 600); // 6 * 4% / 4 = 6%
+  assert.equal(bandBpsFromVol(0.04, 12, 100, 2000), 1200); // twice the appetite, twice the band
 });
 
 test("safety: pool mid near external → safe", () => {

@@ -52,6 +52,43 @@ export function defaultParams(): AgentParams {
   };
 }
 
+/**
+ * Rebalance band derived from realised volatility, rather than guessed per regime.
+ *
+ * Every rebalance pays the pool fee, so the band is a fee budget: too tight and the agent
+ * churns on noise, too wide and inventory risk runs unchecked. A FIXED band does not mean
+ * the same thing across regimes — in a calm market it is never touched, in a violent one
+ * it is crossed constantly — so the natural unit is volatility, not percent.
+ *
+ * Near a 50/50 split the y-fraction responds to the mid at a known rate. With
+ * f = y / (y + x*m), df/d(ln m) = -(y*x*m)/(y + x*m)^2, which at balance (y = x*m) is
+ * exactly -1/4. So a mid log-return r moves the fraction by about r/4, and a drift band
+ * of B corresponds to a mid move of roughly 4B.
+ *
+ * Expressing the band as a number of daily sigmas of MID movement therefore keeps the
+ * expected rebalance frequency — and so the fee spend — roughly constant across regimes:
+ *
+ *     band = sigmasTolerated * sigmaDaily / 4
+ *
+ * Calibration note: at sigmasTolerated = 6 this reproduces the AI layer's own qualitative
+ * mapping almost exactly (2%/day vol -> ~300bps "calm", 6%/day -> ~900bps "volatile"),
+ * which is a good sign that the LLM was approximating this relationship all along. Now the
+ * measurement does it directly and the LLM is left proposing risk appetite inside clamps.
+ *
+ * Clamped: volatility estimates from sparse samples are noisy, and an unbounded band is a
+ * risk control that can silently switch itself off.
+ */
+export function bandBpsFromVol(
+  sigmaDaily: number,
+  sigmasTolerated = 6,
+  floorBps = 300,
+  ceilingBps = 900,
+): number {
+  if (!(sigmaDaily > 0) || !(sigmasTolerated > 0)) return floorBps;
+  const raw = ((sigmasTolerated * sigmaDaily) / 4) * 10_000;
+  return Math.round(Math.min(ceilingBps, Math.max(floorBps, raw)));
+}
+
 // Rebalance the free inventory toward the target y-value split.
 export function decide(
   inv: Inventory,

@@ -44,6 +44,15 @@ function load(): MetricsFile | null {
   }
 }
 
+/**
+ * The recorded mid/LP history, for deriving realised volatility and LVR. Empty when no
+ * file exists yet — callers must treat "not enough history" as a normal state, not an
+ * error, or the agent can't run on a fresh box.
+ */
+export function loadHistory(): MetricsSample[] {
+  return load()?.samples ?? [];
+}
+
 export function recordSample(
   pair: string,
   wallet: string,
