@@ -155,16 +155,18 @@
           const fn = r.tx.contract_call.function_name, s = r.tx.tx_status === "success";
           fees += Number(r.tx.fee_rate || 0); s ? ok++ : ab++; last = Math.max(last, r.tx.burn_block_time || 0);
           const sb = sbtcLeg(r);
-          if (fn.startsWith("swap")) { swaps++; if (s) { traded += sb;
+          if (fn.startsWith("swap") && s) { swaps++; traded += sb;
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
-            volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); } }
+            volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); }
         }
-        const portfolio = stx + (mid ? sbtc * mid : 0);
+        // Free inventory + LP position (agent-valued; only counted while LP tokens are held).
+        const lpVal = lp > 0 ? agentLpValueY : 0;
+        const portfolio = stx + (mid ? sbtc * mid : 0) + lpVal;
         const successRate = acts.length ? Math.round((ok / acts.length) * 100) : 0;
 
         // hero
         $("hero").innerHTML =
-          card("Portfolio", mid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", mid ? `≈ ${fmt(portfolio / mid, 6)} sBTC` : "") +
+          card("Portfolio", mid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", mid ? `≈ ${fmt(portfolio / mid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
           card("Volume facilitated", `${fmt(uSTX(volume), 2)} <small>STX</small>`, `${swaps} swaps`) +
           card("Network fees paid", `${fmt(uSTX(fees), 3)} <small>STX</small>`, `${acts.length} txs`) +
           card("Success rate", `${successRate}%`, `${ok} ok · ${ab} aborted`);
@@ -207,6 +209,10 @@
       }
 
       // ---- Pilot telemetry (metrics.json written by the agent; see src/m1/metrics.ts) ----
+      // The agent's latest LP valuation (in STX). The chain gives us the LP token balance
+      // but not its value — the agent computes that each cycle from a withdraw quote, so
+      // the portfolio tile borrows it rather than undercounting by the LP position.
+      let agentLpValueY = 0;
       function renderPilot(m) {
         const tiles = $("pilotTiles"), note = $("pilotNote"), wrap = $("midWrap");
         if (!m || !m.samples || m.samples.length === 0) {
@@ -216,6 +222,7 @@
           return;
         }
         const ss = m.samples, last = ss[ss.length - 1];
+        agentLpValueY = last.lpValueY ?? 0;
         const t0 = new Date(m.startedAt).getTime(), t1 = new Date(last.t).getTime();
         const elapsedH = Math.max(0, (t1 - t0) / 3.6e6);
 
@@ -314,9 +321,10 @@
           $("status").innerHTML = `updated ${new Date().toUTCString().slice(17, 25)} UTC`;
         } catch (e) { $("status").textContent = "error: " + e.message; }
       }
-      load();
-      loadPilot();
-      setInterval(() => { load(); loadPilot(); }, 30000);
+      // Pilot telemetry first so the portfolio tile has the agent's LP valuation on first paint.
+      const refresh = () => loadPilot().then(load);
+      refresh();
+      setInterval(refresh, 30000);
     </script>
   </body>
 </html>
