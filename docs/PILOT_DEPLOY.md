@@ -1,0 +1,171 @@
+# Pilot deployment — running the agent for 30 days
+
+The M2 pilot needs the agent running continuously on mainnet at ≥95% uptime. That budget
+allows roughly **36 hours of downtime across 30 days**, so the goal here is boring: a
+process that restarts itself, tells you when it's unhappy, and holds its evidence safely.
+
+This box will hold a **seed phrase for a funded mainnet wallet**. Treat it as a hot wallet
+host, not a dev box.
+
+---
+
+## 1. Before anything: the wallet
+
+The agent signs with a key in `.env`. Anyone with root on this machine can take the funds.
+
+- **Use a dedicated wallet holding only pilot inventory.** Never the wallet grant funds
+  are paid to, and never a personal wallet. (Currently ~740 STX — that is the blast
+  radius, and it should stay that way.)
+- The seed derives **every account**. A raw hex key for account 0 (`STACKS_PRIVATE_KEY`)
+  limits exposure to that one account; a seed phrase does not.
+- Do not reuse this box for anything else.
+
+## 2. Provision
+
+Any small VPS is enough — the agent is one Node process doing a handful of API calls every
+30 minutes. Hetzner CX22 (~€4/mo) or DigitalOcean's $6 droplet are both ample. Grant funds
+cover hosting.
+
+```bash
+# as root, on a fresh Debian/Ubuntu box
+adduser --system --group --home /opt/deepstack deepstack
+
+# Node LTS (the unit calls /usr/bin/node directly — nvm installs won't be on that path)
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs git
+node -v   # expect v22.x
+
+# harden ssh: key-only, no root login
+sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+systemctl restart ssh
+
+# firewall: nothing inbound but ssh — the agent needs no open ports
+ufw allow OpenSSH && ufw --force enable
+
+# unattended security updates
+apt-get install -y unattended-upgrades
+```
+
+## 3. Install
+
+```bash
+git clone https://github.com/mattglory/deepstack.git /tmp/deepstack
+cp -r /tmp/deepstack/stacks-liquidity-agent/. /opt/deepstack/
+cd /opt/deepstack
+npm install
+npm test        # 43 tests — do not deploy a red suite
+npm run typecheck
+chown -R deepstack:deepstack /opt/deepstack
+```
+
+## 4. Secrets
+
+**Never commit `.env`, never paste the key into a chat, never `curl` it anywhere.** Copy it
+over ssh and lock it down:
+
+```bash
+scp .env root@<vps>:/opt/deepstack/.env      # from your laptop
+ssh root@<vps> 'chown deepstack:deepstack /opt/deepstack/.env && chmod 600 /opt/deepstack/.env'
+```
+
+Required for the pilot:
+
+```ini
+STACKS_NETWORK=mainnet          # without this it runs testnet and the pilot does nothing
+PAIR=sbtc-stx
+STACKS_PRIVATE_KEY=...          # dedicated pilot wallet
+OPENROUTER_API_KEY=...          # AI tuning layer (M1 evidence: keep it active)
+HEALTHCHECK_URL=https://hc-ping.com/<uuid>
+```
+
+> **The `.env` trap.** `loadDotenv()` in `src/m1/wallet.ts` reads `.env` **relative to the
+> working directory**. If systemd's `WorkingDirectory` is wrong, the agent does not error —
+> it starts on testnet defaults with no key and quietly does nothing for days. Verify with
+> step 6 before walking away.
+
+## 5. The dead-man's switch
+
+The `/fail` ping added in `journal.ts` only helps if a check exists.
+
+1. Create a check at [healthchecks.io](https://healthchecks.io) (free tier is fine).
+2. **Period: 30 minutes** — must match `--interval`.
+3. **Grace: 15 minutes** — a slow cycle (a rebalance waits for confirmation) must not alert.
+4. Add an email/Telegram integration. An alert nobody receives is not an alert.
+5. Paste the ping URL into `.env` as `HEALTHCHECK_URL`.
+
+Behaviour: a good cycle pings success; a failed cycle pings `/fail` and alerts immediately;
+a dead process pings nothing and alerts after the grace period.
+
+## 6. Start it — and verify before walking away
+
+```bash
+sudo cp deploy/deepstack-agent.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now deepstack-agent
+journalctl -u deepstack-agent -f
+```
+
+The first cycle must show **all** of these. Anything missing means stop and fix:
+
+- `network: mainnet` and the **expected wallet address** — if it says testnet, `.env` is
+  not being read (see the trap above)
+- `[AI] regime=...` — the tuning layer is live
+- `[vol] realised x.xx%/day → band=...bps (measured, in force)` — volatility-scaled band
+- `safety: ... divergence ...% | pool active` — the oracle gate
+- a decision line (`rebalance: HOLD` is a perfectly good first result)
+
+Then confirm the plumbing:
+
+```bash
+systemctl is-enabled deepstack-agent     # "enabled" — survives reboot
+sudo reboot                              # actually test it, don't assume
+tail -1 journal/$(date -u +%F).jsonl     # a tick was journalled
+```
+And check the healthchecks.io dashboard went green.
+
+## 7. Running it
+
+```bash
+journalctl -u deepstack-agent -f                          # live logs
+journalctl -u deepstack-agent --since "1 hour ago"
+grep '"type":"cycle-error"' journal/$(date -u +%F).jsonl   # transient failures
+npm run m1:lvr                                             # what LPing is costing
+sudo systemctl restart deepstack-agent                     # after an .env change
+```
+
+**Kill switch.** Stops trading without stopping the process or losing telemetry:
+
+```bash
+touch /opt/deepstack/KILL     # halts trading at the next cycle
+rm /opt/deepstack/KILL        # resumes
+```
+
+---
+
+## Open issues to settle before 1 September
+
+**Telemetry does not reach the public dashboard.** The agent writes `dashboard/metrics.json`
+on the VPS. The Vercel dashboard serves whatever was last deployed from a laptop, so during
+the pilot its uptime and heartbeat panels would sit frozen — the exact panels that evidence
+the pilot. Options: a cron on the VPS running `vercel deploy --prod` hourly (needs a
+`VERCEL_TOKEN` on the box); the VPS pushing `metrics.json` to a gist the dashboard fetches;
+or the dashboard reading it from a URL the VPS serves. **Unresolved — pick one.**
+
+**≥25 transactions may not happen by themselves.** M2 requires ≥25 mainnet txs. With a
+6-sigma volatility-scaled band, a rebalance needs roughly a 12% move in the sBTC/STX ratio;
+at ~2%/day realised vol that is not a weekly event. LP management (`TARGET_LP_FRACTION`)
+adds legitimate activity, but the count should be modelled before the pilot rather than
+discovered in October. **Tightening the band to manufacture trades is wash-trading — don't.**
+If honest activity falls short, that is a conversation with the Endowment, and it is much
+cheaper in August than in October.
+
+**Sampling rate trades off against evidence.** 30-minute cadence keeps all 30 days inside
+the 2000-sample cap, but coarse sampling under-estimates realised volatility, which feeds
+both the band and the LVR figure. Raising `MAX_SAMPLES` would allow finer sampling and a
+better volatility estimate. Worth deciding deliberately.
+
+**`STACKS_API` does not redirect chain reads.** `src/stacks.ts` hardcodes
+`network: "mainnet"` in `fetchCallReadOnlyFunction`, so the library resolves its own
+endpoint. Harmless today, but it means there is no way to fail over to a backup RPC — which
+is a live concern for a 95% uptime target that depends on one provider.

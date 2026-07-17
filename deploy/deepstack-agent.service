@@ -1,0 +1,62 @@
+# DeepStack liquidity agent — 30-day mainnet pilot.
+#
+# Install:
+#   sudo cp deploy/deepstack-agent.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now deepstack-agent
+#   journalctl -u deepstack-agent -f
+#
+# See docs/PILOT_DEPLOY.md. Read that before enabling: this unit broadcasts real
+# mainnet transactions from a funded wallet.
+
+[Unit]
+Description=DeepStack liquidity agent (sBTC-STX mainnet pilot)
+Documentation=https://github.com/mattglory/deepstack
+After=network-online.target
+Wants=network-online.target
+# Never stop retrying. The agent already survives transient cycle failures on its own
+# (see supervise.ts); if it somehow dies, the pilot's uptime budget is measured in hours,
+# so systemd must keep bringing it back rather than give up after N attempts.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=deepstack
+Group=deepstack
+
+# CRITICAL: the agent reads .env RELATIVE to its working directory (loadDotenv() in
+# src/m1/wallet.ts). Get this wrong and it does not fail loudly — it falls back to
+# testnet defaults with no wallet key, and the pilot silently does nothing.
+WorkingDirectory=/opt/deepstack
+
+# --interval 1800 (30 min): metrics.json keeps the last 2000 samples, so 30 min gives
+#   ~1440 over a 30-day pilot — the whole run fits. At 60s the file holds only ~1.4 days
+#   and the pilot's own evidence would be truncated away.
+# --max-trades 60: this counts trades for the LIFETIME of the process, not per day. The
+#   default of 1 would execute one trade in 30 days and observe for the rest. This is a
+#   ceiling, not a target — the band decides what actually trades.
+ExecStart=/usr/bin/node --import tsx src/m1/agent-cli.ts --live --yes-mainnet --interval 1800 --max-trades 60
+
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=deepstack
+
+# Hardening. This box holds a seed phrase in .env: treat it as a hot wallet host.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# ProtectSystem=strict makes everything read-only except these — the agent only ever
+# writes its journal and its telemetry.
+ReadWritePaths=/opt/deepstack/journal /opt/deepstack/dashboard
+
+[Install]
+WantedBy=multi-user.target
