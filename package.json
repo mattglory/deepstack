@@ -22,6 +22,7 @@
     "@stacks/wallet-sdk": "^7.4.0"
   },
   "devDependencies": {
+    "@types/node": "^22.20.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   }
