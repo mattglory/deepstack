@@ -26,11 +26,19 @@ export function appendJournal(entry: Record<string, unknown>): void {
   }
 }
 
-export async function pingHealthcheck(): Promise<void> {
+/**
+ * Dead-man's-switch ping.
+ *
+ * "ok" (default) reports a completed cycle. "fail" reports a cycle that threw — a live
+ * process that cannot read the market is not healthy, and silence would only surface it
+ * after the check's grace period. healthchecks.io treats a /fail ping as an immediate
+ * alert, so a broken agent is loud rather than merely quiet.
+ */
+export async function pingHealthcheck(status: "ok" | "fail" = "ok"): Promise<void> {
   const url = process.env.HEALTHCHECK_URL;
   if (!url) return; // graceful no-op until configured
   try {
-    await fetch(url, { method: "GET" });
+    await fetch(status === "fail" ? `${url.replace(/\/$/, "")}/fail` : url, { method: "GET" });
   } catch {
     // Alerting outage must not affect trading; the missed ping IS the alert.
   }

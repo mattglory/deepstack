@@ -27,6 +27,7 @@ import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory } from "./metrics.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
+import { createSupervisor } from "./supervise.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
 // and flushed once per tick in step(). See src/m1/journal.ts.
@@ -346,14 +347,31 @@ async function main() {
     }
   };
 
-  await step();
+  // A cycle depends on third-party reads (chain RPC, price reference, tuner). Over a
+  // 30-day pilot those WILL fail transiently; a failed cycle must be a skipped cycle, not
+  // a dead agent. Journalled and reported to the dead-man's switch, so a persistent outage
+  // is loud rather than silently "live but not trading". See supervise.ts.
+  const supervisor = createSupervisor(async ({ error, consecutive }) => {
+    console.error(`  ✗ cycle failed (${consecutive} in a row): ${error}`);
+    appendJournal({ t: new Date().toISOString(), type: "cycle-error", error, consecutive });
+    await pingHealthcheck("fail");
+    if (consecutive >= 5)
+      console.error(`  ⚠ ${consecutive} consecutive failures — agent is live but not trading. Check RPC/network.`);
+  });
+  const runStep = () => supervisor.run(step);
+
   if (f.interval) {
+    // Guarded from the first cycle: a blip at startup must not stop the pilot beginning.
+    await runStep();
     console.log(`\n(looping every ${f.interval}s — Ctrl+C to stop)`);
     while (true) {
       await sleep(f.interval * 1000);
       if (live && trades >= f.maxTrades) console.log(`\n(reached --max-trades ${f.maxTrades}; observe-only now)`);
-      await step().catch((e) => console.error("cycle error:", e.message));
+      await runStep();
     }
+  } else {
+    // One-shot: a failure is a failure — surface it and exit non-zero.
+    await step();
   }
 }
 
