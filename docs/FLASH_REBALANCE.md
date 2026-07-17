@@ -42,14 +42,26 @@ does nothing (losing only the network fee).
 
 ## Implementation plan (DeepStack M2 deliverable)
 
-1. **Receiver contract / call path** — DeepStack invokes FlashStack's flash-loan entry
+1. **Sizing core — DONE (`src/m1/arb.ts`).** Given pool reserves and the external
+   reference mid, the closed-form optimal divergence-capture trade with pool fee,
+   FlashStack fee (5bps), and gas netted out. The agent journals every detected
+   opportunity each cycle (`"arb"` entries, detection only) — by pilot end this is a
+   measured record of how much capturable edge actually existed, the honest counterpart
+   to the LVR estimate in `src/m1/lvr.ts`.
+2. **Receiver contract / call path** — DeepStack invokes FlashStack's flash-loan entry
    point with a receiver that performs the rebalance and repays in-transaction.
    *(Verify FlashStack's current flash-loan function signature + receiver interface from
    the FlashStack repo before coding — same discipline as the Bitflow adapter.)*
-2. **Guards carry over** — the same input-cap post-conditions, on-chain min-output guards,
+3. **Guards carry over** — the same input-cap post-conditions, on-chain min-output guards,
    and the oracle-sanity + kill-switch gate wrap the flash-rebalance path.
-3. **Deliverable** — **≥1 live FlashStack flash-rebalance transaction on mainnet**, linked
+4. **Deliverable** — **≥1 live FlashStack flash-rebalance transaction on mainnet**, linked
    in the M2 submission, demonstrating the DeepStack→FlashStack fee flow end-to-end.
+
+Note the atomicity constraint on *capture*: a flash-borrowed input must be repaid in the
+same transaction, so converting detected edge into profit needs a second leg in that
+transaction (another pool, or the agent's own inventory acting as the counter-side). The
+detector deliberately stays venue-agnostic; the journal tells us whether the edge is worth
+building the second leg for.
 
 ## Honest framing for reviewers
 

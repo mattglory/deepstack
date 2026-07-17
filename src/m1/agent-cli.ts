@@ -29,6 +29,7 @@ import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics } from "./publish.js";
 import { withRpc } from "./rpc.js";
+import { findArb } from "./arb.js";
 import { createSupervisor } from "./supervise.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
@@ -82,6 +83,9 @@ interface Snapshot {
   portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
+  xReserve: number;
+  yReserve: number;
+  poolFeeBps: number;
   market: MarketState;
 }
 
@@ -116,6 +120,9 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
+    xReserve: pool.xReserve,
+    yReserve: pool.yReserve,
+    poolFeeBps: pool.feeBps,
     market: { midXinY: pool.midXinY, yFraction, drift: yFraction - 0.5, totalY: freeValueY },
   };
 }
@@ -175,6 +182,25 @@ async function act(
     `  safety: external ${s.externalMid ? s.externalMid.toLocaleString() : "n/a"} ${y.symbol}/${x.symbol} | divergence ${div} | pool ${s.poolActive ? "active" : "PAUSED"}`,
   );
 
+  // Divergence capture, DETECTION ONLY (see arb.ts): what the optimal pool-vs-reference
+  // trade would net after pool fee, FlashStack fee, and gas. Journalled every cycle it
+  // exists — the opportunity record that sizes the M2 flash-rebalance work. Runs before
+  // the safety gate on purpose: large divergences trip the oracle halt, and those are
+  // exactly the opportunities worth having on record.
+  let arbOpp = null;
+  if (s.externalMid) {
+    arbOpp = findArb(s.xReserve, s.yReserve, s.externalMid, {
+      poolFeeBps: s.poolFeeBps,
+      gasY: y.native ? Number(FEE_USTX) / 1e6 : 0, // gas is STX; only y-denominable when y IS STX
+    });
+    if (arbOpp) {
+      console.log(
+        `  arb: ${arbOpp.direction} ${arbOpp.amountIn.toFixed(arbOpp.direction === "buy-x" ? 2 : 8)} → ` +
+          `net edge ~${arbOpp.netEdgeY.toFixed(2)} ${y.symbol} at ${(arbOpp.divergenceBps / 100).toFixed(2)}% divergence (detection only)`,
+      );
+    }
+  }
+
   tickJournal = {
     t: ts,
     pair: cfg.key,
@@ -185,6 +211,16 @@ async function act(
     lpValueY: +s.lpValueY.toFixed(4),
     safe: safety.safe,
     ...(safety.reasons.length ? { haltReasons: safety.reasons } : {}),
+    ...(arbOpp
+      ? {
+          arb: {
+            direction: arbOpp.direction,
+            amountIn: +arbOpp.amountIn.toFixed(8),
+            netEdgeY: +arbOpp.netEdgeY.toFixed(4),
+            divergenceBps: Math.round(arbOpp.divergenceBps),
+          },
+        }
+      : {}),
     params: {
       targetY: params.targetYFraction,
       bandBps: params.rebalanceBandBps,
