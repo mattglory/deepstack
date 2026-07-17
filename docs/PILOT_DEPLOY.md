@@ -26,38 +26,28 @@ Any small VPS is enough — the agent is one Node process doing a handful of API
 30 minutes. Hetzner CX22 (~€4/mo) or DigitalOcean's $6 droplet are both ample. Grant funds
 cover hosting.
 
+Scripted (recommended — this is exactly runbook-§2 as code, refuses to harden ssh if it
+would lock you out):
+
 ```bash
-# as root, on a fresh Debian/Ubuntu box
-adduser --system --group --home /opt/deepstack deepstack
-
-# Node LTS (the unit calls /usr/bin/node directly — nvm installs won't be on that path)
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs git
-node -v   # expect v22.x
-
-# harden ssh: key-only, no root login
-sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-systemctl restart ssh
-
-# firewall: nothing inbound but ssh — the agent needs no open ports
-ufw allow OpenSSH && ufw --force enable
-
-# unattended security updates
-apt-get install -y unattended-upgrades
+# as root, on a fresh Debian/Ubuntu box — AFTER confirming your ssh KEY logs in
+curl -fsSL https://raw.githubusercontent.com/mattglory/deepstack/main/deploy/provision.sh | bash
 ```
+
+It creates the `deepstack` service user, installs Node 22 LTS + git, switches ssh to
+key-only, enables the ssh-only firewall, and turns on unattended security updates.
+Read `deploy/provision.sh` before piping to bash — it's 50 lines on purpose.
 
 ## 3. Install
 
 ```bash
-git clone https://github.com/mattglory/deepstack.git /tmp/deepstack
-cp -r /tmp/deepstack/stacks-liquidity-agent/. /opt/deepstack/
-cd /opt/deepstack
-npm install
-npm test        # 43 tests — do not deploy a red suite
-npm run typecheck
-chown -R deepstack:deepstack /opt/deepstack
+curl -fsSL https://raw.githubusercontent.com/mattglory/deepstack/main/deploy/install.sh | bash
 ```
+
+`deploy/install.sh` clones/updates the repo into `/opt/deepstack`, installs deps, runs the
+full test suite + typecheck (a red suite aborts the install), and installs — but does NOT
+enable — the systemd unit. Re-running it later is the update path: it never touches
+`.env`, `journal/`, or the telemetry file.
 
 ## 4. Secrets
 
@@ -82,11 +72,14 @@ METRICS_GIST_TOKEN=ghp_...      # classic PAT, `gist` scope ONLY (see step 5b)
 ```
 
 Recommended: a second RPC provider, so a Hiro outage degrades to a warning instead of
-eating the uptime budget. Any endpoint speaking the Stacks/Hiro API works (QuickNode-style
-provider or a self-hosted stacks-blockchain-api):
+eating the uptime budget. The fallback must serve the **full Stacks Blockchain API**
+(`/extended/v1/…`), not just node RPC — which in practice means **QuickNode** (official
+Stacks integration, free tier is ample for the agent's ~50 requests/hour; create a Stacks
+mainnet endpoint and use its URL, auth token included in the path) or a self-hosted
+`stacks-blockchain-api`:
 
 ```ini
-STACKS_API_FALLBACKS=https://<your-second-provider>   # comma-separated, tried in order
+STACKS_API_FALLBACKS=https://<name>.stacks-mainnet.quiknode.pro/<token>   # comma-separated, tried in order
 ```
 
 > **The `.env` trap.** `loadDotenv()` in `src/m1/wallet.ts` reads `.env` **relative to the
