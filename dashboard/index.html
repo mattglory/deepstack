@@ -123,6 +123,10 @@
         sbtcAsset: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
         lpAsset: "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1::pool-token",
         actions: ["swap-y-for-x", "swap-x-for-y", "add-liquidity", "withdraw-liquidity"],
+        // Gist raw URL the pilot agent mirrors metrics.json to (see src/m1/publish.ts).
+        // Same-origin metrics.json only updates when the dashboard is redeployed; during
+        // the 30-day pilot the mirror is the live copy. Empty = same-origin only.
+        metricsMirror: "",
       };
       const uSTX = (n) => Number(n) / 1e6, baseBTC = (n) => Number(n) / 1e8;
       const fmt = (n, d = 2) => Number(n).toLocaleString("en-US", { maximumFractionDigits: d });
@@ -280,11 +284,21 @@
         svg.onmouseleave = () => { tip.style.display = "none"; cross.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0"); };
       }
 
-      async function loadPilot() {
+      // Two candidate copies of the telemetry: same-origin (frozen at last deploy) and the
+      // gist mirror the agent pushes every cycle. Render whichever heartbeat is fresher, so
+      // a broken mirror degrades to the deployed copy instead of an empty panel.
+      async function fetchMetrics(url) {
         try {
-          const r = await fetch("metrics.json", { cache: "no-store" });
-          renderPilot(r.ok ? await r.json() : null);
-        } catch { renderPilot(null); }
+          const r = await fetch(url, { cache: "no-store" });
+          return r.ok ? await r.json() : null;
+        } catch { return null; }
+      }
+      async function loadPilot() {
+        const sources = ["metrics.json"];
+        if (CFG.metricsMirror) sources.push(CFG.metricsMirror);
+        const copies = (await Promise.all(sources.map(fetchMetrics))).filter((m) => m && m.updated);
+        copies.sort((a, b) => new Date(b.updated) - new Date(a.updated));
+        renderPilot(copies[0] ?? null);
       }
 
       async function load() {

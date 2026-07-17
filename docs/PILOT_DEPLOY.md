@@ -77,6 +77,8 @@ PAIR=sbtc-stx
 STACKS_PRIVATE_KEY=...          # dedicated pilot wallet
 OPENROUTER_API_KEY=...          # AI tuning layer (M1 evidence: keep it active)
 HEALTHCHECK_URL=https://hc-ping.com/<uuid>
+METRICS_GIST_ID=...             # telemetry mirror — see step 5b
+METRICS_GIST_TOKEN=ghp_...      # classic PAT, `gist` scope ONLY (see step 5b)
 ```
 
 > **The `.env` trap.** `loadDotenv()` in `src/m1/wallet.ts` reads `.env` **relative to the
@@ -96,6 +98,35 @@ The `/fail` ping added in `journal.ts` only helps if a check exists.
 
 Behaviour: a good cycle pings success; a failed cycle pings `/fail` and alerts immediately;
 a dead process pings nothing and alerts after the grace period.
+
+## 5b. Telemetry mirror — so the public dashboard stays live
+
+The agent writes `dashboard/metrics.json` on the VPS, but the Vercel dashboard serves
+whatever was deployed last. Without a mirror, the uptime and heartbeat panels — the panels
+that evidence the pilot — freeze for 30 days. The agent therefore pushes `metrics.json` to
+a GitHub gist after every cycle (`src/m1/publish.ts`), and the dashboard renders whichever
+copy is fresher.
+
+Why a gist and not `vercel deploy` from the box: this VPS holds a funded wallet key. A
+Vercel token can redeploy every project on the account; a classic PAT with only the `gist`
+scope can edit gists and nothing else. Smallest credential that does the job.
+
+1. Create a **secret gist** at [gist.github.com](https://gist.github.com) with one file
+   named exactly `metrics.json` (content: `{}`). Note the gist id from its URL.
+2. Create a **classic** token at github.com/settings/tokens — fine-grained PATs do not
+   cover gists — ticking **only** the `gist` scope. No expiry longer than the pilot needs.
+3. Put both in `.env` as `METRICS_GIST_ID` / `METRICS_GIST_TOKEN`.
+4. In `dashboard/index.html`, set `CFG.metricsMirror` to the gist's **raw** URL *without*
+   a commit sha, so it always serves the latest revision:
+   `https://gist.githubusercontent.com/<user>/<gist-id>/raw/metrics.json`
+5. Redeploy the dashboard once. From then on it needs no deploys for the whole pilot.
+
+Verify end-to-end: run one agent cycle on the VPS, then check the gist shows a fresh
+`updated` timestamp and the dashboard's "last heartbeat" tile says **live**. The raw URL
+is CDN-cached for ~5 minutes — irrelevant at a 30-minute cadence.
+
+A failed push logs a warning and never interrupts trading; if the mirror breaks, the
+dashboard falls back to the deployed copy and its "stale" badge is the tell.
 
 ## 6. Start it — and verify before walking away
 
@@ -145,12 +176,9 @@ rm /opt/deepstack/KILL        # resumes
 
 ## Open issues to settle before 1 September
 
-**Telemetry does not reach the public dashboard.** The agent writes `dashboard/metrics.json`
-on the VPS. The Vercel dashboard serves whatever was last deployed from a laptop, so during
-the pilot its uptime and heartbeat panels would sit frozen — the exact panels that evidence
-the pilot. Options: a cron on the VPS running `vercel deploy --prod` hourly (needs a
-`VERCEL_TOKEN` on the box); the VPS pushing `metrics.json` to a gist the dashboard fetches;
-or the dashboard reading it from a URL the VPS serves. **Unresolved — pick one.**
+**~~Telemetry does not reach the public dashboard.~~ Resolved** — gist mirror, see §5b.
+Remaining setup is operational: create the gist + token, set `CFG.metricsMirror`, redeploy
+the dashboard once.
 
 **≥25 transactions may not happen by themselves.** M2 requires ≥25 mainnet txs. With a
 6-sigma volatility-scaled band, a rebalance needs roughly a 12% move in the sBTC/STX ratio;

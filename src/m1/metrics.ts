@@ -11,7 +11,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json";
+export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json";
 const MAX_SAMPLES = 2000; // ~1.4 days @60s, ~41 days @30min — enough for the pilot at a sane cadence
 
 export interface MetricsSample {

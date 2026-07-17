@@ -27,6 +27,7 @@ import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory } from "./metrics.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
+import { publishMetrics } from "./publish.js";
 import { createSupervisor } from "./supervise.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
@@ -344,6 +345,7 @@ async function main() {
     } finally {
       appendJournal(tickJournal); // one journal line per tick, whatever happened
       await pingHealthcheck(); // dead-man's switch: silence = alert
+      await publishMetrics(); // pilot telemetry → public dashboard (gist mirror)
     }
   };
 
