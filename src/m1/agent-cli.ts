@@ -277,10 +277,12 @@ async function act(
           : await buildWithdrawLiquidity(lp.lpBase, opts);
       const ok = await broadcastResult(built);
       if (ok) {
-        // Track the position's cost basis so LP P&L (fees − IL) is measurable.
-        // Add: both legs at the execution mid. Withdraw: proportional burn.
+        // Track the position's cost basis (leg quantities) so fees-net-of-IL is
+        // measurable. Add: x deposited + equal-value y at execution mid (the pool pulls
+        // the paired leg at that ratio). Withdraw: proportional burn of both legs.
         if (lp.action === "add-liquidity") {
-          adjustLpBasis({ kind: "add", addedValueY: 2 * (Number(lp.xBase) / 10 ** x.decimals) * s.midXinY });
+          const xQty = Number(lp.xBase) / 10 ** x.decimals;
+          adjustLpBasis({ kind: "add", xQty, yQty: xQty * s.midXinY, t: ts.replace(" ", "T") + "Z" });
         } else if (s.lpBalanceBase > 0n) {
           adjustLpBasis({ kind: "withdraw", fraction: Number(lp.lpBase) / Number(s.lpBalanceBase) });
         }

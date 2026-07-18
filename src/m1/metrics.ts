@@ -34,11 +34,15 @@ export interface MetricsFile {
   startedAt: string;
   intervalSec: number; // expected cadence — lets the dashboard compute uptime honestly
   baseline: { t: string; xBase: string; yBase: string; mid: number; portfolioY: number };
-  // Cost basis of the LP position, in y. current LP value − basis = the position's net
-  // P&L (fees earned MINUS impermanent loss) — the honest income figure. Maintained by
-  // the agent on every add/withdraw; auto-initialised at current value for a position
-  // that predates tracking (conservative: income counts from then on).
-  lpBasisY?: number;
+  // Cost basis of the LP position, as the deposited LEG QUANTITIES (x in human units,
+  // y in human units) plus when tracking started. The honest income figure is
+  //   feesNetIL = current LP value − (xQty·mid + yQty)
+  // i.e. LP vs simply HOLDING the deposited legs — the definition of fees net of
+  // impermanent loss. A scalar STX basis would smuggle the x-leg's price moves into
+  // "income". Maintained on every add/withdraw; auto-initialised for positions that
+  // predate tracking (fresh XYK deposits are always 50/50 by value).
+  lpBasis?: { xQty: number; yQty: number; t: string };
+  lpBasisY?: number; // legacy scalar — migrated to lpBasis on the next sample
   samples: MetricsSample[];
   updated: string;
 }
@@ -82,7 +86,12 @@ export function recordSample(
       };
     }
     m.intervalSec = intervalSec; // keep current cadence
-    if (m.lpBasisY === undefined && s.lpValueY > 0) m.lpBasisY = s.lpValueY; // init pre-tracking positions
+    if (!m.lpBasis && s.mid > 0) {
+      // Initialise (or migrate the legacy scalar): split 50/50 by value at current mid.
+      const v = m.lpBasisY ?? (s.lpValueY > 0 ? s.lpValueY : 0);
+      if (v > 0) m.lpBasis = { xQty: v / 2 / s.mid, yQty: v / 2, t: s.t };
+      delete m.lpBasisY;
+    }
     m.samples.push(s);
     if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);
     m.updated = s.t;
@@ -96,21 +105,25 @@ export function recordSample(
 
 /**
  * Adjust the LP cost basis after an executed LP action.
- *   add:      basis += the value deposited (both legs, in y at execution mid)
- *   withdraw: basis −= the withdrawn fraction of itself (proportional burn)
+ *   add:      both deposited leg quantities are appended (t is kept from first deposit)
+ *   withdraw: both legs scale down by the withdrawn fraction (proportional burn)
  * Never throws — same policy as recordSample.
  */
 export function adjustLpBasis(
-  evt: { kind: "add"; addedValueY: number } | { kind: "withdraw"; fraction: number },
+  evt:
+    | { kind: "add"; xQty: number; yQty: number; t: string }
+    | { kind: "withdraw"; fraction: number },
 ): void {
   try {
     const m = load();
     if (!m) return;
-    const basis = m.lpBasisY ?? 0;
-    m.lpBasisY =
-      evt.kind === "add"
-        ? basis + Math.max(0, evt.addedValueY)
-        : basis * (1 - Math.min(1, Math.max(0, evt.fraction)));
+    const b = m.lpBasis ?? { xQty: 0, yQty: 0, t: evt.kind === "add" ? evt.t : new Date().toISOString() };
+    if (evt.kind === "add") {
+      m.lpBasis = { xQty: b.xQty + Math.max(0, evt.xQty), yQty: b.yQty + Math.max(0, evt.yQty), t: b.t };
+    } else {
+      const keep = 1 - Math.min(1, Math.max(0, evt.fraction));
+      m.lpBasis = { xQty: b.xQty * keep, yQty: b.yQty * keep, t: b.t };
+    }
     writeFileSync(METRICS_PATH, JSON.stringify(m));
   } catch (err) {
     console.warn(`(lp basis update skipped: ${(err as Error).message})`);

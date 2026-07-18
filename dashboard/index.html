@@ -180,18 +180,30 @@
           `<span><i style="background:var(--btc)"></i>sBTC ${fmt(100 - stxPct, 1)}% · ${fmt(sbtc, 8)}</span>` +
           `<span style="color:var(--faint)">target 50 / 50 · mid ${mid ? fmt(mid, 0) + " STX/sBTC" : "—"}</span>`;
 
-        // economics — honest. LP P&L = current LP value − tracked cost basis: the fees
-        // the position earned NET of impermanent loss (one number, no flattering split).
-        const lpNet = lp > 0 && agentLpBasisY !== null ? agentLpValueY - agentLpBasisY : null;
+        // economics — honest. Fees net of IL = LP value vs HOLDING the deposited legs
+        // at today's mid (the definition of impermanent loss; a scalar STX basis would
+        // smuggle sBTC price moves into "income"). APR annualises that only once the
+        // observation window is ≥3 days — annualised noise is how LP marketing lies.
+        let lpNet = null, lpApr = null, lpDays = 0;
+        if (lp > 0 && agentLpBasis && agentMid > 0) {
+          const hodlLegs = agentLpBasis.xQty * agentMid + agentLpBasis.yQty;
+          lpNet = agentLpValueY - hodlLegs;
+          lpDays = (Date.now() - new Date(agentLpBasis.t).getTime()) / 864e5;
+          if (hodlLegs > 0 && lpDays >= 3) lpApr = (lpNet / hodlLegs) * (365 / lpDays) * 100;
+        }
         const net = (lpNet ?? 0) - uSTX(fees);
         const signed = (v, d = 3) =>
           `<span style="color:${v >= 0 ? "var(--ok)" : "var(--bad)"}">${v >= 0 ? "+" : ""}${fmt(v, d)} STX</span>`;
+        const aprTile =
+          lpNet === null ? `—<div class="sub2">no LP basis yet</div>`
+          : lpApr === null ? `<span style="color:var(--muted)">measuring</span><div class="sub2">${lpDays.toFixed(1)}d of ≥3d window</div>`
+          : `<span style="color:${lpApr >= 0 ? "var(--ok)" : "var(--bad)"}">${lpApr >= 0 ? "+" : ""}${fmt(lpApr, 1)}%</span><div class="sub2">net of IL · ${lpDays.toFixed(0)}d observed</div>`;
         $("econ").innerHTML =
           small("LP P&L (fees − IL)", lpNet === null ? `—<div class="sub2">no LP basis yet</div>` : signed(lpNet)) +
+          small("LP APR (annualised)", aprTile) +
           small("Fees paid", `${fmt(uSTX(fees), 3)} STX`) +
           small("Net", signed(net)) +
-          small("LP position", `${fmt(lp, 6)}<div class="sub2">~${fmt(agentLpValueY, 1)} STX</div>`) +
-          small("sBTC traded", `${fmt(baseBTC(traded), 8)}`);
+          small("LP position", `${fmt(lp, 6)}<div class="sub2">~${fmt(agentLpValueY, 1)} STX</div>`);
         $("econNote").innerHTML =
           "Rebalancing swaps <b>pay</b> the pool fee — they manage inventory, they don't earn. " +
           "The LP position earns a share of the 0.5% pool fee, shown here as value vs cost basis — " +
@@ -216,9 +228,10 @@
       // but not its value — the agent computes that each cycle from a withdraw quote, so
       // the portfolio tile borrows it rather than undercounting by the LP position.
       let agentLpValueY = 0;
-      let agentLpBasisY = null; // cost basis of the LP position (agent-tracked)
+      let agentLpBasis = null; // deposited leg quantities {xQty, yQty, t} (agent-tracked)
+      let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
       function renderPilot(m) {
-        if (m && typeof m.lpBasisY === "number") agentLpBasisY = m.lpBasisY;
+        if (m && m.lpBasis) agentLpBasis = m.lpBasis;
         const tiles = $("pilotTiles"), note = $("pilotNote"), wrap = $("midWrap");
         if (!m || !m.samples || m.samples.length === 0) {
           tiles.innerHTML = "";
@@ -228,6 +241,7 @@
         }
         const ss = m.samples, last = ss[ss.length - 1];
         agentLpValueY = last.lpValueY ?? 0;
+        agentMid = last.mid ?? 0;
         const t0 = new Date(m.startedAt).getTime(), t1 = new Date(last.t).getTime();
         const elapsedH = Math.max(0, (t1 - t0) / 3.6e6);
 
