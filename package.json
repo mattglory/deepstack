@@ -16,7 +16,9 @@
     "m1:lvr": "tsx src/m1/lvr-cli.ts",
     "test": "node --import tsx --test src/m1/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "m2:receiver": "tsx src/m2/receiver-cli.ts"
+    "m2:receiver": "tsx src/m2/receiver-cli.ts",
+    "pilot:status": "bash deploy/watch.sh status",
+    "pilot:watch": "bash deploy/watch.sh logs"
   },
   "dependencies": {
     "@stacks/transactions": "^7.0.0",
