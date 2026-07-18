@@ -73,8 +73,13 @@ does nothing (losing only the network fee).
      remains the later, at-scale path.)
 3. **Guards carry over** — the same input-cap post-conditions, on-chain min-output guards,
    and the oracle-sanity + kill-switch gate wrap the flash-rebalance path.
-4. **Deliverable** — **≥1 live FlashStack flash-rebalance transaction on mainnet**, linked
-   in the M2 submission, demonstrating the DeepStack→FlashStack fee flow end-to-end.
+4. **Deliverable — DELIVERED (2026-07-18).** First live flash-rebalance executed on mainnet:
+   tx `1f826abe4668f3c8f04b93d0113d1e00b1f52280fa0fff285b8be02e4878b097` (block 8579338).
+   One atomic transaction: core lent 10 STX → receiver swapped via the Bitflow pool with the
+   armed min-out enforced → all sBTC forwarded to the operator → operator repaid 10.005 STX.
+   The FlashStack reserve grew by the 5bps fee — the DeepStack→FlashStack fee flow, live.
+   Receiver: `SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-rebalance-receiver`
+   (deploy tx `940af115…e7fe2`); ops CLI: `npm run m2:receiver`.
 
 Note the atomicity constraint on *capture*: a flash-borrowed input must be repaid in the
 same transaction, so converting detected edge into profit needs a second leg in that
