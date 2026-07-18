@@ -14,11 +14,12 @@
     "m1:agent": "tsx src/m1/agent-cli.ts",
     "m1:safety": "tsx src/m1/safety-cli.ts",
     "m1:lvr": "tsx src/m1/lvr-cli.ts",
-    "test": "node --import tsx --test src/m1/*.test.ts",
+    "test": "node --import tsx --test src/m1/*.test.ts src/m2/*.test.ts",
     "typecheck": "tsc --noEmit",
     "m2:receiver": "tsx src/m2/receiver-cli.ts",
     "pilot:status": "bash deploy/watch.sh status",
-    "pilot:watch": "bash deploy/watch.sh logs"
+    "pilot:watch": "bash deploy/watch.sh logs",
+    "m2:pnl": "tsx src/m2/pnl-cli.ts"
   },
   "dependencies": {
     "@stacks/transactions": "^7.0.0",

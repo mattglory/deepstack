@@ -4,6 +4,7 @@
 #   npm run pilot:status     one-page health check
 #   npm run pilot:watch      live logs (Ctrl+C to stop watching; agent keeps running)
 #   bash deploy/watch.sh errors    anything that ever went wrong
+#   bash deploy/watch.sh report [--since YYYY-MM-DD]   pilot P&L report from the box's data
 #   bash deploy/watch.sh kill      halt trading NOW (process keeps journalling)
 #   bash deploy/watch.sh resume    clear the kill switch
 #
@@ -32,6 +33,10 @@ case "${1:-status}" in
       journalctl -u deepstack-agent --no-pager | grep -iE "cycle failed|SAFETY HALT|refusing|broadcast failed" | tail -20
       echo "--- journalled cycle-errors ---"
       grep -h "cycle-error" /opt/deepstack/journal/*.jsonl 2>/dev/null | tail -5 || echo "(none)"'
+    ;;
+  report)
+    shift
+    ssh "$HOST" "cd /opt/deepstack && sudo -u deepstack node --import tsx src/m2/pnl-cli.ts $*"
     ;;
   kill)
     ssh "$HOST" 'touch /opt/deepstack/KILL && echo "⛔ KILL engaged — trading halts at the next cycle; telemetry continues"'
