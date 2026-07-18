@@ -24,7 +24,7 @@ import {
 import { decide, decideLp, defaultParams, bandBpsFromVol, type Inventory, type AgentParams } from "./agent.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
-import { recordSample, loadHistory } from "./metrics.js";
+import { recordSample, loadHistory, adjustLpBasis } from "./metrics.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics } from "./publish.js";
@@ -275,7 +275,17 @@ async function act(
         lp.action === "add-liquidity"
           ? await buildAddLiquidity(lp.xBase, opts)
           : await buildWithdrawLiquidity(lp.lpBase, opts);
-      return broadcastResult(built);
+      const ok = await broadcastResult(built);
+      if (ok) {
+        // Track the position's cost basis so LP P&L (fees − IL) is measurable.
+        // Add: both legs at the execution mid. Withdraw: proportional burn.
+        if (lp.action === "add-liquidity") {
+          adjustLpBasis({ kind: "add", addedValueY: 2 * (Number(lp.xBase) / 10 ** x.decimals) * s.midXinY });
+        } else if (s.lpBalanceBase > 0n) {
+          adjustLpBasis({ kind: "withdraw", fraction: Number(lp.lpBase) / Number(s.lpBalanceBase) });
+        }
+      }
+      return ok;
     }
     console.log(`  LP: hold — ${lp.reason}`);
   }

@@ -180,19 +180,22 @@
           `<span><i style="background:var(--btc)"></i>sBTC ${fmt(100 - stxPct, 1)}% · ${fmt(sbtc, 8)}</span>` +
           `<span style="color:var(--faint)">target 50 / 50 · mid ${mid ? fmt(mid, 0) + " STX/sBTC" : "—"}</span>`;
 
-        // economics — honest
-        const feeIncome = 0; // accrues only from LP positions (none yet)
-        const net = feeIncome - uSTX(fees);
+        // economics — honest. LP P&L = current LP value − tracked cost basis: the fees
+        // the position earned NET of impermanent loss (one number, no flattering split).
+        const lpNet = lp > 0 && agentLpBasisY !== null ? agentLpValueY - agentLpBasisY : null;
+        const net = (lpNet ?? 0) - uSTX(fees);
+        const signed = (v, d = 3) =>
+          `<span style="color:${v >= 0 ? "var(--ok)" : "var(--bad)"}">${v >= 0 ? "+" : ""}${fmt(v, d)} STX</span>`;
         $("econ").innerHTML =
-          small("LP fee income", `${fmt(feeIncome, 3)} STX`) +
+          small("LP P&L (fees − IL)", lpNet === null ? `—<div class="sub2">no LP basis yet</div>` : signed(lpNet)) +
           small("Fees paid", `${fmt(uSTX(fees), 3)} STX`) +
-          small("Net (fees)", `<span style="color:${net >= 0 ? "var(--ok)" : "var(--bad)"}">${fmt(net, 3)} STX</span>`) +
-          small("LP position", `${fmt(lp, 6)}`) +
+          small("Net", signed(net)) +
+          small("LP position", `${fmt(lp, 6)}<div class="sub2">~${fmt(agentLpValueY, 1)} STX</div>`) +
           small("sBTC traded", `${fmt(baseBTC(traded), 8)}`);
         $("econNote").innerHTML =
           "Rebalancing swaps <b>pay</b> the pool fee — they manage inventory, they don't earn. " +
-          "Income begins when the agent <b>provides liquidity</b> (earns a share of the 0.5% pool fee) " +
-          "or captures incentives/arbitrage — net of impermanent loss. This panel will track that during the pilot.";
+          "The LP position earns a share of the 0.5% pool fee, shown here as value vs cost basis — " +
+          "fees <b>net of impermanent loss</b>, tracked from the agent's telemetry. No guaranteed yield.";
 
         // table
         $("rows").innerHTML = acts.length
@@ -213,7 +216,9 @@
       // but not its value — the agent computes that each cycle from a withdraw quote, so
       // the portfolio tile borrows it rather than undercounting by the LP position.
       let agentLpValueY = 0;
+      let agentLpBasisY = null; // cost basis of the LP position (agent-tracked)
       function renderPilot(m) {
+        if (m && typeof m.lpBasisY === "number") agentLpBasisY = m.lpBasisY;
         const tiles = $("pilotTiles"), note = $("pilotNote"), wrap = $("midWrap");
         if (!m || !m.samples || m.samples.length === 0) {
           tiles.innerHTML = "";

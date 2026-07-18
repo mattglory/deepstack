@@ -34,6 +34,11 @@ export interface MetricsFile {
   startedAt: string;
   intervalSec: number; // expected cadence — lets the dashboard compute uptime honestly
   baseline: { t: string; xBase: string; yBase: string; mid: number; portfolioY: number };
+  // Cost basis of the LP position, in y. current LP value − basis = the position's net
+  // P&L (fees earned MINUS impermanent loss) — the honest income figure. Maintained by
+  // the agent on every add/withdraw; auto-initialised at current value for a position
+  // that predates tracking (conservative: income counts from then on).
+  lpBasisY?: number;
   samples: MetricsSample[];
   updated: string;
 }
@@ -77,6 +82,7 @@ export function recordSample(
       };
     }
     m.intervalSec = intervalSec; // keep current cadence
+    if (m.lpBasisY === undefined && s.lpValueY > 0) m.lpBasisY = s.lpValueY; // init pre-tracking positions
     m.samples.push(s);
     if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);
     m.updated = s.t;
@@ -85,5 +91,28 @@ export function recordSample(
   } catch (err) {
     // Metrics are evidence, not safety-critical — never take the agent down over them.
     console.warn(`(metrics write skipped: ${(err as Error).message})`);
+  }
+}
+
+/**
+ * Adjust the LP cost basis after an executed LP action.
+ *   add:      basis += the value deposited (both legs, in y at execution mid)
+ *   withdraw: basis −= the withdrawn fraction of itself (proportional burn)
+ * Never throws — same policy as recordSample.
+ */
+export function adjustLpBasis(
+  evt: { kind: "add"; addedValueY: number } | { kind: "withdraw"; fraction: number },
+): void {
+  try {
+    const m = load();
+    if (!m) return;
+    const basis = m.lpBasisY ?? 0;
+    m.lpBasisY =
+      evt.kind === "add"
+        ? basis + Math.max(0, evt.addedValueY)
+        : basis * (1 - Math.min(1, Math.max(0, evt.fraction)));
+    writeFileSync(METRICS_PATH, JSON.stringify(m));
+  } catch (err) {
+    console.warn(`(lp basis update skipped: ${(err as Error).message})`);
   }
 }
