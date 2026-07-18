@@ -15,7 +15,8 @@
     "m1:safety": "tsx src/m1/safety-cli.ts",
     "m1:lvr": "tsx src/m1/lvr-cli.ts",
     "test": "node --import tsx --test src/m1/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "m2:receiver": "tsx src/m2/receiver-cli.ts"
   },
   "dependencies": {
     "@stacks/transactions": "^7.0.0",
