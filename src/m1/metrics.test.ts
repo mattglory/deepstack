@@ -66,6 +66,19 @@ test("basis: add appends legs (keeping first-deposit time); withdraw burns both 
   assert.equal(readBasis().yQty, 0);
 });
 
+test("basis: adjust keeps the sample/basis PAIR consistent — no fake in-flight loss", () => {
+  recordSample("sbtc-stx", "SPX", 1800, sample(200)); // pre-action sample: LP value 200
+  adjustLpBasis({ kind: "add", xQty: 0.0001, yQty: 40, t: "2026-09-05T00:00:00Z" });
+  let m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  // Sample bumped by the add's value (2×yQty), matching the basis growth exactly:
+  assert.equal(m.samples[m.samples.length - 1].lpValueY, 280);
+  const basisVal = m.lpBasis.xQty * 400_000 + m.lpBasis.yQty; // = 100+40 + (0.00025+0.0001)*mid
+  assert.ok(Math.abs(m.samples[m.samples.length - 1].lpValueY - basisVal) < 1e-9);
+  adjustLpBasis({ kind: "withdraw", fraction: 0.5 });
+  m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  assert.equal(m.samples[m.samples.length - 1].lpValueY, 140);
+});
+
 test("fees-net-of-IL: a pure price move nets to ~zero against the leg benchmark", () => {
   // Init 200 STX position at mid 400k → legs x=0.00025, y=100.
   recordSample("sbtc-stx", "SPX", 1800, sample(200, 400_000));

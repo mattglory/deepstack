@@ -118,11 +118,19 @@ export function adjustLpBasis(
     const m = load();
     if (!m) return;
     const b = m.lpBasis ?? { xQty: 0, yQty: 0, t: evt.kind === "add" ? evt.t : new Date().toISOString() };
+    // Keep the recorded pair CONSISTENT: the cycle's sample was taken before the action,
+    // the basis after it — comparing post-action basis against a pre-action LP value shows
+    // every in-flight add as a fake loss (≈ the add's size) until the next cycle. So the
+    // same event that moves the basis also moves the last sample's LP value estimate; the
+    // next cycle's real reading replaces the estimate.
+    const last = m.samples[m.samples.length - 1];
     if (evt.kind === "add") {
       m.lpBasis = { xQty: b.xQty + Math.max(0, evt.xQty), yQty: b.yQty + Math.max(0, evt.yQty), t: b.t };
+      if (last) last.lpValueY += 2 * Math.max(0, evt.yQty); // equal-value legs by construction
     } else {
       const keep = 1 - Math.min(1, Math.max(0, evt.fraction));
       m.lpBasis = { xQty: b.xQty * keep, yQty: b.yQty * keep, t: b.t };
+      if (last) last.lpValueY *= keep;
     }
     writeFileSync(METRICS_PATH, JSON.stringify(m));
   } catch (err) {
