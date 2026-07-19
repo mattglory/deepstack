@@ -47,14 +47,14 @@ test("timing: no external reference → execute (timing must never block on miss
 const FIXTURE = [
   { ticker_id: "SM3V…JFQ4.sbtc-token_Stacks", last_price: 391000, liquidity_in_usd: 280000, base_volume: 12 },
   { ticker_id: "SM3V…JFQ4.sbtc-token_SP2X….pbtc-token", last_price: 1.002, liquidity_in_usd: 250000, base_volume: 0 },
-  { ticker_id: "Stacks_SP3Y….token-aeusdc", last_price: 0.165, liquidity_in_usd: 10000, base_volume: 5 }, // no sBTC — excluded
-  { ticker_id: "SM3V…JFQ4.sbtc-token_SP1….dust-token", last_price: 5, liquidity_in_usd: 0 }, // zero liq — excluded
+  { ticker_id: "Stacks_SP3Y….token-aeusdc", last_price: 0.165, liquidity_in_usd: 10000, base_volume: 5 }, // ≥$5k — included
+  { ticker_id: "SM3V…JFQ4.sbtc-token_SP1….dust-token", last_price: 5, liquidity_in_usd: 400 }, // dust — excluded
 ];
 
-test("xpool: keeps only sBTC pools with liquidity, in short form", () => {
+test("xpool: keeps every routable pool (≥$5k), drops dust, in short form", () => {
   const out = parseCrossPools(FIXTURE);
-  assert.equal(out.length, 2);
-  assert.deepEqual(out.map((o) => o.pool), ["sbtc-token/Stacks", "sbtc-token/pbtc-token"]);
+  assert.equal(out.length, 3);
+  assert.deepEqual(out.map((o) => o.pool), ["sbtc-token/Stacks", "sbtc-token/pbtc-token", "Stacks/token-aeusdc"]);
   assert.equal(out[1].liqUsd, 250000);
 });
 

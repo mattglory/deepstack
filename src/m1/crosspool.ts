@@ -17,7 +17,10 @@ export interface CrossPoolObs {
   liqUsd: number;
 }
 
-const SBTC = "sbtc-token";
+// Record every pool deep enough to route through (not just sBTC pairs): closable arb
+// cycles live in the whole graph — the fattest one found so far is the SAME-PAIR
+// STX/stSTX multi-pool group, whose price gaps this series will measure over the pilot.
+const MIN_LIQ_USD = 5_000;
 
 /** Pure parser so the fixture-based tests never need the network. */
 export function parseCrossPools(ticker: unknown): CrossPoolObs[] {
@@ -25,10 +28,10 @@ export function parseCrossPools(ticker: unknown): CrossPoolObs[] {
   const out: CrossPoolObs[] = [];
   for (const t of ticker) {
     const id = String((t as any)?.ticker_id ?? "");
-    if (!id.toLowerCase().includes(SBTC)) continue;
+    if (!id) continue;
     const price = Number((t as any)?.last_price);
     const liqUsd = Number((t as any)?.liquidity_in_usd);
-    if (!(liqUsd > 0)) continue;
+    if (!(liqUsd >= MIN_LIQ_USD)) continue;
     const short = id
       .split("_")
       .map((p) => p.split(".").pop())
