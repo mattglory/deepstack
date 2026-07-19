@@ -38,6 +38,18 @@ case "${1:-status}" in
     shift
     ssh "$HOST" "cd /opt/deepstack && sudo -u deepstack node --import tsx src/m2/pnl-cli.ts $*"
     ;;
+  sync)
+    # Pull the pilot's evidence (journal + telemetry) down to the laptop. The journal is
+    # the M2 uptime/decision record — it must survive a dead VPS. Run this weekly at least.
+    mkdir -p evidence-backup
+    rsync -az "$HOST":/opt/deepstack/journal/ evidence-backup/journal/
+    rsync -az "$HOST":/opt/deepstack/dashboard/metrics.json evidence-backup/metrics.json
+    echo "synced → evidence-backup/ ($(ls evidence-backup/journal | wc -l | tr -d ' ') journal days)"
+    ;;
+  pilot-start)
+    shift
+    ssh "$HOST" "cd /opt/deepstack && sudo -u deepstack node --import tsx src/m2/pilot-start-cli.ts $*"
+    ;;
   kill)
     ssh "$HOST" 'touch /opt/deepstack/KILL && echo "⛔ KILL engaged — trading halts at the next cycle; telemetry continues"'
     ;;

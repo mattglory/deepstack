@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.METRICS_PATH = join(tmpdir(), `deepstack-metrics-test-${process.pid}.json`);
-const { recordSample, adjustLpBasis, METRICS_PATH } = await import("./metrics.js");
+const { recordSample, adjustLpBasis, markPilotStart, METRICS_PATH } = await import("./metrics.js");
 
 const sample = (lpValueY: number, mid = 400_000) => ({
   t: "2026-09-01T00:00:00Z", mid, ext: null,
@@ -94,6 +94,20 @@ test("fees-net-of-IL: a pure price move nets to ~zero against the leg benchmark"
 test("basis: adjust is a no-op without a metrics file (never throws)", () => {
   adjustLpBasis({ kind: "add", xQty: 1, yQty: 1, t: "2026-09-01T00:00:00Z" });
   assert.throws(() => readFileSync(METRICS_PATH));
+});
+
+test("pilot window: anchors at the latest sample, refuses to move once set", () => {
+  recordSample("sbtc-stx", "SPX", 1800, sample(200));
+  const r = markPilotStart();
+  assert.equal(r.startedAt, "2026-09-01T00:00:00Z");
+  const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  assert.equal(m.pilotBaseline.portfolioY, 800);
+  assert.equal(m.pilotBaseline.xBase, "100000");
+  assert.throws(() => markPilotStart(), /already started/); // evidence windows don't move
+});
+
+test("pilot window: refuses with no telemetry", () => {
+  assert.throws(() => markPilotStart(), /no telemetry/);
 });
 
 test("basis: survives the sample-cap slicing", () => {

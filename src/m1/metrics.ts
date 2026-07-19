@@ -43,6 +43,11 @@ export interface MetricsFile {
   // predate tracking (fresh XYK deposits are always 50/50 by value).
   lpBasis?: { xQty: number; yQty: number; t: string };
   lpBasisY?: number; // legacy scalar — migrated to lpBasis on the next sample
+  // Official pilot window. When set, the dashboard scopes uptime, IL-adjusted return,
+  // and the price chart to the window, and the P&L report defaults its --since to it.
+  // Set once by `m2:pilot-start` on the pilot box; funding must be complete BEFORE this.
+  pilotStartedAt?: string;
+  pilotBaseline?: { t: string; xBase: string; yBase: string; mid: number; portfolioY: number };
   samples: MetricsSample[];
   updated: string;
 }
@@ -101,6 +106,22 @@ export function recordSample(
     // Metrics are evidence, not safety-critical — never take the agent down over them.
     console.warn(`(metrics write skipped: ${(err as Error).message})`);
   }
+}
+
+/**
+ * Anchor the official pilot window at the latest recorded sample. Idempotent by refusal:
+ * a second call throws rather than silently moving the window (evidence windows are not
+ * renegotiable mid-run — that is the whole point of having one).
+ */
+export function markPilotStart(): { startedAt: string; portfolioY: number } {
+  const m = load();
+  if (!m || m.samples.length === 0) throw new Error("no telemetry yet — run a cycle first");
+  if (m.pilotStartedAt) throw new Error(`pilot already started at ${m.pilotStartedAt}`);
+  const s = m.samples[m.samples.length - 1];
+  m.pilotStartedAt = s.t;
+  m.pilotBaseline = { t: s.t, xBase: s.xBase, yBase: s.yBase, mid: s.mid, portfolioY: s.portfolioY };
+  writeFileSync(METRICS_PATH, JSON.stringify(m));
+  return { startedAt: s.t, portfolioY: s.portfolioY };
 }
 
 /**

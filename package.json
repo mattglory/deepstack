@@ -20,7 +20,8 @@
     "pilot:status": "bash deploy/watch.sh status",
     "pilot:watch": "bash deploy/watch.sh logs",
     "m2:pnl": "tsx src/m2/pnl-cli.ts",
-    "m2:presplit": "tsx src/m2/presplit-cli.ts"
+    "m2:presplit": "tsx src/m2/presplit-cli.ts",
+    "m2:pilot-start": "tsx src/m2/pilot-start-cli.ts"
   },
   "dependencies": {
     "@stacks/transactions": "^7.0.0",

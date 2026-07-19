@@ -239,10 +239,22 @@
           note.textContent = "Awaiting pilot start — the agent publishes heartbeats, price history, and IL-adjusted return here once the 30-day run begins.";
           return;
         }
-        const ss = m.samples, last = ss[ss.length - 1];
+        // Once the official pilot window opens (m.pilotStartedAt, set by m2:pilot-start),
+        // uptime, IL-adjusted return, and the chart scope to it — pre-window history and
+        // funding events stop contaminating the pilot's own evidence.
+        const pilot = !!m.pilotStartedAt;
+        const ss = pilot ? m.samples.filter((s) => s.t >= m.pilotStartedAt) : m.samples;
+        if (ss.length === 0) {
+          tiles.innerHTML = "";
+          wrap.style.display = "none";
+          note.textContent = "Pilot window open — awaiting the first in-window heartbeat.";
+          return;
+        }
+        const last = ss[ss.length - 1];
         agentLpValueY = last.lpValueY ?? 0;
         agentMid = last.mid ?? 0;
-        const t0 = new Date(m.startedAt).getTime(), t1 = new Date(last.t).getTime();
+        const winStart = pilot ? m.pilotStartedAt : m.startedAt;
+        const t0 = new Date(winStart).getTime(), t1 = new Date(last.t).getTime();
         const elapsedH = Math.max(0, (t1 - t0) / 3.6e6);
 
         // Uptime: actual heartbeats vs expected at the declared cadence (honest: n/a for ad-hoc runs).
@@ -250,14 +262,14 @@
         if (m.intervalSec > 0 && t1 > t0) {
           const expected = Math.max(1, Math.floor((t1 - t0) / (m.intervalSec * 1000)) + 1);
           uptime = `${Math.min(100, (ss.length / expected) * 100).toFixed(1)}%`;
-          upSub = `${ss.length} beats / ${expected} expected · ${elapsedH.toFixed(1)}h window`;
+          upSub = `${ss.length} beats / ${expected} expected · ${elapsedH.toFixed(1)}h ${pilot ? "pilot" : "window"}`;
         }
 
         // IL-adjusted return: current portfolio vs HODLing the baseline inventory at the current mid.
         // Only meaningful over a continuous pilot with a fixed starting inventory. During ad-hoc
         // runs the operator tops up capital between sittings, so the baseline is not comparable and
         // the figure is misleading — gate it behind cadence, exactly like uptime.
-        const b = m.baseline;
+        const b = pilot ? m.pilotBaseline : m.baseline;
         const hodlNow = (Number(b.xBase) / 1e8) * last.mid + Number(b.yBase) / 1e6;
         const ilAdj = hodlNow > 0 ? ((last.portfolioY - hodlNow) / hodlNow) * 100 : 0;
         const ilCol = ilAdj >= 0 ? "var(--ok)" : "var(--bad)";

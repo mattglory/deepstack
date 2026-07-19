@@ -37,17 +37,19 @@ function loadJournal(): TickRecord[] {
   return out;
 }
 
-function loadSamples(): { samples: MetricsSampleLite[]; intervalSec: number } {
+function loadSamples(): { samples: MetricsSampleLite[]; intervalSec: number; pilotStartedAt?: string } {
   try {
     const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
-    return { samples: m.samples ?? [], intervalSec: m.intervalSec ?? 0 };
+    return { samples: m.samples ?? [], intervalSec: m.intervalSec ?? 0, pilotStartedAt: m.pilotStartedAt };
   } catch {
     return { samples: [], intervalSec: 0 };
   }
 }
 
-const since = flag("--since");
+const { samples, intervalSec, pilotStartedAt } = loadSamples();
+// The pilot window is the default report window once it exists — pass --since to override.
+const since = flag("--since") ?? pilotStartedAt;
 const until = flag("--until");
-const { samples, intervalSec } = loadSamples();
+if (!flag("--since") && pilotStartedAt) console.log(`(window: official pilot, since ${pilotStartedAt})\n`);
 const report = buildReport(loadJournal(), samples, intervalSec, since, until);
 console.log(renderMarkdown(report));
