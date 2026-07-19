@@ -239,6 +239,8 @@ async function act(
     lpValueY: s.lpValueY,
     portfolioY: s.portfolioY,
     safe: safety.safe,
+    poolX: s.xReserve,
+    poolY: s.yReserve,
   });
   if (!safety.safe) {
     console.log(`  ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no trading this cycle)`);

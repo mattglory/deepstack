@@ -26,6 +26,11 @@ export interface MetricsSample {
   lpValueY: number; // LP position value in y
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
+  // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y
+  // grows only from fees on an XYK pool, so this series measures the pool's realised
+  // fee yield and IL — the inputs for regime-matched allocation (post-pilot design).
+  poolX?: number;
+  poolY?: number;
 }
 
 export interface MetricsFile {
