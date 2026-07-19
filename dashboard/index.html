@@ -159,26 +159,30 @@
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
             volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); }
         }
+        // Valuation mid: prefer the agent's telemetry mid (fresh pool-reserves read every
+        // cycle) over the swap-implied mid, which only updates when a swap happens and can
+        // go stale for days in quiet periods. Swap-implied remains the no-telemetry fallback.
+        const vmid = agentMid || mid;
         // Free inventory + LP position (agent-valued; only counted while LP tokens are held).
         const lpVal = lp > 0 ? agentLpValueY : 0;
-        const portfolio = stx + (mid ? sbtc * mid : 0) + lpVal;
+        const portfolio = stx + (vmid ? sbtc * vmid : 0) + lpVal;
         const successRate = acts.length ? Math.round((ok / acts.length) * 100) : 0;
 
         // hero
         $("hero").innerHTML =
-          card("Portfolio", mid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", mid ? `≈ ${fmt(portfolio / mid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
+          card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
           card("Volume facilitated", `${fmt(uSTX(volume), 2)} <small>STX</small>`, `${swaps} swaps`) +
           card("Network fees paid", `${fmt(uSTX(fees), 3)} <small>STX</small>`, `${acts.length} txs`) +
           card("Success rate", `${successRate}%`, `${ok} ok · ${ab} aborted`);
 
         // allocation
-        const sbtcVal = mid ? sbtc * mid : 0, total = stx + sbtcVal;
+        const sbtcVal = vmid ? sbtc * vmid : 0, total = stx + sbtcVal;
         const stxPct = total ? (stx / total) * 100 : 50;
         $("alloc").innerHTML = `<span style="width:${stxPct}%;background:var(--stx)"></span><span style="width:${100 - stxPct}%;background:var(--btc)"></span>`;
         $("legend").innerHTML =
           `<span><i style="background:var(--stx)"></i>STX ${fmt(stxPct, 1)}% · ${fmt(stx, 2)}</span>` +
           `<span><i style="background:var(--btc)"></i>sBTC ${fmt(100 - stxPct, 1)}% · ${fmt(sbtc, 8)}</span>` +
-          `<span style="color:var(--faint)">target 50 / 50 · mid ${mid ? fmt(mid, 0) + " STX/sBTC" : "—"}</span>`;
+          `<span style="color:var(--faint)">target 50 / 50 · mid ${vmid ? fmt(vmid, 0) + " STX/sBTC" : "—"}</span>`;
 
         // economics — honest. Fees net of IL = LP value vs HOLDING the deposited legs
         // at today's mid (the definition of impermanent loss; a scalar STX basis would
