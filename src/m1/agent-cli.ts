@@ -21,7 +21,8 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, type Inventory, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, type Inventory, type AgentParams } from "./agent.js";
+import { scanCrossPools } from "./crosspool.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory, adjustLpBasis } from "./metrics.js";
@@ -35,6 +36,7 @@ import { createSupervisor } from "./supervise.js";
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
 // and flushed once per tick in step(). See src/m1/journal.ts.
 let tickJournal: Record<string, unknown> = {};
+let rebalDefer = 0; // consecutive cycles a required rebalance was deferred for better execution
 
 const FEE_USTX = 50_000n;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -316,6 +318,20 @@ async function act(
       ? `${Number(d.amountBase) / 10 ** y.decimals} ${y.symbol} → ${x.symbol}`
       : `${Number(d.amountBase) / 10 ** x.decimals} ${x.symbol} → ${y.symbol}`;
   console.log(`  rebalance: ${d.action}  ${amt}  (${d.reason})`);
+
+  // Divergence-aware execution timing (see decideExecTiming): the band said trade; this
+  // decides whether THIS cycle's price is the one to trade at. Bounded deferral only.
+  const driftUrgent = Math.abs(d.metrics.drift) > (params.rebalanceBandBps / 10_000) * 1.5;
+  const timing = decideExecTiming(d.action, s.midXinY, s.externalMid, rebalDefer, driftUrgent);
+  tickJournal.execTiming = { edgeBps: +timing.edgeBps.toFixed(1), execute: timing.execute, reason: timing.reason };
+  if (!timing.execute) {
+    rebalDefer++;
+    console.log(`  timing: defer — ${timing.reason}`);
+    return false;
+  }
+  console.log(`  timing: execute — ${timing.reason}`);
+  rebalDefer = 0;
+
   if (!canTrade) { console.log("  observe mode — not executing"); return false; }
   if (w.network !== "mainnet") return refuse("not mainnet");
   if (d.action === "swap-y-for-x" && d.amountBase > params.maxSwapYBase) return refuse("y over cap");
@@ -410,6 +426,10 @@ async function main() {
       if (await act(w, snap, params, live && trades < f.maxTrades, sessionStart, f.interval)) trades++;
     } finally {
       appendJournal(tickJournal); // one journal line per tick, whatever happened
+      // Cross-pool spread observations (read-only) — the dataset that decides whether
+      // atomic cross-venue arb is worth building. See crosspool.ts.
+      const xp = await scanCrossPools();
+      if (xp.length) appendJournal({ t: new Date().toISOString(), type: "xpool", pools: xp });
       await pingHealthcheck(); // dead-man's switch: silence = alert
       await publishMetrics(); // pilot telemetry → public dashboard (gist mirror)
     }

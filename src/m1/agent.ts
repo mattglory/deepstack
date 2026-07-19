@@ -107,6 +107,45 @@ export function exceedsPoolShare(
   return (lpValueY + addValueY) / (poolValueY + addValueY) > capBps / 10_000;
 }
 
+export interface ExecTiming {
+  execute: boolean;
+  edgeBps: number; // execution edge vs the external mid (+ = the pool pays us to trade)
+  reason: string;
+}
+
+/**
+ * Divergence-aware execution timing — capture edge on trades we must make anyway.
+ *
+ * The rebalance band decides WHETHER to trade; this decides WHEN. A required buy of x
+ * executed while the pool underprices x (vs the external mid) fills at a discount; the
+ * same trade at an unfavourable divergence donates the edge to the pool's arbitrageurs.
+ * So: execute immediately when the edge is favourable, defer a BOUNDED number of cycles
+ * when it isn't, and never let optimisation outrank risk — urgent drift or an exhausted
+ * defer budget executes regardless. Changes when, never whether or how much.
+ */
+export function decideExecTiming(
+  action: "swap-y-for-x" | "swap-x-for-y",
+  midXinY: number,
+  externalMid: number | null,
+  deferCount: number,
+  driftUrgent: boolean,
+  minEdgeBps = Number(process.env.EXEC_MIN_EDGE_BPS ?? 0),
+  maxDefer = Number(process.env.EXEC_MAX_DEFER ?? 6),
+): ExecTiming {
+  if (externalMid === null || !(externalMid > 0) || !(midXinY > 0)) {
+    return { execute: true, edgeBps: 0, reason: "no external reference — execute" };
+  }
+  // Buying x wants the pool cheap (ext > mid); selling x wants it rich (mid > ext).
+  const edgeBps =
+    action === "swap-y-for-x"
+      ? (externalMid / midXinY - 1) * 10_000
+      : (midXinY / externalMid - 1) * 10_000;
+  if (driftUrgent) return { execute: true, edgeBps, reason: "drift urgent — risk outranks timing" };
+  if (edgeBps >= minEdgeBps) return { execute: true, edgeBps, reason: `favourable ${edgeBps.toFixed(0)}bps edge` };
+  if (deferCount >= maxDefer) return { execute: true, edgeBps, reason: `defer budget exhausted (${deferCount})` };
+  return { execute: false, edgeBps, reason: `unfavourable ${edgeBps.toFixed(0)}bps — defer ${deferCount + 1}/${maxDefer}` };
+}
+
 // Rebalance the free inventory toward the target y-value split.
 export function decide(
   inv: Inventory,
