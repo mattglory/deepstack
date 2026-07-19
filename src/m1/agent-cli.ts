@@ -21,7 +21,7 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import { decide, decideLp, defaultParams, bandBpsFromVol, type Inventory, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, type Inventory, type AgentParams } from "./agent.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory, adjustLpBasis } from "./metrics.js";
@@ -260,6 +260,16 @@ async function act(
       s.inv.xBase, s.inv.yBase, s.midXinY, x.decimals, y.decimals, params,
     );
     if (lp.action !== "none") {
+      // Exit-liquidity guard: bounded share of the pool, or no growth. See agent.ts.
+      if (lp.action === "add-liquidity") {
+        const addValueY = 2 * (Number(lp.xBase) / 10 ** x.decimals) * s.midXinY;
+        const poolValueY = s.yReserve + s.xReserve * s.midXinY;
+        if (exceedsPoolShare(s.lpValueY, addValueY, poolValueY)) {
+          console.log(`  LP: skip add — pool-share cap (pool value ~${poolValueY.toFixed(0)} ${y.symbol})`);
+          tickJournal.lpDecision = { action: "none", reason: "pool-share cap" };
+          return false;
+        }
+      }
       const detail =
         lp.action === "add-liquidity"
           ? `${Number(lp.xBase) / 10 ** x.decimals} ${x.symbol} (+ paired ${y.symbol})`

@@ -89,6 +89,24 @@ export function bandBpsFromVol(
   return Math.round(Math.min(ceilingBps, Math.max(floorBps, raw)));
 }
 
+/**
+ * Exit-liquidity guard: would this add push our LP position above the pool-share cap?
+ *
+ * IL is a market risk; being a large share of a SHRINKING pool is a structural one — a
+ * position you cannot unwind without moving the price against yourself, in a pool whose
+ * other LPs may leave first. The cap bounds our share of the pool AFTER the add (both
+ * numerator and denominator grow by the added value). Default 2%; env MAX_POOL_SHARE_BPS.
+ */
+export function exceedsPoolShare(
+  lpValueY: number,
+  addValueY: number,
+  poolValueY: number,
+  capBps = Number(process.env.MAX_POOL_SHARE_BPS ?? 200),
+): boolean {
+  if (!(poolValueY > 0)) return true; // no readable pool value → refuse to grow
+  return (lpValueY + addValueY) / (poolValueY + addValueY) > capBps / 10_000;
+}
+
 // Rebalance the free inventory toward the target y-value split.
 export function decide(
   inv: Inventory,

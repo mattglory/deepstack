@@ -6,6 +6,18 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { exceedsPoolShare } from "./agent.js";
+
+test("pool-share cap: bounds our share AFTER the add; refuses on unreadable pool", () => {
+  // 1,000 in a 100,000 pool = 1% — a 500 add → 1500/100500 ≈ 1.49% < 2% cap → allowed
+  assert.equal(exceedsPoolShare(1000, 500, 100_000, 200), false);
+  // same add into a 40,000 pool → 1500/40500 ≈ 3.7% > 2% → blocked
+  assert.equal(exceedsPoolShare(1000, 500, 40_000, 200), true);
+  // shrinking-pool scenario: position static, pool halves → next add blocked
+  assert.equal(exceedsPoolShare(1000, 100, 50_000, 200), true);
+  // unreadable pool value → refuse to grow (fail closed)
+  assert.equal(exceedsPoolShare(1000, 100, 0, 200), true);
+});
 import { decide, decideLp, defaultParams, bandBpsFromVol, type AgentParams } from "./agent.js";
 import { minusSlippage, plusSlippage } from "./quotes.js";
 import { assessSafety, defaultSafetyParams } from "./safety.js";
