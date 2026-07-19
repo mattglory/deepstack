@@ -139,6 +139,10 @@
       // transfer. Take the LARGEST so the fee dust never gets mistaken for the trade leg
       // (picking the dust would blow up the implied mid by ~1000x).
       const sbtcLeg = (t) => Math.max(0, ...(t.ft_transfers || []).filter((x) => x.asset_identifier === CFG.sbtcAsset).map((x) => Number(x.amount)));
+      // Directional sBTC leg for LP rows: what the WALLET sent (add) or received (withdraw).
+      const sbtcDir = (t, dir) => Math.max(0, ...(t.ft_transfers || [])
+        .filter((x) => x.asset_identifier === CFG.sbtcAsset && (dir === "in" ? x.recipient === CFG.wallet : x.sender === CFG.wallet))
+        .map((x) => Number(x.amount)));
 
       function card(k, v, sub) { return `<div class="card big"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="sub2">${sub}</div>` : ""}</div>`; }
       function small(k, v) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
@@ -218,7 +222,9 @@
           ? acts.slice(0, 25).map((r) => {
               const t = r.tx, fn = t.contract_call.function_name, sb = sbtcLeg(r), s = t.tx_status === "success";
               const detail = fn === "swap-y-for-x" ? `${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 3)} STX → ${fmt(baseBTC(sb), 8)} sBTC`
-                : fn === "swap-x-for-y" ? `${fmt(baseBTC(sb), 8)} sBTC → ${fmt(uSTX(r.stx_received), 3)} STX` : fn;
+                : fn === "swap-x-for-y" ? `${fmt(baseBTC(sb), 8)} sBTC → ${fmt(uSTX(r.stx_received), 3)} STX`
+                : fn === "add-liquidity" ? `deposited ${fmt(baseBTC(sbtcDir(r, "out")), 8)} sBTC + ${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 2)} STX`
+                : fn === "withdraw-liquidity" ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX` : fn;
               return `<tr><td class="tnum">${tstr(t.burn_block_time)}</td><td>${fn}</td><td class="tnum">${detail}</td>
                 <td class="tnum">${fmt(uSTX(t.fee_rate), 3)}</td>
                 <td><span class="tag ${s ? "ok" : "bad"}">${s ? "success" : t.tx_status.replace(/_/g, " ")}</span></td>
