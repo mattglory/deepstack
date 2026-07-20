@@ -60,6 +60,54 @@ our own flow would be a majority of activity (the "are we the market?" check).
 Until then, DeepStack's perp-MM skills stay pointed at the venue where they already work:
 the spot pool, where the agent is live.
 
+## Paper quoting — what DeepStack's quotes would look like on Velar
+
+The gate verdict is "do not deploy," but the grant criterion asks for **paper quoting** — a
+worked model of the quotes the agent *would* post — so here it is. This is a spreadsheet
+exercise, not live capital (none is deployed, per the research-only mandate).
+
+**Setup.** A perp market maker quotes a two-sided spread around a reference mark and manages
+inventory as fills arrive. DeepStack's spread would be sized the same way its spot band is:
+from measured volatility, not guessed. Modelled on the sBTC-USDh perp (Velar's launch pair),
+using the sBTC vol the agent already measures (~2%/day realised).
+
+**Quote model.**
+- **Reference mark:** the same external oracle the safety gate uses (CoinGecko/Pyth BTC),
+  not the venue's own mark — the Feb-2026 exploit is the reason we never trust the venue's
+  internal price as the reference.
+- **Half-spread:** `k · σ_perhold + fee + inventory_skew`. At σ ≈ 2%/day and a ~1-hour quote
+  refresh, per-hold σ ≈ 0.41%; with k = 1.5 for adverse selection, base half-spread ≈ 62 bps,
+  so a **~124 bps two-sided quote** before fees.
+- **Inventory skew:** shift the mid against the side we're long, same logic as the spot
+  target — a position 20% long BTC skews quotes ~15–25 bps to encourage mean-reverting fills.
+- **Size:** capped per level at a small fraction of free margin, laddered — never the whole
+  book at one price (the spot per-tx caps carry over).
+
+**Illustrative quote (paper, BTC = $64,800, σ = 2%/day):**
+
+| | Bid | Ask |
+|---|---|---|
+| Balanced inventory | 64,760 (−62 bps) | 64,840 (+62 bps) |
+| 20% long BTC | 64,740 (−93 bps) | 64,820 (+31 bps) → lean to sell |
+
+**Why the paper model itself argues against going live** (the feasibility finding, quantified):
+1. **The spread can't clear the adverse selection.** With ~$224/day of organic volume,
+   almost all flow into a quote this wide would be informed/toxic — the same dynamic that
+   let the exploiter be 100% of activity. A 124 bps spread sounds wide until you realise the
+   only takers are arbitrageurs picking off a stale mark.
+2. **Funding + no hedge venue.** Holding perp inventory means paying/earning funding with no
+   deep spot venue on Stacks to hedge the delta — inventory risk compounds instead of
+   netting out.
+3. **The reference-mark dependency is the whole risk.** The model *works on paper* only
+   because it quotes around an external oracle; the moment that oracle is unavailable or
+   manipulable (the exploit's root cause), the quotes become the attacker's payout function.
+
+**Recommended next steps (unchanged by the paper exercise, now quantified):** stay gated on
+the six §4 conditions. If Velar relaunches with a published Clarity audit, timestamp checks,
+a circuit breaker, and sustained organic volume, re-run this quote model against live depth
+and funding before risking capital — and only then with Stacks Endowment approval per the
+research-only clause. Paper quoting confirms the venue is *modellable* but not *investable*.
+
 ## Sources
 
 - Mezo post-mortem: mezo.org/blog/velars-perpdex-exploited-on-mezo
