@@ -125,6 +125,9 @@ export function markPilotStart(): { startedAt: string; portfolioY: number } {
   const s = m.samples[m.samples.length - 1];
   m.pilotStartedAt = s.t;
   m.pilotBaseline = { t: s.t, xBase: s.xBase, yBase: s.yBase, mid: s.mid, portfolioY: s.portfolioY };
+  // Re-anchor the LP basis to the position as it stands NOW, so LP P&L measures fees-net-IL
+  // earned DURING the pilot — not dragged by the pre-pilot ramp. Same reason uptime/IL reset.
+  if (s.lpValueY > 0 && s.mid > 0) m.lpBasis = { xQty: s.lpValueY / 2 / s.mid, yQty: s.lpValueY / 2, t: s.t };
   writeFileSync(METRICS_PATH, JSON.stringify(m));
   return { startedAt: s.t, portfolioY: s.portfolioY };
 }

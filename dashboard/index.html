@@ -153,11 +153,16 @@
         const lp = uSTX(bal.fungible_tokens?.[CFG.lpAsset]?.balance ?? 0); // LP token, 6dp
         const acts = txs.filter((r) => r.tx?.tx_type === "contract_call" && CFG.actions.includes(r.tx.contract_call?.function_name));
 
-        let volume = 0, traded = 0, fees = 0, ok = 0, ab = 0, swaps = 0, mid = 0, last = 0;
+        let volume = 0, traded = 0, fees = 0, feesWindow = 0, ok = 0, ab = 0, swaps = 0, mid = 0, last = 0;
+        // Once the pilot window opens, the Net tile counts only gas spent DURING it — the
+        // pre-pilot setup/demo transactions stop dragging the operational P&L. (seconds epoch)
+        const pilotStartSec = agentPilotStart ? new Date(agentPilotStart).getTime() / 1000 : 0;
         const chrono = [...acts].reverse(); // oldest → newest
         for (const r of chrono) {
           const fn = r.tx.contract_call.function_name, s = r.tx.tx_status === "success";
-          fees += Number(r.tx.fee_rate || 0); s ? ok++ : ab++; last = Math.max(last, r.tx.burn_block_time || 0);
+          const fee = Number(r.tx.fee_rate || 0);
+          fees += fee; if (!pilotStartSec || (r.tx.burn_block_time || 0) >= pilotStartSec) feesWindow += fee;
+          s ? ok++ : ab++; last = Math.max(last, r.tx.burn_block_time || 0);
           const sb = sbtcLeg(r);
           if (fn.startsWith("swap") && s) { swaps++; traded += sb;
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
@@ -199,7 +204,10 @@
           lpDays = (Date.now() - new Date(agentLpBasis.t).getTime()) / 864e5;
           if (hodlLegs > 0 && lpDays >= 3) lpApr = (lpNet / hodlLegs) * (365 / lpDays) * 100;
         }
-        const net = (lpNet ?? 0) - uSTX(fees);
+        // Net = LP fees earned − gas paid. Scoped to the pilot window once it opens, so it
+        // reads as operational P&L for the run, not lifetime (setup + demo txs excluded).
+        const netFees = agentPilotStart ? feesWindow : fees;
+        const net = (lpNet ?? 0) - uSTX(netFees);
         const signed = (v, d = 3) =>
           `<span style="color:${v >= 0 ? "var(--ok)" : "var(--bad)"}">${v >= 0 ? "+" : ""}${fmt(v, d)} STX</span>`;
         const aprTile =
@@ -210,7 +218,7 @@
           small("LP P&L (fees − IL)", lpNet === null ? `—<div class="sub2">no LP basis yet</div>` : signed(lpNet)) +
           small("LP APR (annualised)", aprTile) +
           small("Fees paid", `${fmt(uSTX(fees), 3)} STX`) +
-          small("Net", signed(net)) +
+          small(agentPilotStart ? "Net (pilot)" : "Net", signed(net)) +
           small("LP position", `${fmt(lp, 6)}<div class="sub2">~${fmt(agentLpValueY, 1)} STX</div>`);
         $("econNote").innerHTML =
           "Rebalancing swaps <b>pay</b> the pool fee — they manage inventory, they don't earn. " +
@@ -239,9 +247,11 @@
       // the portfolio tile borrows it rather than undercounting by the LP position.
       let agentLpValueY = 0;
       let agentLpBasis = null; // deposited leg quantities {xQty, yQty, t} (agent-tracked)
+      let agentPilotStart = null; // ISO time the official pilot window opened (scopes Net)
       let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
       function renderPilot(m) {
         if (m && m.lpBasis) agentLpBasis = m.lpBasis;
+        if (m && m.pilotStartedAt) agentPilotStart = m.pilotStartedAt;
         const tiles = $("pilotTiles"), note = $("pilotNote"), wrap = $("midWrap");
         if (!m || !m.samples || m.samples.length === 0) {
           tiles.innerHTML = "";

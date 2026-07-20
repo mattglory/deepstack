@@ -96,13 +96,16 @@ test("basis: adjust is a no-op without a metrics file (never throws)", () => {
   assert.throws(() => readFileSync(METRICS_PATH));
 });
 
-test("pilot window: anchors at the latest sample, refuses to move once set", () => {
+test("pilot window: anchors + re-bases LP at start, refuses to move once set", () => {
   recordSample("sbtc-stx", "SPX", 1800, sample(200));
+  adjustLpBasis({ kind: "add", xQty: 0.001, yQty: 400, t: "2026-08-01T00:00:00Z" }); // pre-pilot ramp
   const r = markPilotStart();
   assert.equal(r.startedAt, "2026-09-01T00:00:00Z");
   const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
   assert.equal(m.pilotBaseline.portfolioY, 800);
-  assert.equal(m.pilotBaseline.xBase, "100000");
+  // LP basis re-anchored to the CURRENT position (200 value), not the inflated ramp basis:
+  assert.ok(Math.abs(m.lpBasis.yQty - 100) < 1e-6);
+  assert.equal(m.lpBasis.t, "2026-09-01T00:00:00Z");
   assert.throws(() => markPilotStart(), /already started/); // evidence windows don't move
 });
 
