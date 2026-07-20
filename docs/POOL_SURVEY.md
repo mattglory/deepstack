@@ -54,6 +54,43 @@ worth scanning for (weekly, via the same ticker pull):
 4. **stSTX/STX volume appears** — it's the safest pair (both track STX, minimal IL); today
    it's dead, but a live low-IL pair would be an ideal DeepStack venue.
 
+## Cross-DEX: is there a bigger venue on Stacks? (checked 2026-07-20)
+
+No. Bitflow is the largest DEX on Stacks by both TVL and volume — DeepStack is already on it.
+
+| DEX | TVL | 24h volume |
+|---|---|---|
+| **Bitflow** (current venue) | **$2.6M** | **$73k** (mostly the DOG memecoin) |
+| ALEX | $772k | $8.7k |
+| Velar AMM | $269k | $116 (effectively dead) |
+| StackSwap | $50k | ~$0 |
+| **Whole Stacks DEX market** | — | **~$70k/day** |
+
+The XYK/stableswap DEX market is ~$70k/day. Adding ALEX would mean a new adapter for 8× less
+volume — not worth it.
+
+**BUT — HODLMM is a separate, larger venue this XYK survey misses (found 2026-07-20).**
+Bitflow's HODLMM concentrated-liquidity engine runs on
+`SP1Y5YSTAHZ88XYK1VPDH24GY0HPX5J4JECTMY4A1.univ2-core` — NOT in the XYK ticker, NOT in the
+standard DEX category. Verified on-chain: its `mint`/`burn`/`swap`/`collect`/`create` are
+**PERMISSIONLESS** (only fee/admin config is owner-gated) — DeepStack *can* provide liquidity
+there. Launched Mar 2026, marketed as concentrated liquidity; press cites "$160M cumulative
+volume in 2 weeks, $5M TVL" (LAUNCH figures — current volume/TVL NOT independently verified;
+the `mint` interface takes no tick/range args, so whether it's true concentrated or full-range
+is UNCONFIRMED). The high-volume LEO/DOG activity routes through it.
+
+**Strategic significance:** HODLMM is the actively-managed concentrated-liquidity venue on
+Stacks — DeepStack's exact target category (Steer/Gamma/Arrakis model). DeepStack currently
+LPs a passive full-range XYK pool; a HODLMM adapter for active range management is likely the
+highest-value post-pilot build. **OPEN QUESTIONS FOR BITFLOW (Diego):** current volume/TVL?
+open for third-party LP management? concentrated-range or full-range mint? — ask before
+building; do not assume the launch figures hold.
+
+The other expansion axis is **other chains** — the Bitcoin-L2 multichain thesis (BOB, Botanix,
+Core, Rootstock, Citrea), or organic growth of the sBTC-STX pool if Bitcoin Staking pulls
+capital in. Stacks is where DeepStack is proven; whether it becomes a real market depends on
+HODLMM's trajectory and Bitcoin Staking, both TBD.
+
 ## What this means for strategy
 
 The LP position is proving the mechanism and producing honest numbers — it is not, and at
