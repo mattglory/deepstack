@@ -69,27 +69,30 @@ No. Bitflow is the largest DEX on Stacks by both TVL and volume — DeepStack is
 The XYK/stableswap DEX market is ~$70k/day. Adding ALEX would mean a new adapter for 8× less
 volume — not worth it.
 
-**BUT — HODLMM is a separate, larger venue this XYK survey misses (found 2026-07-20).**
-Bitflow's HODLMM concentrated-liquidity engine runs on
-`SP1Y5YSTAHZ88XYK1VPDH24GY0HPX5J4JECTMY4A1.univ2-core` — NOT in the XYK ticker, NOT in the
-standard DEX category. Verified on-chain: its `mint`/`burn`/`swap`/`collect`/`create` are
-**PERMISSIONLESS** (only fee/admin config is owner-gated) — DeepStack *can* provide liquidity
-there. Launched Mar 2026, marketed as concentrated liquidity; press cites "$160M cumulative
-volume in 2 weeks, $5M TVL" (LAUNCH figures — current volume/TVL NOT independently verified;
-the `mint` interface takes no tick/range args, so whether it's true concentrated or full-range
-is UNCONFIRMED). The high-volume LEO/DOG activity routes through it.
+**CORRECTION (2026-07-20): HODLMM is NOT `univ2-core`.** An earlier note here identified
+Bitflow's HODLMM as `SP1Y5YSTAHZ...univ2-core` and called it a permissionless concentrated-
+liquidity BTC venue. That was WRONG. On inspection `univ2-core` holds hundreds of memecoins
+(leo, hawk-thua, andrew-tate, jeo-boden, doge-bonk, theroaringkitty) — it is a **generic
+memecoin AMM factory**, and the high-volume DOG/LEO churn routes through it. Its "sbtc" balance
+was a memecoin named `sbtc`, not real sBTC. The permissionless-mint finding applies to that
+memecoin AMM, not to any premium BTC venue.
 
-**Strategic significance:** HODLMM is the actively-managed concentrated-liquidity venue on
-Stacks — DeepStack's exact target category (Steer/Gamma/Arrakis model). DeepStack currently
-LPs a passive full-range XYK pool; a HODLMM adapter for active range management is likely the
-highest-value post-pilot build. **OPEN QUESTIONS FOR BITFLOW (Diego):** current volume/TVL?
-open for third-party LP management? concentrated-range or full-range mint? — ask before
-building; do not assume the launch figures hold.
+**The real HODLMM contract is NOT publicly identifiable on-chain** as of this survey: not in
+the XYK ticker, not in the standard docs deployed-contracts page, and the obvious candidate was
+the memecoin factory above. So its accessibility, volume, and TVL are genuinely UNKNOWN — these
+are legitimate questions for Bitflow (Diego), not laziness.
+
+**Where the real sBTC actually is (traced via largest holders, 2026-07-20):** overwhelmingly
+LENDING + CUSTODY, not DEX. Zest's sBTC vault holds ~732 sBTC (~$47M); big individual wallets
+hold 808 / 531 / 276 sBTC; a few lending-style "state-v1"/"pool-vault" contracts hold 22–91
+each. Bitflow DEX pools hold single-digit sBTC. This CONFIRMS the idle-capital thesis on-chain:
+sBTC sits in wallets and lending (earning ~0.01%) because there is no compelling DEX yield to
+pull it out. The gap is real; closing it needs a better yield proposition (vaults + HODLMM if it
+proves out), not a clever contract.
 
 The other expansion axis is **other chains** — the Bitcoin-L2 multichain thesis (BOB, Botanix,
 Core, Rootstock, Citrea), or organic growth of the sBTC-STX pool if Bitcoin Staking pulls
-capital in. Stacks is where DeepStack is proven; whether it becomes a real market depends on
-HODLMM's trajectory and Bitcoin Staking, both TBD.
+capital in. Stacks is where DeepStack is proven; whether it becomes a real market is TBD.
 
 ## What this means for strategy
 
