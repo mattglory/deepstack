@@ -31,6 +31,7 @@ import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics } from "./publish.js";
 import { withRpc } from "./rpc.js";
 import { findArb } from "./arb.js";
+import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
 import { createSupervisor } from "./supervise.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
@@ -190,6 +191,7 @@ async function act(
   // the safety gate on purpose: large divergences trip the oracle halt, and those are
   // exactly the opportunities worth having on record.
   let arbOpp = null;
+  let paperHedge: ReturnType<typeof paperPnl> | null = null;
   if (s.externalMid) {
     arbOpp = findArb(s.xReserve, s.yReserve, s.externalMid, {
       poolFeeBps: s.poolFeeBps,
@@ -200,6 +202,16 @@ async function act(
         `  arb: ${arbOpp.direction} ${arbOpp.amountIn.toFixed(arbOpp.direction === "buy-x" ? 2 : 8)} → ` +
           `net edge ~${arbOpp.netEdgeY.toFixed(2)} ${y.symbol} at ${(arbOpp.divergenceBps / 100).toFixed(2)}% divergence (detection only)`,
       );
+      // Route C paper monitor: price the CEX-hedged round trip on this opportunity using
+      // public Bybit funding. Simulated only — decides if Phase 1 (real) is ever worth it.
+      const funding = await btcFundingRate8h();
+      if (funding !== null) {
+        paperHedge = paperPnl(arbOpp.netEdgeY, arbOpp.amountIn, funding, { poolFeeBps: s.poolFeeBps });
+        console.log(
+          `  hedged(paper): net ${paperHedge.netStx >= 0 ? "+" : ""}${paperHedge.netStx.toFixed(2)} ${y.symbol} ` +
+            `(funding ${(funding * 3 * 365 * 100).toFixed(1)}%/yr) → ${paperHedge.clears ? "CLEARS" : "below cost"}`,
+        );
+      }
     }
   }
 
@@ -220,6 +232,7 @@ async function act(
             amountIn: +arbOpp.amountIn.toFixed(8),
             netEdgeY: +arbOpp.netEdgeY.toFixed(4),
             divergenceBps: Math.round(arbOpp.divergenceBps),
+            ...(paperHedge ? { hedgedNetY: paperHedge.netStx, hedgedClears: paperHedge.clears } : {}),
           },
         }
       : {}),
