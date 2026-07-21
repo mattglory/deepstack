@@ -25,7 +25,8 @@ import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, deci
 import { scanCrossPools } from "./crosspool.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
-import { recordSample, loadHistory, adjustLpBasis } from "./metrics.js";
+import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
+import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics } from "./publish.js";
@@ -388,6 +389,27 @@ function applyVolBand(params: AgentParams): { params: AgentParams; sigmaDaily: n
   return { params: { ...params, rebalanceBandBps: bandBps }, sigmaDaily, bandBps };
 }
 
+// Regime-aware defensive allocation (allocation.ts). Gated OFF by default — the pilot runs
+// the declared static 50/50 — so this only alters targetY/targetLp when ALLOCATION_MODE=
+// adaptive. The AI regime call may tighten risk but never loosen it.
+function applyAllocation(
+  params: AgentParams,
+  sigmaDaily: number | null,
+  portfolioY: number,
+  aiRegime?: Regime | null,
+): { params: AgentParams; regime: Regime; reason: string } {
+  const alloc = decideAllocation(
+    { sigmaDaily, drawdownFrac: currentDrawdown(portfolioY) },
+    defaultAllocationParams(),
+    aiRegime,
+  );
+  return {
+    params: { ...params, targetYFraction: alloc.targetYFraction, targetLpFraction: alloc.targetLpFraction },
+    regime: alloc.regime,
+    reason: alloc.reason,
+  };
+}
+
 async function main() {
   const f = flags();
   const live = f.live && f.yesMainnet;
@@ -424,13 +446,28 @@ async function main() {
             (vol.bandBps !== tuned.rebalanceBandBps ? ` — overrides AI's ${tuned.rebalanceBandBps}bps` : ""),
         );
       }
+      // Regime-aware defensive allocation. The AI's regime word informs risk appetite but
+      // can only TIGHTEN it (map risk-off language → defensive); measured vol + drawdown are
+      // the deterministic floor. Gated OFF by default, so the pilot's 50/50 is untouched.
+      const aiRegime: Regime | null = /volat|stress|bear|risk-?off|turbul/i.test(tuned.regime ?? "")
+        ? "defensive"
+        : /elevat|chop|caution/i.test(tuned.regime ?? "")
+          ? "elevated"
+          : null;
+      const alloc = applyAllocation(params, vol.sigmaDaily, snap.portfolioY, aiRegime);
+      params = alloc.params;
+      if (defaultAllocationParams().enabled) {
+        console.log(`  [alloc] ${alloc.regime} → targetY=${params.targetYFraction} LP=${params.targetLpFraction} (${alloc.reason})`);
+      }
+
       // Evidence that the AI tuning layer is active: regime + rationale + params set.
       appendJournal({
         t: new Date().toISOString(),
         type: "tune",
         regime: tuned.regime,
         rationale: tuned.rationale,
-        set: { targetY: tuned.targetYFraction, bandBps: tuned.rebalanceBandBps, slipBps: tuned.slippageBps },
+        set: { targetY: params.targetYFraction, bandBps: tuned.rebalanceBandBps, slipBps: tuned.slippageBps, targetLp: params.targetLpFraction },
+        allocation: { mode: defaultAllocationParams().enabled ? "adaptive" : "static", regime: alloc.regime, reason: alloc.reason },
         measured: { sigmaDaily: vol.sigmaDaily, bandBps: vol.bandBps, source: vol.sigmaDaily === null ? "ai" : "vol" },
       });
     }

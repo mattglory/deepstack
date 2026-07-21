@@ -75,6 +75,18 @@ export function loadHistory(): MetricsSample[] {
   return load()?.samples ?? [];
 }
 
+/**
+ * Current drawdown of the portfolio (in y) from its high-water mark over the recorded
+ * history, as a fraction in [0,1). 0 when at/above the peak or with no history. This is
+ * the risk-off signal for defensive allocation — "how far below your best are you now".
+ */
+export function currentDrawdown(portfolioYNow: number): number {
+  const hist = load()?.samples ?? [];
+  if (hist.length === 0 || !(portfolioYNow > 0)) return 0;
+  const peak = Math.max(portfolioYNow, ...hist.map((s) => s.portfolioY));
+  return peak > 0 ? Math.max(0, (peak - portfolioYNow) / peak) : 0;
+}
+
 export function recordSample(
   pair: string,
   wallet: string,
