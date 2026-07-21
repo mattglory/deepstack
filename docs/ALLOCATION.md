@@ -38,11 +38,23 @@ today the only defensive move *available within the pair* is an **interim** one:
 the relatively harder asset (sBTC falls less than the STX alt) and pull LP to avoid IL. The
 defensive target `y=0.35` means *less STX, more sBTC* — a placeholder, not the real thing.
 
-**Haven rotation (roadmap):** when a liquid USDCx pool/route exists, the defensive regime
-rotates a portion of the portfolio OUT of the volatile pair and INTO USDCx — true capital
-preservation. That's a cross-asset move (holding USDCx outside the trading pair) and the next
-build after the pilot; the reserve/vol data the agent is already collecting feeds the trigger.
-`DEFENSIVE_Y_FRACTION` carries the within-pair direction until then.
+### Haven rotation — BUILT, armed, and dormant (`src/m1/haven.ts`)
+
+The full reflex is built: in a defensive regime, rotate a portion of the portfolio (default
+40%) OUT of the volatile pair and INTO USDCx. The decision logic and route-readiness detection
+run **every cycle** and are journalled (`type:"haven"`), so the record shows exactly what the
+agent would do and whether it can.
+
+**But execution is DORMANT, honestly so.** A "route" is a USDCx pool deep enough
+(≥ `HAVEN_MIN_LIQ_USD`, default $250k) that rotating in won't slip catastrophically. No such
+pool exists today — USDCx DEX pools are ~$80–150k dust. So each cycle the agent journals
+`"armed: want 40% USDCx but deepest pool is $Xk < $250k min — dormant"`. It never routes into
+dust (protection that fails when needed is worse than none). The moment a real USDCx pool
+launches, `havenRouteReady` flips to ready and a configured `HavenRoute` activates the same
+logic — no rewrite. The cross-pool scanner already feeds it the pool data that trips the switch.
+
+Config: `HAVEN_ASSET`, `HAVEN_DEFENSIVE_FRACTION` (0.4), `HAVEN_ELEVATED_FRACTION` (0.15),
+`HAVEN_MIN_LIQ_USD` (250000).
 
 ## Where the AI fits (and its hard limit)
 

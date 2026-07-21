@@ -27,6 +27,7 @@ import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
+import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics } from "./publish.js";
@@ -39,6 +40,7 @@ import { createSupervisor } from "./supervise.js";
 // and flushed once per tick in step(). See src/m1/journal.ts.
 let tickJournal: Record<string, unknown> = {};
 let rebalDefer = 0; // consecutive cycles a required rebalance was deferred for better execution
+let lastRegime: Regime = "calm"; // latest allocation regime, for the per-cycle haven check
 
 const FEE_USTX = 50_000n;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -456,6 +458,7 @@ async function main() {
           : null;
       const alloc = applyAllocation(params, vol.sigmaDaily, snap.portfolioY, aiRegime);
       params = alloc.params;
+      lastRegime = alloc.regime; // feeds the per-cycle haven-readiness check
       if (defaultAllocationParams().enabled) {
         console.log(`  [alloc] ${alloc.regime} → targetY=${params.targetYFraction} LP=${params.targetLpFraction} (${alloc.reason})`);
       }
@@ -480,6 +483,12 @@ async function main() {
       // atomic cross-venue arb is worth building. See crosspool.ts.
       const xp = await scanCrossPools();
       if (xp.length) appendJournal({ t: new Date().toISOString(), type: "xpool", pools: xp });
+      // Haven rotation (haven.ts): the full stablecoin capital-preservation reflex. Armed
+      // but DORMANT — decides what it would do and whether a USDCx route is deep enough to
+      // act, using the pools just scanned. Journalled so the day a real USDCx pool launches
+      // is on the record; never executes until a route is ready (none today).
+      const haven = decideHaven(lastRegime, xp.map((o) => ({ pool: o.pool, liqUsd: o.liqUsd })), defaultHavenParams());
+      appendJournal({ t: new Date().toISOString(), type: "haven", ...haven });
       await pingHealthcheck(); // dead-man's switch: silence = alert
       await publishMetrics(); // pilot telemetry → public dashboard (gist mirror)
     }
