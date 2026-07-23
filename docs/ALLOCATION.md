@@ -32,11 +32,17 @@ The *true* safe asset for capital preservation is a **stablecoin — USDCx** —
 its value in a bear market. sBTC is still Bitcoin; it falls in a crash. So the full reflex is
 to rotate **into USDCx**, and that is the intended destination.
 
-The catch: the current pilot pair is **sBTC-STX, which has no USDCx leg**, and there's no
-liquid USDCx pool to rotate into yet (~$80–150k of thin dlmm pools, no STX-USDCx pool). So
-today the only defensive move *available within the pair* is an **interim** one: skew toward
-the relatively harder asset (sBTC falls less than the STX alt) and pull LP to avoid IL. The
-defensive target `y=0.35` means *less STX, more sBTC* — a placeholder, not the real thing.
+The catch: the current pilot pair is **sBTC-STX, which has no USDCx leg**, and no USDCx route is
+executable yet. So today the only defensive move *available within the pair* is an **interim**
+one: skew toward the relatively harder asset (sBTC falls less than the STX alt) and pull LP to
+avoid IL. The defensive target `y=0.35` means *less STX, more sBTC* — a placeholder, not the real thing.
+
+> **Update (2026-07-22):** a real **STX-USDCx pool now exists** — `dlmm-pool-stx-usdcx-v-2` on the
+> DLMM concentrated-liquidity venue, ~$211k, actively traded.
+> The earlier "no STX-USDCx pool / $80–150k dust" note is outdated. The haven still stays dormant,
+> but now for a sharper reason: the route is **real but ~$211k, below the $250k floor**, *and*
+> needs a DLMM swap adapter (the XYK adapter can't route bins). The destination went from *absent*
+> to *one adapter + some growth away* — see the haven section below.
 
 ### Haven rotation — BUILT, armed, and dormant (`src/m1/haven.ts`)
 
@@ -46,12 +52,15 @@ run **every cycle** and are journalled (`type:"haven"`), so the record shows exa
 agent would do and whether it can.
 
 **But execution is DORMANT, honestly so.** A "route" is a USDCx pool deep enough
-(≥ `HAVEN_MIN_LIQ_USD`, default $250k) that rotating in won't slip catastrophically. No such
-pool exists today — USDCx DEX pools are ~$80–150k dust. So each cycle the agent journals
-`"armed: want 40% USDCx but deepest pool is $Xk < $250k min — dormant"`. It never routes into
-dust (protection that fails when needed is worse than none). The moment a real USDCx pool
-launches, `havenRouteReady` flips to ready and a configured `HavenRoute` activates the same
-logic — no rewrite. The cross-pool scanner already feeds it the pool data that trips the switch.
+(≥ `HAVEN_MIN_LIQ_USD`, default $250k) that rotating in won't slip catastrophically. The deepest
+today is the DLMM `stx-usdcx` pool at **~$211k — real, but still under the $250k floor**, and
+concentrated (bin) depth can slip harder than the raw number suggests, so the floor stays put.
+So each cycle the agent journals `"armed: want 40% USDCx but deepest pool is $Xk < $250k min —
+dormant"`. It never routes into a too-thin pool (protection that fails when needed is worse than
+none). Two things must land before it goes live: the pool clears the floor, **and** a DLMM swap
+adapter exists (the XYK adapter can't route bins). When they do, `havenRouteReady` flips to ready
+and a configured `HavenRoute` activates the same logic — no rewrite. The cross-pool scanner
+already feeds it the pool data that trips the switch.
 
 Config: `HAVEN_ASSET`, `HAVEN_DEFENSIVE_FRACTION` (0.4), `HAVEN_ELEVATED_FRACTION` (0.15),
 `HAVEN_MIN_LIQ_USD` (250000).

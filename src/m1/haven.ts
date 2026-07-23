@@ -4,12 +4,17 @@
 // This is the real thing the within-pair sBTC skew (allocation.ts) only approximates. The
 // safe asset is a STABLECOIN because it holds value when everything else falls. The decision
 // logic and route-readiness detection are built and tested here — but EXECUTION IS DORMANT
-// until a liquid USDCx route exists. There is none today (USDCx DEX pools are ~$80-150k dust
-// and don't trade against the XYK adapter), and rotating into dust would eat catastrophic
-// slippage — protection that fails exactly when needed. So this arms and waits: it says WHAT
-// it would do and WHETHER a route is ready, and does nothing until reality provides the venue.
+// until a liquid USDCx route exists AND an adapter can reach it.
 //
-// When a real USDCx pool launches (the watch trigger), a HavenRoute is configured and the
+// Status 2026-07-22: a real STX-USDCx pool now exists on the DLMM concentrated-liquidity venue
+// (~$211k, actively traded). It is NOT yet usable for two reasons:
+// (1) ~$211k is still below HAVEN_MIN_LIQ_USD ($250k), and concentrated (bin) depth can slip
+// harder than the headline number; (2) it is a DLMM venue — the XYK adapter can't route bins,
+// so a DLMM swap adapter is a prerequisite. Rotating into a too-thin or unreachable pool would
+// eat catastrophic slippage — protection that fails exactly when needed. So this arms and waits:
+// it says WHAT it would do and WHETHER a route is ready, and does nothing until both land.
+//
+// When the pool clears the floor and the DLMM adapter exists, a HavenRoute is configured and the
 // same logic activates — no rewrite, just a plugged-in execution path.
 
 import type { Regime } from "./allocation.js";

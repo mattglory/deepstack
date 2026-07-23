@@ -94,6 +94,26 @@ The other expansion axis is **other chains** — the Bitcoin-L2 multichain thesi
 Core, Rootstock, Citrea), or organic growth of the sBTC-STX pool if Bitcoin Staking pulls
 capital in. Stacks is where DeepStack is proven; whether it becomes a real market is TBD.
 
+## UPDATE (2026-07-22): a live concentrated-liquidity (DLMM) venue exists — resolves 3 open items above
+
+This survey (dated 2026-07-20) covered only the XYK/stableswap DEXes and left the concentrated-
+liquidity question open. On 2026-07-22 a live **DLMM (bin-based concentrated-liquidity) DEX** was
+found and verified on-chain (deployer `SM1FKXG…`, a separate DEX). It changes three conclusions
+here — corrections, in the honest spirit of the rest of this doc:
+
+- **"No STX-USDCx pool exists" (watch-list #1) is now WRONG.** `dlmm-pool-stx-usdcx-v-2-bps-10`
+  holds ~533k STX + ~61k USDCx (**~$211k**), 782 txs, traded today. A real STX-USDCx pool is live
+  — on the DLMM venue, not XYK.
+- **"stSTX/STX is dead" (row + watch-list #4) is XYK-only.** The XYK stSTX pool does ~$196/day,
+  but `dlmm-pool-ststx-stx-v-1-bps-1` has **4,214 txs and trades by the minute** — the lowest-IL
+  pair on Stacks is very much alive on DLMM.
+- **The "real HODLMM not identifiable" open question** now has a strong candidate: this DLMM DEX
+  (its bins match AIBTC's public screenshots). Not positively confirmed as Bitflow's HODLMM or as
+  AIBTC's venue, but no longer a blank.
+
+This does not change the pilot (sBTC-STX, XYK, as declared) — reaching the DLMM venue needs a
+bin-aware adapter, which is a post-pilot build (design notes kept internally, not in this repo).
+
 ## What this means for strategy
 
 The LP position is proving the mechanism and producing honest numbers — it is not, and at
