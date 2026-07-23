@@ -1,18 +1,28 @@
 # DeepStack — Vision
 
-> **The independent, AI-driven market-making layer for Bitcoin DeFi.**
-> Stacks now has first-party LP keepers (Bitflow) and yield-routing agents (AIBTC) —
-> but no independent, AI-tuned, cross-venue market-maker, especially for perps.
-> That is the niche DeepStack fills. See [COMPETITIVE.md](COMPETITIVE.md).
+> **Autonomous liquidity infrastructure for Bitcoin DeFi.**
+> An AI-tuned, safety-first market-making agent providing active liquidity across venues,
+> uniquely composable with FlashStack's atomic flash-loans, and built toward a non-custodial
+> vault — with reach extending from AMM liquidity today to concentrated liquidity,
+> order-book/perps quoting, and multichain as those venues mature.
+> Stacks now has first-party keepers (Bitflow) and independent AI market-making agents
+> (aibtcdev / K9Dreamer); DeepStack's edge is the flash-composability, the fail-closed
+> safety layer, and cross-venue independence none of them combine. See [COMPETITIVE.md](COMPETITIVE.md).
+>
+> *(Updated 2026-07-23 with newly verified information — see the whitepaper's revision note.
+> Scope unchanged; claims staged more precisely as shipped / roadmap / gated.)*
 
 ## The problem
 
 Stacks holds ~**$545M of sBTC**, yet on-chain trading depth is thin and concentrated in
-a few venues. First-party tooling now exists for *passive* liquidity — Bitflow's HODLMM
-Keepers (auto-rebalancing concentrated-LP, live Mar 2026) and AIBTC's yield daemon
-(idle-sBTC routing) — but there is **no independent, AI-driven *active* market-maker**,
-and **no order-book market-making for perps** (Velar). Bitcoin DeFi still lacks operators
-with real market-making experience deploying it as cross-venue, open infrastructure.
+a few venues. Automated liquidity now exists — Bitflow's HODLMM Keepers (auto-rebalancing
+concentrated-LP, live Mar 2026) and independent AI agents on the aibtcdev network (K9Dreamer
+et al.) market-making HODLMM with public receipts. What none of them combine is what Bitcoin
+DeFi still lacks: an operator that pairs **atomic flash-composable rebalancing (FlashStack)**
+with a **fail-closed safety architecture** and genuine **cross-venue/multichain independence**,
+built toward a **non-custodial vault** — and that extends into order-book/perps quoting
+(gated today on venue security — the Velar exploit) as safe venues mature. Depth is the
+bottleneck; DeepStack's job is to supply it safely, composably, and where no one else is.
 
 ## What DeepStack is
 
@@ -31,8 +41,9 @@ loss — never from token emissions or "guaranteed high yield":
 
 1. **LP fee income** — provide liquidity, earn a share of the pool's 0.5% trading fee.
 2. **Liquidity-mining incentives** — protocol/venue token rewards (where available).
-3. **Spread / arbitrage** — quoting on Velar perps (the order-book MM edge) and
-   cross-venue arbitrage.
+3. **Spread / arbitrage** — cross-venue arbitrage today, and order-book quoting on Velar
+   perps (the classical MM edge) once the venue's post-exploit remediation is verified —
+   a gated roadmap path, not current income.
 
 **The scalable model (the Steer insight):** beyond running its own capital, DeepStack
 manages *others'* liquidity through **non-custodial vaults** and earns a management +
@@ -44,7 +55,7 @@ a single operator's balance.
 | Stage | What | Status |
 |---|---|---|
 | **1. Solo agent** | One agent, one pool, AI-tuned, mainnet-validated | ✅ live |
-| **2. Multi-pool** | Several sBTC pairs; Velar perps quoting; arbitrage | next |
+| **2. Multi-pool** | Several sBTC pairs; concentrated-liquidity (DLMM) adapter; arbitrage; **Velar perps quoting (gated on re-audit)** | next |
 | **3. Vaults** | Non-custodial Clarity vaults others deposit into; fee on AUM | the revenue model |
 | **4. Infrastructure** | White-label ALM for Stacks protocols bootstrapping liquidity | the platform |
 
@@ -85,5 +96,8 @@ vault model applies directly — and DeepStack will be the ALM already in place.
 - **Direction:** the ALM infrastructure layer for Bitcoin DeFi — *building* what Steer
   is for EVM, for the chain it doesn't cover.
 
-We are not claiming to *be* Steer. We are building it for Bitcoin — and the whitespace
-(no independent / cross-venue ALM on Stacks, $545M idle sBTC) is real and measurable.
+We are not claiming to *be* Steer, nor to be the only automated-liquidity agent on Stacks —
+first-party keepers and independent AI market-makers already exist and do good work. We are
+building the **flash-composable, safety-first, cross-venue** version heading toward a vault —
+the combination none of them offer — for a market with $545M of idle sBTC and depth that is
+still measurably thin. That gap is real, and it is the one DeepStack is built to close.

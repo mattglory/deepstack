@@ -1,9 +1,20 @@
 # DeepStack: An Independent, AI-Tuned Market-Making Agent for Bitcoin DeFi on Stacks
 
 **Author:** Matt Glory (Glory Matthew)
-**Version:** 1.0 · **Date:** 2026-06-30
+**Version:** 1.1 · **Date:** 2026-06-30 · **Revised:** 2026-07-23
 **Repository:** https://github.com/mattglory/deepstack ·
 **Live dashboard:** https://dashboard-two-alpha-t9c0vbn07m.vercel.app
+
+> **Revision note (2026-07-23).** DeepStack treats live measurement as ground truth, and
+> that discipline applies to this paper too. Three things verified since v1.0 update the
+> competitive and capability sections (§4, §7, §9–§11) — the vision and scope are unchanged,
+> only staged more precisely: (1) independent AI agents on the **aibtcdev** network (notably
+> **K9Dreamer**) now actively market-make Bitflow HODLMM with public on-chain receipts — so
+> "AIBTC is yield-only" no longer holds; (2) DeepStack executed an **atomic flash-rebalance
+> on Stacks mainnet** with FlashStack, moving that from planned to proven; (3) the Feb 2026
+> Velar PerpDEX exploit remains without a confirmed Stacks re-audit, so order-book/perps
+> quoting is stated as a **gated roadmap direction**, not a current edge. None of this
+> narrows the ambition; it sharpens what is shipped vs. roadmap vs. gated.
 
 ---
 
@@ -57,9 +68,13 @@ the market-making levers are:
 3. **Regime response** — size up or withdraw as conditions change.
 
 True two-sided **order-book quoting** — the classical market-making edge — is not
-expressed on a full-range AMM; it belongs on an order-book or perpetuals venue. On
-Stacks that venue is **Velar perps**. DeepStack therefore treats AMM pools as the
-liquidity/inventory layer and reserves order-book quoting for perps.
+expressed on a full-range AMM; it belongs on an order-book or perpetuals venue. On Stacks
+that venue is **Velar perps**, and it remains a core roadmap direction for DeepStack. It is
+**gated, not live**: the February 2026 Velar PerpDEX oracle-manipulation exploit has no
+confirmed Stacks re-audit (see `VENUE_PLAN.md`), so DeepStack does not deploy capital there
+until remediation is verified. This is precisely why the agent's oracle-halt safety layer
+(§5.3) was built first. DeepStack therefore treats AMM pools as the live liquidity/inventory
+layer today, with order-book/perps quoting as the gated next layer once a venue is safe.
 
 ## 3. Problem statement
 
@@ -79,14 +94,23 @@ efforts now exist:
 - **Bitflow HODLMM + Keepers** (live March 2026): a concentrated-liquidity engine with
   first-party "Keepers" that auto-rebalance, harvest fees, and optimize LP positions
   24/7. It is first-party (Bitflow's own pools), single-venue, and uses no AI.
-- **AIBTC**: a Bitcoin-native AI-agent framework with an autonomous sBTC *yield daemon*
-  that routes idle sBTC to the best yield (comparing lending vs HODLMM APR). Its focus
-  is passive yield routing and agent tooling, not active market-making.
+- **AIBTC / the aibtcdev network**: a Bitcoin-native AI-agent framework (MCP tooling, BTC/
+  STX wallets). It began as a yield-routing framework, but as of mid-2026 independent agents
+  on the network — notably **K9Dreamer** — actively market-make Bitflow HODLMM
+  concentrated-liquidity pools and publish honest closeouts with on-chain receipts. This is
+  genuine, well-executed work and the closest thing to DeepStack; it currently leads on
+  **live concentrated-liquidity execution with a public track record.**
 
-DeepStack does **not** claim to be the first automated-liquidity project on Stacks.
-Its differentiation is being **independent, cross-venue, AI-tuned, and focused on active
-market-making — especially Velar perps order-book quoting** — which neither first-party
-keepers nor yield daemons provide. A fuller comparison is in `COMPETITIVE.md`.
+DeepStack does **not** claim to be the first, only, or most-advanced automated-liquidity
+project on Stacks — on live concentrated-liquidity MM, the aibtcdev agents are ahead today.
+Its differentiation is a distinct and defensible set of capabilities: **(1) composability
+with FlashStack** — atomic flash-loan rebalancing, proven on-chain (§7), which no other
+Stacks liquidity agent has; **(2) an explicit fail-closed safety architecture** (§5.3);
+**(3) independence and cross-venue/multichain reach**, not tied to one venue or one agent
+network; and **(4) active market-making that extends toward order-book/perps quoting** as
+safe venues mature (§2). Transparency is shared ground now — the aibtcdev agents publish
+receipts too — and that raises the whole ecosystem's bar. A fuller comparison is in
+`COMPETITIVE.md`.
 
 ## 5. Architecture
 
@@ -170,7 +194,8 @@ DeepStack pursues **fee-backed, sustainable yield — never token emissions or g
 - **Income sources, net of impermanent loss (IL):**
   1. **LP fee income** — a share of the pool's trading fee from other traders.
   2. **Liquidity-mining incentives** — where venues offer them.
-  3. **Spread / arbitrage** — order-book quoting on Velar perps and cross-venue arbitrage.
+  3. **Spread / arbitrage** — cross-venue arbitrage, and order-book quoting on Velar perps
+     once its post-exploit remediation is verified (a gated roadmap path, not current income).
 
 On thin pools, LP fees alone may not exceed IL; the pilot's purpose is to **measure**
 this transparently rather than assume it. A ~$1,000 self-funded pilot proves the
@@ -184,10 +209,16 @@ contracts and is a deliberate later phase, not a current claim.
 ## 7. Composability with FlashStack
 
 The author's prior project, **FlashStack** — a flash-loan protocol live on Stacks
-mainnet (all three grant milestones delivered) — composes directly with DeepStack:
-the agent can flash-borrow to rebalance inventory atomically (capital-efficient
-rebalancing), and DeepStack liquidity deepens the same pools FlashStack's arbitrage
-strategies use. This is a primitive pairing unique to this builder.
+mainnet (all three grant milestones delivered) — composes directly with DeepStack, and
+this is no longer only a design claim: DeepStack has executed an **atomic flash-rebalance
+on mainnet** — borrow, rebalance, and repay in a single transaction — verifiable on-chain.
+This removes the multi-step "exit → reposition → re-enter" round-trip that costs gas and
+realizes loss at every hop, a cost that active rebalancers (including concentrated-liquidity
+agents) otherwise pay repeatedly. DeepStack liquidity in turn deepens the same pools
+FlashStack's strategies use. This flash-composable pairing is unique to this builder and is
+DeepStack's clearest technical edge. *Honest caveat:* FlashStack's reserves are still small
+(bootstrapping), so today the edge is the **proven atomic rails and pattern**, not deep
+callable capital — the reserve depth grows as the protocol does.
 
 ## 8. Implementation and validation
 
@@ -215,7 +246,7 @@ mode; live execution is gated behind explicit opt-in and hard caps.
 | Stage | Scope | Status |
 |---|---|---|
 | 1. Solo agent | One agent, one pool, AI-tuned, mainnet-validated | live |
-| 2. Multi-venue | More sBTC pairs; **Velar perps quoting**; cross-venue arbitrage | next |
+| 2. Multi-venue | More sBTC pairs; concentrated-liquidity (DLMM) adapter; cross-venue arbitrage; **Velar perps quoting (gated on venue re-audit)** | next |
 | 3. Vaults | Non-custodial Clarity vaults; fee on AUM | the revenue model |
 | 4. Infrastructure | Open ALM tooling / white-label for Stacks protocols | the platform |
 
@@ -225,8 +256,12 @@ mode; live execution is gated behind explicit opt-in and hard caps.
   by transparent measurement and conservative sizing, not by yield promises.
 - **Smart-contract / execution risk** — mitigated by input-cap post-conditions,
   on-chain min-output guards, hard caps, and a mainnet-validated path that fails closed.
-- **Competitive risk** — first-party keepers (Bitflow) could extend into AI or perps;
-  mitigated by independence, cross-venue reach, the perps focus, and open source.
+- **Competitive risk** — first-party keepers (Bitflow) could extend into AI, and
+  independent agents on the aibtcdev network already market-make concentrated liquidity and
+  lead there today; mitigated by DeepStack's flash-composability (a real head start),
+  the fail-closed safety architecture, cross-venue/multichain reach, and — in parallel —
+  the option to offer FlashStack's atomic-rebalance rails as infrastructure the wider agent
+  ecosystem composes with, rather than only competing head-on.
 - **Custody risk (future vaults)** — managing third-party funds requires audited
   contracts and compliance; treated as a gated later phase.
 - **Key/operational risk** — keys held only in local environment files, never logged or
@@ -237,12 +272,15 @@ mode; live execution is gated behind explicit opt-in and hard caps.
 DeepStack is a working, mainnet-validated, AI-tuned market-making agent for Bitcoin
 DeFi, built by an operator with a delivered Stacks track record (FlashStack) and live
 market-making experience (Dexalot). It does not overclaim: rebalancing costs fees,
-profitability depends on volume and incentives net of IL, and first-party automation
-already exists for passive liquidity. Its defensible niche is **independent, AI-driven,
-cross-venue active market-making — especially Velar perps** — delivered transparently
-and open source. The honest, measurable approach is the point: prove whether fee income
-beats IL on Bitcoin-native venues, in public, and build the automated liquidity layer
-Bitcoin DeFi still lacks.
+profitability depends on volume and incentives net of IL, first-party automation already
+exists for passive liquidity, and independent agents already market-make concentrated
+liquidity well. Its defensible edge is a specific combination no one else has: **atomic
+flash-composable rebalancing (FlashStack, proven on-chain), a fail-closed safety
+architecture, and cross-venue/multichain independence — the foundation for a non-custodial
+vault** — with active market-making that extends toward order-book/perps quoting as safe
+venues mature. The honest, measurable approach is the point: prove whether fee income beats
+IL on Bitcoin-native venues, in public, and build the flash-composable, safety-first
+liquidity layer — and ultimately the vault — that Bitcoin DeFi still lacks.
 
 ## References
 
