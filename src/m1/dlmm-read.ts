@@ -31,6 +31,11 @@ export function binUintKey(signedBinId: number): number {
   return signedBinId + CENTER_BIN_ID;
 }
 
+/** Inverse of binUintKey: the signed bin id for a uint map key (e.g. as get-user-bins returns). */
+export function binSignedId(uintKey: number): number {
+  return uintKey - CENTER_BIN_ID;
+}
+
 export interface DlmmPool {
   key: string; // short label
   name: string; // contract name under DEPLOYER
