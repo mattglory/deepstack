@@ -22,6 +22,7 @@ import {
   type BuiltTx,
 } from "./actions.js";
 import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, type Inventory, type AgentParams } from "./agent.js";
+import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
@@ -322,8 +323,21 @@ async function act(
     console.log(`  LP: hold — ${lp.reason}`);
   }
 
+  // Bounded band experiment (pre-pilot shakedown; OFF by default — EXPERIMENT_BAND_MODE).
+  // Pins a tight rebalance band and measures its live cost, auto-reverting to the measured
+  // vol band the instant a guardrail (count / cost / time) trips. Affects ONLY the rebalance
+  // band — LP, safety, and allocation are untouched. See experiment.ts + docs/EXPERIMENT.md.
+  const expCfg = defaultExperimentConfig();
+  const exp = experimentDecision(expCfg, loadExperimentState(expCfg.statePath), params.rebalanceBandBps, new Date().toISOString());
+  if (expCfg.mode) {
+    saveExperimentState(expCfg.statePath, exp.state);
+    tickJournal.experiment = exp.status;
+    console.log(`  [experiment] ${exp.status}`);
+  }
+  const rbParams = exp.active ? { ...params, rebalanceBandBps: exp.bandBps } : params;
+
   // 2) Rebalance free inventory via swap.
-  const d = decide(s.inv, s.midXinY, x.decimals, y.decimals, params);
+  const d = decide(s.inv, s.midXinY, x.decimals, y.decimals, rbParams);
   tickJournal.rebalance = { action: d.action, reason: d.reason };
   if (d.action === "none") {
     console.log(`  rebalance: HOLD — ${d.reason}`);
@@ -337,7 +351,7 @@ async function act(
 
   // Divergence-aware execution timing (see decideExecTiming): the band said trade; this
   // decides whether THIS cycle's price is the one to trade at. Bounded deferral only.
-  const driftUrgent = Math.abs(d.metrics.drift) > (params.rebalanceBandBps / 10_000) * 1.5;
+  const driftUrgent = Math.abs(d.metrics.drift) > (rbParams.rebalanceBandBps / 10_000) * 1.5;
   const timing = decideExecTiming(d.action, s.midXinY, s.externalMid, rebalDefer, driftUrgent);
   tickJournal.execTiming = { edgeBps: +timing.edgeBps.toFixed(1), execute: timing.execute, reason: timing.reason };
   if (!timing.execute) {
@@ -361,7 +375,18 @@ async function act(
     d.action === "swap-y-for-x"
       ? await buildSwapYForX(d.amountBase, opts)
       : await buildSwapXForY(d.amountBase, opts);
-  return broadcastResult(built);
+  const ok = await broadcastResult(built);
+  if (ok && exp.active) {
+    // Attribute this rebalance's swap fee (pool fee on the input notional) to the experiment
+    // budget and persist immediately, so a VPS restart can't lose the count/cost.
+    const feeStx =
+      d.action === "swap-y-for-x"
+        ? (Number(d.amountBase) / 10 ** y.decimals) * 0.005
+        : (Number(d.amountBase) / 10 ** x.decimals) * s.midXinY * 0.005;
+    saveExperimentState(expCfg.statePath, recordRebalance(exp.state, feeStx));
+    tickJournal.rebalanceExecuted = { feeStx: +feeStx.toFixed(6) };
+  }
+  return ok;
 }
 
 function printTune(p: TunedParams) {
