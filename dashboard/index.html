@@ -78,6 +78,16 @@
       <div class="hero" id="hero"></div>
 
       <div class="panel">
+        <h2>Performance <span style="text-transform:none;letter-spacing:0;color:var(--faint)" id="perfSub">· net of impermanent loss</span></h2>
+        <div id="perfWrap" style="position:relative;display:none">
+          <svg id="perfChart" width="100%" height="150" preserveAspectRatio="none"></svg>
+          <div id="perfTip" style="position:absolute;pointer-events:none;display:none;background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:5px 9px;font-size:12px;color:var(--fg);white-space:nowrap"></div>
+          <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:11px;margin-top:4px"><span id="perfT0"></span><span id="perfT1"></span></div>
+        </div>
+        <div class="note" id="perfNote">loading…</div>
+      </div>
+
+      <div class="panel">
         <h2>Inventory allocation</h2>
         <div class="alloc" id="alloc"><span style="width:50%;background:var(--stx)"></span><span style="width:50%;background:var(--btc)"></span></div>
         <div class="legend" id="legend"></div>
@@ -87,6 +97,12 @@
         <h2>Economics (fee-backed — not a guaranteed yield)</h2>
         <div class="econ" id="econ"></div>
         <div class="note" id="econNote"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Risk &amp; safety <span style="text-transform:none;letter-spacing:0;color:var(--faint)">· the guardrails, live</span></h2>
+        <div class="econ" id="safetyTiles"></div>
+        <div class="note" id="safetyNote">loading…</div>
       </div>
 
       <div class="panel">
@@ -249,6 +265,96 @@
       let agentLpBasis = null; // deposited leg quantities {xQty, yQty, t} (agent-tracked)
       let agentPilotStart = null; // ISO time the official pilot window opened (scopes Net)
       let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
+      // Performance curve — the institutional headline: cumulative return vs HODL (net of IL)
+      // from a clean, fixed-inception baseline. Gated behind pilot start ON PURPOSE — a track
+      // record means a top-up-free window with a stable baseline; pre-pilot telemetry (capital
+      // adds, occasional failed reads) can't be charted honestly, so we don't. A dashed line
+      // marks breakeven vs holding the starting inventory.
+      function renderPerformance(m, ss, pilot) {
+        const wrap = $("perfWrap"), note = $("perfNote"), sub = $("perfSub");
+        sub.textContent = "· cumulative return vs HODL, net of IL — since pilot start";
+        if (!pilot || !m.pilotBaseline) {
+          wrap.style.display = "none";
+          note.innerHTML = "Track record begins at <b>pilot start</b> — a clean, fixed-inception equity curve with no capital top-ups (the honest way to show performance). Current LP&nbsp;P&amp;L net of IL is in Economics above.";
+          return;
+        }
+        const b = m.pilotBaseline;
+        const series = ss
+          .map((s) => {
+            const hodl = (Number(b.xBase) / 1e8) * s.mid + Number(b.yBase) / 1e6;
+            return { t: s.t, hodl, port: s.portfolioY, v: hodl > 0 ? ((s.portfolioY - hodl) / hodl) * 100 : 0 };
+          })
+          // Glitch filter: a failed LP-value read shows as an implausible portfolio spike/drop.
+          // Drop samples where |portfolio − HODL| exceeds 20% of HODL — beyond realistic IL for
+          // this pair — so a bad read is never charted as return.
+          .filter((d) => d.hodl > 0 && Math.abs(d.port - d.hodl) < 0.2 * d.hodl);
+        if (series.length < 2) {
+          wrap.style.display = "none";
+          note.textContent = "Pilot window open — awaiting clean in-window heartbeats.";
+          return;
+        }
+        wrap.style.display = "block";
+        const svg = $("perfChart"), W = svg.clientWidth || 800, H = 150, P = 8;
+        svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+        const vs = series.map((d) => d.v);
+        const lo = Math.min(0, ...vs), hi = Math.max(0, ...vs), span = hi - lo || 1;
+        const Y = (v) => H - P - ((v - lo) / span) * (H - 2 * P);
+        const xy = series.map((d, i) => [P + (i / Math.max(1, series.length - 1)) * (W - 2 * P), Y(d.v)]);
+        const lastV = vs[vs.length - 1], col = lastV >= 0 ? "var(--ok)" : "var(--bad)", zeroY = Y(0);
+        svg.innerHTML =
+          `<line x1="0" y1="${zeroY}" x2="${W}" y2="${zeroY}" stroke="var(--line)" stroke-width="1" stroke-dasharray="3 3"/>` +
+          `<text x="${P}" y="${Math.max(11, zeroY - 4)}" fill="var(--faint)" font-size="10">breakeven</text>` +
+          `<polyline points="${xy.map((p) => p.join(",")).join(" ")}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` +
+          `<line id="perfCross" x1="0" x2="0" y1="0" y2="${H}" stroke="var(--muted)" stroke-width="1" opacity="0"/>` +
+          `<circle id="perfDot" r="3.5" fill="${col}" stroke="var(--bg2)" stroke-width="2" opacity="0"/>`;
+        $("perfT0").textContent = tstr(new Date(series[0].t).getTime() / 1000);
+        $("perfT1").textContent = tstr(new Date(series[series.length - 1].t).getTime() / 1000);
+        const val = (v) => (v >= 0 ? "+" : "") + fmt(v, 2) + "%";
+        note.innerHTML = `Latest: <b style="color:${col}">${val(lastV)}</b> · 0% = matching a buy-and-hold of the starting inventory; above the line, fees beat impermanent loss.`;
+        const tip = $("perfTip"), cross = svg.querySelector("#perfCross"), dot = svg.querySelector("#perfDot");
+        svg.onmousemove = (e) => {
+          const r = svg.getBoundingClientRect();
+          const i = Math.max(0, Math.min(series.length - 1, Math.round(((e.clientX - r.left) / r.width) * (series.length - 1))));
+          const [px, py] = xy[i];
+          cross.setAttribute("x1", px); cross.setAttribute("x2", px); cross.setAttribute("opacity", "0.5");
+          dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("opacity", "1");
+          tip.style.display = "block";
+          tip.style.left = `${Math.min((px / W) * r.width + 10, r.width - 150)}px`;
+          tip.style.top = "6px";
+          tip.innerHTML = `<b>${val(series[i].v)}</b><br><span style="color:var(--muted)">${tstr(new Date(series[i].t).getTime() / 1000)}</span>`;
+        };
+        svg.onmouseleave = () => { tip.style.display = "none"; cross.setAttribute("opacity", "0"); dot.setAttribute("opacity", "0"); };
+      }
+
+      // Risk & safety — the guardrails made visible (DeepStack's actual moat), all from the
+      // agent's heartbeats: the fail-closed oracle gate, live oracle divergence, pool-share
+      // exposure vs the 2% cap, and inventory balance vs the 50/50 target.
+      function renderSafety(m, ss) {
+        const tiles = $("safetyTiles"), note = $("safetyNote");
+        if (!ss || !ss.length) { tiles.innerHTML = ""; note.textContent = ""; return; }
+        const last = ss[ss.length - 1];
+        const halts = ss.filter((s) => s.safe === false).length;
+        const safePct = ((ss.length - halts) / ss.length) * 100;
+        const gate = last.safe === false ? `<span style="color:var(--bad)">HALTED</span>` : `<span style="color:var(--ok)">ACTIVE</span>`;
+        const divs = ss.filter((s) => s.ext > 0).map((s) => (Math.abs(s.mid - s.ext) / s.ext) * 1e4);
+        const curDiv = last.ext > 0 ? (Math.abs(last.mid - last.ext) / last.ext) * 1e4 : null;
+        const maxDiv = divs.length ? Math.max(...divs) : null;
+        let shareTile;
+        if (last.poolX > 0 && last.poolY > 0 && last.lpValueY > 0) {
+          const share = (last.lpValueY / (last.poolX * last.mid + last.poolY)) * 100;
+          shareTile = small("Pool-share exposure", `${fmt(share, 2)}%<div class="sub2">of pool · cap 2.0%</div>`);
+        } else shareTile = small("Pool-share exposure", `—<div class="sub2">no pool read</div>`);
+        const xVal = (Number(last.xBase) / 1e8) * last.mid, yVal = Number(last.yBase) / 1e6;
+        const yFrac = xVal + yVal > 0 ? (yVal / (xVal + yVal)) * 100 : 50;
+        tiles.innerHTML =
+          small("Safety gate", `${gate}<div class="sub2">${halts} halts · ${fmt(safePct, 1)}% safe</div>`) +
+          small("Oracle divergence", curDiv === null ? "—" : `${fmt(curDiv, 0)} bps<div class="sub2">max ${fmt(maxDiv, 0)} bps · fail-closed</div>`) +
+          shareTile +
+          small("Inventory balance", `${fmt(yFrac, 1)} / ${fmt(100 - yFrac, 1)}<div class="sub2">${fmt(Math.abs(yFrac - 50), 1)}pp from 50/50</div>`);
+        note.innerHTML =
+          "The agent fails <b>closed</b>: it halts trading if the pool price diverges from the external oracle beyond tolerance, the pool is paused, or the reference is unreadable. LP exposure is capped at 2% of the pool. The guardrails, evidenced live — not just asserted.";
+      }
+
       function renderPilot(m) {
         if (m && m.lpBasis) agentLpBasis = m.lpBasis;
         if (m && m.pilotStartedAt) agentPilotStart = m.pilotStartedAt;
@@ -273,6 +379,8 @@
         const last = ss[ss.length - 1];
         agentLpValueY = last.lpValueY ?? 0;
         agentMid = last.mid ?? 0;
+        renderPerformance(m, ss, pilot);
+        renderSafety(m, ss);
         const winStart = pilot ? m.pilotStartedAt : m.startedAt;
         const t0 = new Date(winStart).getTime(), t1 = new Date(last.t).getTime();
         const elapsedH = Math.max(0, (t1 - t0) / 3.6e6);
