@@ -6,6 +6,24 @@
 
 import { callNoArgReadOnly, getDecimals } from "./stacks.js";
 
+/**
+ * Constant-product mid (Y per 1 X) computed directly from the bigint reserves.
+ *
+ * Bug-class-3 hardening: the naive path is `Number(base) / 10^dec` per reserve, then a ratio.
+ * `Number()` silently drops integer precision above 2^53, so a reserve exceeding ~9e15 base units
+ * (e.g. > ~9 billion STX in microSTX) would misprice the mid. This does the division in BigInt
+ * first (exact at any reserve size) with 1e9 fixed-point, then converts the small quotient to a
+ * float. At today's reserve sizes both fit in a double, so this equals the naive ratio to ~1e-9
+ * and behaviour is unchanged. Returns 0 on an empty x-reserve rather than Infinity.
+ */
+export function midFromReserves(xBase: bigint, yBase: bigint, xDecimals: number, yDecimals: number): number {
+  if (xBase <= 0n) return 0;
+  const PREC = 1_000_000_000n; // 9 decimal places of fixed-point on the mid
+  const num = yBase * 10n ** BigInt(xDecimals) * PREC;
+  const den = xBase * 10n ** BigInt(yDecimals);
+  return Number(num / den) / 1e9;
+}
+
 export interface PoolState {
   poolSymbol: string;
   xToken: string;
@@ -55,7 +73,7 @@ export async function getPoolState(principal: string): Promise<PoolState> {
     providerFeeBps,
     protocolFeeBps,
     feeBps,
-    midXinY: yReserve / xReserve, // constant-product spot price
+    midXinY: midFromReserves(xBalance, yBalance, xDecimals, yDecimals), // constant-product spot price (bigint-safe)
     poolActive: Boolean(tuple["pool-status"]?.value),
   };
 }

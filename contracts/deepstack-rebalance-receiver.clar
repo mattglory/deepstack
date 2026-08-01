@@ -1,4 +1,9 @@
-;; DeepStack Flash-Rebalance Receiver -- DRAFT, NOT YET DEPLOYED
+;; DeepStack Flash-Rebalance Receiver
+;;
+;; STATUS: DEPLOYED to Stacks mainnet at
+;;   SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-rebalance-receiver
+;;   The arm + flash-loan flow has executed on-chain. If you edit this source, confirm the live
+;;   deployed bytecode matches before relying on the change; the checklist below is the deploy runbook.
 ;;
 ;; The DeepStack <-> FlashStack integration (M2 deliverable): borrow STX from
 ;; flashstack-stx-core, buy sBTC on the Bitflow XYK sBTC-STX pool at a size larger
