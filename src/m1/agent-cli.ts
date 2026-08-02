@@ -24,6 +24,7 @@ import {
 import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, type Inventory, type AgentParams } from "./agent.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
+import { scanStstxGap } from "./ststx-gap.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
@@ -508,6 +509,17 @@ async function main() {
       // atomic cross-venue arb is worth building. See crosspool.ts.
       const xp = await scanCrossPools();
       if (xp.length) appendJournal({ t: new Date().toISOString(), type: "xpool", pools: xp });
+      // stSTX cross-pool gap (read-only, on-chain quotes). The Bitflow ticker reports
+      // price=0 for these pools, so scanCrossPools cannot see them; this quotes the atomic
+      // round trip both directions instead. The series is the deploy/no-deploy evidence for
+      // the stSTX arb receiver (ststx-gap.ts). Guarded on its own — an addition to a live
+      // pilot must never turn a good trading cycle into a logged failure/alert.
+      try {
+        const gap = await scanStstxGap();
+        if (gap.length) appendJournal({ t: new Date().toISOString(), type: "ststx", obs: gap });
+      } catch (e) {
+        appendJournal({ t: new Date().toISOString(), type: "ststx", error: (e as Error).message });
+      }
       // Haven rotation (haven.ts): the full stablecoin capital-preservation reflex. Armed
       // but DORMANT — decides what it would do and whether a USDCx route is deep enough to
       // act, using the pools just scanned. Journalled so the day a real USDCx pool launches
