@@ -3,9 +3,15 @@
 //
 // The Bitflow ticker reports price=0 for these pools, so the gap is invisible off-chain.
 // But get-dy / get-dx quotes are NET of each pool's fee — so chaining them (STX → stSTX
-// on pool A, stSTX → STX on pool B) yields the true gross profit of the atomic arb the
-// crosspool-ststx-receiver (FlashStack side, checked draft) would execute. Subtract the
-// flash fee and gas and the journalled number IS the arm decision: positive = capturable.
+// on pool A, stSTX → STX on pool B) yields the gross profit the atomic arb the
+// crosspool-ststx-receiver (FlashStack side, checked draft) would execute.
+//
+// BUT a quote is not a fill: get-dy/get-dx compute even on a pool whose swaps are
+// disabled. A pool can be de-listed — admin sets its pair unapproved — and keep returning
+// a rosy quote while every real swap aborts with err-pair-not-approved. That is exactly
+// v-1-1's state as of 2026-08 (approval=false; its last swap aborted, only withdrawals
+// since). So each observation also carries `executable`, true only when BOTH legs' pairs
+// are approved. A positive netStx with executable=false is a phantom, not an opportunity.
 //
 // Read-only, off the hot path, never throws. The deploy/no-deploy decision for the
 // receiver is made by this series — a week-plus of data before any capital moves.
@@ -29,6 +35,12 @@ export interface GapObs {
   stxBack: number;
   grossBps: number; // round trip vs probe, pool fees already inside the quotes
   netStx: number; // after flash fee + gas — positive means the atomic arb pays
+  executable: boolean; // both legs' pairs approved; false => quote is a phantom, swaps abort
+}
+
+/** An arb is only real if BOTH legs can actually swap. Pure, for tests. */
+export function bothApproved(buyLegApproved: boolean, sellLegApproved: boolean): boolean {
+  return buyLegApproved && sellLegApproved;
 }
 
 /** Pure math split out for tests. */
@@ -65,9 +77,41 @@ async function readUint(pool: (typeof POOLS)[number], fn: string, amount: bigint
   }
 }
 
+/**
+ * Is this pool's pair approved for swapping? get-pair-data(...).approval — the same gate
+ * that makes a real swap abort with err-pair-not-approved when false. Fail-closed: if the
+ * flag can't be read, treat the pair as NOT executable rather than assume it trades.
+ */
+async function pairApproved(pool: (typeof POOLS)[number]): Promise<boolean> {
+  try {
+    const j = cvToJSON(
+      await withRpc((baseUrl) =>
+        fetchCallReadOnlyFunction({
+          contractAddress: DEPLOYER,
+          contractName: pool.name,
+          functionName: "get-pair-data",
+          functionArgs: [
+            Cl.contractPrincipal(STSTX.address, STSTX.name),
+            Cl.contractPrincipal(DEPLOYER, pool.lp),
+          ],
+          network: "mainnet",
+          client: { baseUrl },
+          senderAddress: DEPLOYER,
+        }),
+      ),
+    ) as any;
+    return (j?.value?.value?.approval?.value ?? j?.value?.approval?.value) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Quote the atomic round trip in both directions at the receiver's cap size. */
 export async function scanStstxGap(probeStx = 100): Promise<GapObs[]> {
   const probeU = BigInt(Math.round(probeStx * 1e6));
+  // Approval is a property of each pool, not of direction — read once, reuse both ways.
+  const approved = new Map<string, boolean>();
+  for (const p of POOLS) approved.set(p.key, await pairApproved(p));
   const out: GapObs[] = [];
   for (const [a, b] of [[POOLS[0], POOLS[1]], [POOLS[1], POOLS[0]]] as const) {
     const ststx = await readUint(a, "get-dy", probeU); // STX → stSTX in pool a
@@ -75,7 +119,8 @@ export async function scanStstxGap(probeStx = 100): Promise<GapObs[]> {
     const back = await readUint(b, "get-dx", ststx); // stSTX → STX in pool b
     if (back === null) continue;
     const m = gapMetrics(Number(probeU), Number(back));
-    out.push({ dir: `${a.key}→${b.key}`, probeStx, stxBack: +(Number(back) / 1e6).toFixed(4), ...m });
+    const executable = bothApproved(approved.get(a.key) ?? false, approved.get(b.key) ?? false);
+    out.push({ dir: `${a.key}→${b.key}`, probeStx, stxBack: +(Number(back) / 1e6).toFixed(4), ...m, executable });
   }
   return out;
 }
