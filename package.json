@@ -22,7 +22,8 @@
     "m2:pnl": "tsx src/m2/pnl-cli.ts",
     "m2:presplit": "tsx src/m2/presplit-cli.ts",
     "m2:pilot-start": "tsx src/m2/pilot-start-cli.ts",
-    "m1:verify-write": "tsx src/m1/verify-write-cli.ts"
+    "m1:verify-write": "tsx src/m1/verify-write-cli.ts",
+    "m1:dlmm-smoke": "tsx src/m1/dlmm-smoke-cli.ts"
   },
   "dependencies": {
     "@stacks/transactions": "^7.5.0",
