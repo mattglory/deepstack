@@ -65,3 +65,39 @@ test("buildMoveLiquidity: recenter emits move-liquidity-multi with signed from/t
   assert.equal(j["to-bin-id"].value, "7");
   assert.equal(j["amount"].value, "500");
 });
+
+// --- input-cap post-conditions (Allow-mode safety, mirroring the XYK sendCapPC) ---
+import { buildInputCaps, isNativeStxToken } from "./dlmm-write.js";
+
+const STX = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2";
+const USDCX = "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx";
+const SENDER = "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60";
+
+test("isNativeStxToken: only the token-stx facade is native; real SIP-010s are not", () => {
+  assert.equal(isNativeStxToken(STX), true);
+  assert.equal(isNativeStxToken(USDCX), false);
+  assert.equal(isNativeStxToken("SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG.ststx-token"), false);
+});
+
+test("buildInputCaps: STX facade is capped with .ustx(), SIP-010 with .ft()", () => {
+  const pcs = buildInputCaps(SENDER, [
+    { token: STX, asset: "", max: 3_000_000n },
+    { token: USDCX, asset: "usdcx", max: 5_000_000n },
+  ]) as any[];
+  assert.equal(pcs.length, 2);
+  assert.equal(pcs[0].type, "stx-postcondition");
+  assert.equal(pcs[0].condition, "lte");
+  assert.equal(pcs[0].amount, "3000000");
+  assert.equal(pcs[1].type, "ft-postcondition");
+  assert.equal(pcs[1].asset, `${USDCX}::usdcx`);
+  assert.equal(pcs[1].amount, "5000000");
+});
+
+test("buildInputCaps: caps that send nothing are dropped (0 and negative)", () => {
+  const pcs = buildInputCaps(SENDER, [
+    { token: STX, asset: "", max: 0n },
+    { token: USDCX, asset: "usdcx", max: -1n },
+    { token: STX, asset: "", max: 1n },
+  ]);
+  assert.equal(pcs.length, 1);
+});

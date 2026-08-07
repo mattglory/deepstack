@@ -10,10 +10,43 @@
 // ids our position model uses. Concentrated deposit shape (verified on-chain): bins ABOVE the
 // active bin hold X, bins BELOW hold Y, the active bin holds both.
 
-import { Cl, type ClarityValue } from "@stacks/transactions";
+import { Cl, Pc, type ClarityValue, type PostCondition } from "@stacks/transactions";
 
 const DEPLOYER = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
 const ROUTER = "dlmm-liquidity-router-v-1-2";
+
+// On this venue "STX" is the token-stx-v-1-2 trait, but the asset actually moved is NATIVE
+// STX — the same facade the XYK pool uses (it has no real fungible-token asset). So its input
+// cap must be .ustx(), not .ft(). Every other token here (ststx, usdcx, sbtc) is a real SIP-010.
+const STX_WRAPPER = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2";
+
+/** True if this DLMM token principal is the native-STX facade (capped with .ustx()). */
+export function isNativeStxToken(principal: string): boolean {
+  return principal === STX_WRAPPER;
+}
+
+export interface InputCap {
+  token: string; // "ADDR.name" principal as reported by the pool (x-token / y-token)
+  asset: string; // SIP-010 asset name (the part after ::); ignored for the native-STX facade
+  max: bigint; // the wallet sends AT MOST this much of the token
+}
+
+/**
+ * Input-cap post-conditions: the sender sends AT MOST `max` of each token. Paired with Allow
+ * mode in the executor, these cap only what LEAVES the wallet, so a mis-encoded router call can
+ * never overspend — the proven XYK approach (actions.ts sendCapPC), extended to N tokens. The
+ * native-STX facade is capped with .ustx(); real SIP-010s with .ft(). Zero/negative caps are
+ * dropped. Pure.
+ */
+export function buildInputCaps(sender: string, caps: InputCap[]): PostCondition[] {
+  return caps
+    .filter((c) => c.max > 0n)
+    .map((c) =>
+      isNativeStxToken(c.token)
+        ? Pc.principal(sender).willSendLte(c.max).ustx()
+        : Pc.principal(sender).willSendLte(c.max).ft(c.token as `${string}.${string}`, c.asset),
+    );
+}
 
 export interface PoolRefs {
   poolName: string; // e.g. "dlmm-pool-ststx-stx-v-1-bps-1" (under DEPLOYER)
