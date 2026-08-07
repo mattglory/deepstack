@@ -24,22 +24,31 @@ import { getWallet, getStxBalance } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
 import {
-  distributeAcrossRange,
   buildAddLiquidity,
   buildWithdrawLiquidity,
   buildInputCaps,
   isNativeStxToken,
   type PoolRefs,
+  type BinDeposit,
   type BinWithdraw,
 } from "./dlmm-write.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 
 const PAIR = process.env.DLMM_PAIR ?? "stx-usdcx"; // STX is a token here; single-sided STX add
 const CAP_STX = 5; // hard ceiling on STX committed per run
-const HALF_WIDTH = 1; // active bin + one on the STX side — a real (tiny) 2-bin position
-const FEE_USTX = 200_000n; // network fee for the multi-bin call (0.2 STX)
+// Single bin, ONE step off the active bin on the STX side (X above active / Y below). Off-active
+// so the deposit is unambiguously single-sided — the active bin itself expects both tokens — and a
+// single position means the router's fold can't mask a real error as ERR_NO_RESULT_DATA (u5001).
+const SMOKE_STEPS_OFF = 1;
+const FEE_USTX = 200_000n; // network fee (0.2 STX)
 const PC_HEADROOM_USTX = 100_000n; // 0.1 STX over the deposit to cover the pool's small liquidity fee
 const DEADLINE_SECS = 600;
+// The core rejects min-dlp = 0 (ERR_INVALID_MIN_DLP_AMOUNT) and floors any deposit's shares at
+// minimum-bin-shares (10000 on-chain). 10000 is valid (>0) and always ≤ the shares a 2-STX deposit
+// yields, so it never trips ERR_MINIMUM_LP_AMOUNT. (The pilot will compute min-dlp from expected
+// shares × (1 − slippage); a tiny single-bin smoke does not need tighter protection.)
+const MIN_DLP = 10_000n;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function parseArgs() {
   const a = process.argv.slice(2);
@@ -84,18 +93,19 @@ async function main() {
     if (amt > CAP_STX) throw new Error(`amount ${amt} exceeds the smoke cap of ${CAP_STX} STX`);
     const totalStx = BigInt(Math.round(amt * 1e6));
 
-    // Single-sided STX: STX into the active bin and bins on the STX side; the other token = 0.
-    const deposits = stxIsX
-      ? distributeAcrossRange(st.activeBinId, HALF_WIDTH, totalStx, 0n)
-      : distributeAcrossRange(st.activeBinId, HALF_WIDTH, 0n, totalStx);
+    // One bin, one step off the active bin on the STX side (X above / Y below), single-sided.
+    const bin = stxIsX ? st.activeBinId + SMOKE_STEPS_OFF : st.activeBinId - SMOKE_STEPS_OFF;
+    const deposits: BinDeposit[] = stxIsX
+      ? [{ signedBin: bin, xAmount: totalStx, yAmount: 0n }]
+      : [{ signedBin: bin, xAmount: 0n, yAmount: totalStx }];
 
-    const desc = buildAddLiquidity(pool, deposits, { minDlp: 0n, deadlineTime });
+    const desc = buildAddLiquidity(pool, deposits, { minDlp: MIN_DLP, deadlineTime });
     // The wallet sends at most the deposit + a small headroom for the pool's liquidity fee.
     const pcCap = totalStx + PC_HEADROOM_USTX;
     const pcs = buildInputCaps(w.address, [{ token: stxToken, asset: "", max: pcCap }]);
 
     console.log("action: add-liquidity (single-sided STX)");
-    console.log(`  committing: ${amt} STX across ${deposits.length} bins (${deposits.map((d) => d.signedBin).join(", ")})`);
+    console.log(`  committing: ${amt} STX into bin ${bin} (${SMOKE_STEPS_OFF} step ${stxIsX ? "above" : "below"} active ${st.activeBinId}, single-sided)`);
     console.log(`  input cap: sender sends ≤ ${Number(pcCap) / 1e6} STX (native) — the ONLY asset that can leave`);
     console.log(`  network fee: ${Number(FEE_USTX) / 1e6} STX | deadline: +${DEADLINE_SECS}s`);
     const need = totalStx + PC_HEADROOM_USTX + FEE_USTX;
@@ -112,7 +122,7 @@ async function main() {
       feeMicroStx: FEE_USTX,
       nonce,
     });
-    return report(r.txid);
+    return await report(r.txid);
   }
 
   // withdraw — recover the whole position; the wallet only RECEIVES, so no input cap applies.
@@ -146,7 +156,7 @@ async function main() {
     feeMicroStx: FEE_USTX,
     nonce,
   });
-  return report(r.txid);
+  return await report(r.txid);
 }
 
 function preview() {
@@ -155,7 +165,7 @@ function preview() {
   console.log("  Reminder: pause the pilot agent first (touch /opt/deepstack/KILL) — shared nonce.");
 }
 
-function report(txid?: string) {
+async function report(txid?: string) {
   if (!txid) {
     console.log("\n✗ broadcast did not return a txid.");
     process.exitCode = 1;
@@ -163,7 +173,26 @@ function report(txid?: string) {
   }
   console.log(`\n✓ BROADCAST. txid: ${txid}`);
   console.log(`  explorer: https://explorer.hiro.so/txid/${txid}?chain=mainnet`);
-  console.log("  Watch it confirm. success => the DLMM write path works on mainnet post-fork.");
+  console.log("  confirming…");
+  for (let i = 0; i < 40; i++) {
+    await sleep(6000);
+    const r = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txid}`);
+    if (r.ok) {
+      const j = (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
+      if (j.tx_status && j.tx_status !== "pending") {
+        console.log(`  status: ${j.tx_status}${j.tx_result?.repr ? `  result: ${j.tx_result.repr}` : ""}`);
+        if (j.tx_status === "success") {
+          console.log("\n✅ DLMM write path CONFIRMED on mainnet post-fork.");
+        } else {
+          console.log("\n⚠ Aborted. The result above is the real (unmasked) error to decode next.");
+          process.exitCode = 1;
+        }
+        return;
+      }
+    }
+    process.stdout.write(".");
+  }
+  console.log("\n  still pending after 4 min — check the explorer.");
 }
 
 main().catch((err) => {
