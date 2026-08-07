@@ -131,17 +131,22 @@ async function main() {
     console.log("no DLMM position for this wallet in this pool — nothing to withdraw.");
     return;
   }
+  // The core requires min-x + min-y > 0 per bin (ERR_INVALID_AMOUNT u1002) — a fully
+  // unprotected withdraw is rejected. A single-sided bin holds only one token, so put a
+  // minimal 1-unit guard on whichever side currently HAS value and 0 on the empty side.
+  // If price flips the bin's composition between this read and the broadcast, the tx aborts
+  // cheaply and a re-run re-reads and adapts.
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({
     signedBin: b.signedBin,
     amount: b.userShares,
-    minX: 0n, // tiny position; min-out guards left at 0 (see note)
-    minY: 0n,
+    minX: b.userX > 0n ? 1n : 0n,
+    minY: b.userY > 0n ? 1n : 0n,
   }));
   const desc = buildWithdrawLiquidity(pool, withdrawals, { deadlineTime });
   console.log("action: withdraw-liquidity (recover position)");
   console.log(`  bins: ${pos.bins.map((b) => b.signedBin).join(", ")}`);
-  console.log(`  est. return: ${Number(pos.totalX) / 1e6} X + ${Number(pos.totalY) / 1e6} Y (approx, pre-slippage)`);
-  console.log("  min-out guards: 0 (acceptable only because the position is tiny)");
+  console.log(`  est. return: ${Number(pos.totalX) / 1e6} X (STX) + ${Number(pos.totalY) / 1e6} Y (USDCx), approx`);
+  console.log(`  min-out guards: minX=${pos.totalX > 0n ? 1 : 0}, minY=${pos.totalY > 0n ? 1 : 0} (nominal — satisfies min-sum>0)`);
   console.log(`  network fee: ${Number(FEE_USTX) / 1e6} STX`);
   if (bal.microStx < FEE_USTX) throw new Error("insufficient STX for the network fee");
 
