@@ -86,3 +86,34 @@ export function minOutFromExpected(expectedAmount: bigint, slippageBps: number):
   const out = expectedAmount - (expectedAmount * bps) / 10_000n;
   return out > 0n ? out : 1n; // a value-bearing side must assert at least 1 (min-sum > 0 rule)
 }
+
+export interface TwoSidedSize {
+  xBase: bigint; // STX for the X (above-active) side, µSTX
+  yBase: bigint; // USDCx for the Y (below-active) side, 6dp
+  valueUsd: number; // realised total value the sizing actually places (after balance caps)
+}
+
+/**
+ * Size a ~50/50-by-value two-sided deposit from available balances, capped by a target.
+ *
+ * v1 recenter is balance-funded, NOT swap-rebalanced (the DLMM swap has no min-out — see
+ * dlmm-recenter notes), so each side is whatever the wallet can supply up to half the target
+ * value. If one token is short the position is placed lopsided rather than swapping to top up;
+ * that is honest LP drift, and it is reported, not hidden. x = STX (native, 6dp @ stxPriceUsd),
+ * y = USDCx (6dp, ≈ $1). Pure.
+ */
+export function sizeTwoSidedDeposit(
+  targetValueUsd: number,
+  stxPriceUsd: number,
+  availStxBase: bigint, // already net of the gas reserve the caller wants to keep
+  availUsdcxBase: bigint,
+): TwoSidedSize {
+  if (!(targetValueUsd > 0) || !(stxPriceUsd > 0)) return { xBase: 0n, yBase: 0n, valueUsd: 0 };
+  const halfUsd = targetValueUsd / 2;
+  let yBase = BigInt(Math.floor(halfUsd * 1e6)); // USDCx ≈ $1
+  let xBase = BigInt(Math.floor((halfUsd / stxPriceUsd) * 1e6)); // STX worth ~halfUsd
+  if (yBase > availUsdcxBase) yBase = availUsdcxBase < 0n ? 0n : availUsdcxBase;
+  if (xBase > availStxBase) xBase = availStxBase < 0n ? 0n : availStxBase;
+  const valueUsd = (Number(xBase) / 1e6) * stxPriceUsd + Number(yBase) / 1e6;
+  return { xBase, yBase, valueUsd };
+}

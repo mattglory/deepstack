@@ -50,3 +50,25 @@ test("minOutFromExpected: value side gets a positive min; empty side is 0", () =
   assert.equal(minOutFromExpected(0n, 100), 0n); // empty side → 0 (min-sum>0 satisfied by the other leg)
   assert.equal(minOutFromExpected(50n, 10_000), 1n); // 100% slip floored to 1 (a value side must assert ≥1)
 });
+
+import { sizeTwoSidedDeposit } from "./dlmm-recenter.js";
+
+test("sizeTwoSidedDeposit: ~50/50 by value when balances are ample", () => {
+  // target $200, STX @ $0.14, plenty of both → ~$100 each side
+  const s = sizeTwoSidedDeposit(200, 0.14, 10_000_000_000n, 10_000_000_000n);
+  assert.equal(s.yBase, 100_000_000n); // $100 USDCx
+  assert.equal(s.xBase, BigInt(Math.floor((100 / 0.14) * 1e6))); // ~714.28 STX
+  assert.ok(Math.abs(s.valueUsd - 200) < 0.01);
+});
+
+test("sizeTwoSidedDeposit: caps each side by available balance (lopsided, no swap)", () => {
+  // only 30 USDCx available → Y side capped; X side still ~$100
+  const s = sizeTwoSidedDeposit(200, 0.14, 10_000_000_000n, 30_000_000n);
+  assert.equal(s.yBase, 30_000_000n); // all the USDCx there is
+  assert.equal(s.xBase, BigInt(Math.floor((100 / 0.14) * 1e6)));
+});
+
+test("sizeTwoSidedDeposit: degenerate inputs → zero, never NaN/negative", () => {
+  assert.deepEqual(sizeTwoSidedDeposit(0, 0.14, 1n, 1n), { xBase: 0n, yBase: 0n, valueUsd: 0 });
+  assert.deepEqual(sizeTwoSidedDeposit(200, 0, 1n, 1n), { xBase: 0n, yBase: 0n, valueUsd: 0 });
+});
