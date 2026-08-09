@@ -25,6 +25,9 @@ import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, deci
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
 import { scanStstxGap } from "./ststx-gap.js";
+import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
+import { readUserPosition } from "./dlmm-position.js";
+import { decideRecenter } from "./dlmm-recenter.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
@@ -519,6 +522,40 @@ async function main() {
         if (gap.length) appendJournal({ t: new Date().toISOString(), type: "ststx", obs: gap });
       } catch (e) {
         appendJournal({ t: new Date().toISOString(), type: "ststx", error: (e as Error).message });
+      }
+      // DLMM recenter OBSERVE (read-only) — journals what the recenter would decide each tick,
+      // without executing, so the loop can be watched before it goes live. Opt-in via
+      // DLMM_OBSERVE_PAIR (unset = no DLMM, current pilot behaviour untouched). Own try/catch: a
+      // DLMM read failure must never turn a good XYK tick into a logged failure/alert. Uses a
+      // FIXED half-width (DLMM_HALF_WIDTH) — the agent's measured vol is sBTC-STX, not the DLMM
+      // pair, so vol-scaling the DLMM range needs its own vol series (a live-phase refinement).
+      const dlmmPair = process.env.DLMM_OBSERVE_PAIR;
+      if (dlmmPair) {
+        try {
+          const dpool = DLMM_POOLS.find((p) => p.key === dlmmPair);
+          const dst = dpool ? await readDlmmState(dpool) : null;
+          if (dpool && dst) {
+            const halfWidth = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
+            const dpos = await readUserPosition(dpool, w.address);
+            const dec = decideRecenter(dst.activeBinId, { lo: dpos.lowerSignedBin, hi: dpos.upperSignedBin }, halfWidth);
+            appendJournal({
+              t: new Date().toISOString(),
+              type: "dlmm-observe",
+              pair: dlmmPair,
+              activeBin: dst.activeBinId,
+              posLo: dpos.lowerSignedBin,
+              posHi: dpos.upperSignedBin,
+              posX: +(Number(dpos.totalX) / 1e6).toFixed(4),
+              posY: +(Number(dpos.totalY) / 1e6).toFixed(4),
+              halfWidth,
+              action: dec.action,
+              reason: dec.reason,
+            });
+            console.log(`  [dlmm ${dlmmPair}] active ${dst.activeBinId} | pos ${dpos.bins.length ? `[${dpos.lowerSignedBin}..${dpos.upperSignedBin}]` : "none"} | ±${halfWidth} → ${dec.action}`);
+          }
+        } catch (e) {
+          appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message });
+        }
       }
       // Haven rotation (haven.ts): the full stablecoin capital-preservation reflex. Armed
       // but DORMANT — decides what it would do and whether a USDCx route is deep enough to
