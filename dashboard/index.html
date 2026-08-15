@@ -394,18 +394,20 @@
         }
 
         // IL-adjusted return: current portfolio vs HODLing the baseline inventory at the current mid.
-        // Only meaningful over a continuous pilot with a fixed starting inventory. During ad-hoc
-        // runs the operator tops up capital between sittings, so the baseline is not comparable and
-        // the figure is misleading — gate it behind cadence, exactly like uptime.
+        // Only meaningful from a CLEAN fixed inception (m.pilotBaseline, set by m2:pilot-start). Before
+        // the pilot window is anchored, m.baseline can predate capital top-ups, so the HODL comparison
+        // measures deposits as "return" (a nonsensical figure). Gate the NUMBER behind the anchored
+        // pilot window; until then show n/a and point to the cost-basis Economics panel, which is the
+        // honest fees-net-of-IL return regardless of funding history.
         const b = pilot ? m.pilotBaseline : m.baseline;
-        const hodlNow = (Number(b.xBase) / 1e8) * last.mid + Number(b.yBase) / 1e6;
+        const hodlNow = (Number(b?.xBase ?? 0) / 1e8) * last.mid + Number(b?.yBase ?? 0) / 1e6;
         const ilAdj = hodlNow > 0 ? ((last.portfolioY - hodlNow) / hodlNow) * 100 : 0;
         const ilCol = ilAdj >= 0 ? "var(--ok)" : "var(--bad)";
         const staleMin = (Date.now() - t1) / 6e4;
         const ilTile =
-          m.intervalSec > 0
+          pilot && m.pilotBaseline
             ? small("IL-adjusted return", `<span style="color:${ilCol}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs HODL baseline (${fmt(last.portfolioY, 1)} vs ${fmt(hodlNow, 1)} STX)</div>`)
-            : small("IL-adjusted return", `n/a<div class="sub2">baselined at pilot start</div>`);
+            : small("IL-adjusted return", `n/a<div class="sub2">anchored at pilot start — see Economics</div>`);
 
         tiles.innerHTML =
           small("Uptime", `${uptime}<div class="sub2">${upSub}</div>`) +
