@@ -58,6 +58,21 @@ export async function stxPriceUsd(): Promise<number> {
   return p;
 }
 
+export async function btcPriceUsd(): Promise<number> {
+  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:bitcoin")).json();
+  const p = j?.coins?.["coingecko:bitcoin"]?.price;
+  if (!(p > 0)) throw new Error("could not read BTC price");
+  return p;
+}
+
+/** USD price of a pool's X token: STX facade -> STX, sBTC -> BTC, a stablecoin -> $1. */
+export async function priceOfToken(tok: TokenMeta): Promise<number> {
+  if (tok.native || /token-stx/.test(tok.principal)) return stxPriceUsd();
+  if (/sbtc/i.test(tok.asset) || /sbtc/i.test(tok.principal)) return btcPriceUsd();
+  if (/usdc|usdh|usda|susd/i.test(tok.asset)) return 1;
+  throw new Error(`no USD price mapping for token ${tok.principal} (asset ${tok.asset})`);
+}
+
 export async function waitForTx(txid: string, log: (s: string) => void): Promise<string> {
   log(`  ${txid} — confirming…`);
   for (let i = 0; i < 40; i++) {
@@ -86,26 +101,39 @@ export interface RecenterResult {
   addTxid?: string;
 }
 
-// Build + broadcast a two-sided add centered on `activeBin`. Returns txid, or throws.
-async function executeAdd(w: Wallet, poolDef: DlmmPool, activeBin: number, xTokenP: string, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void): Promise<string> {
+// Read a token's wallet balance (native STX or SIP-010), in the token's base units.
+async function tokenBalance(w: Wallet, tok: TokenMeta): Promise<bigint> {
+  if (tok.native) return (await getStxBalance(w.address, w.network)).microStx;
+  return ftBalance(w.address, `${tok.principal}::${tok.asset}`);
+}
+
+// Build + broadcast a two-sided add centered on `activeBin`. Handles X = native STX (stx-usdcx)
+// or a SIP-010 like sBTC (sbtc-usdcx): price + decimals come from the resolved token, input caps
+// branch native/FT automatically. Returns txid, or throws.
+async function executeAdd(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void): Promise<string> {
   const cap = cfg.maxTargetUsd ?? 250;
   if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) throw new Error(`target must be >0 and ≤ ${cap}`);
-  const price = await stxPriceUsd();
-  const bal = await getStxBalance(w.address, w.network);
-  const usdcxAssetId = `${yTok.principal}::${yTok.asset}`;
-  const usdcxBal = await ftBalance(w.address, usdcxAssetId);
-  const availStx = bal.microStx > GAS_RESERVE_USTX ? bal.microStx - GAS_RESERVE_USTX : 0n;
-  const size = sizeTwoSidedDeposit(cfg.targetUsd, price, availStx, usdcxBal);
-  if (size.xBase <= 0n || size.yBase <= 0n) throw new Error(`cannot size two-sided: STX ${Number(availStx) / 1e6}, USDCx ${Number(usdcxBal) / 1e6}`);
+  const xPrice = await priceOfToken(xTok);
+  const nativeStx = (await getStxBalance(w.address, w.network)).microStx;
+  if (nativeStx < FEE_USTX) throw new Error(`insufficient native STX for gas (need ~${Number(FEE_USTX) / 1e6})`);
+  // X available: if X IS native STX, keep the gas reserve out of it; otherwise use the full FT balance.
+  const xBalRaw = await tokenBalance(w, xTok);
+  const availX = xTok.native ? (xBalRaw > GAS_RESERVE_USTX ? xBalRaw - GAS_RESERVE_USTX : 0n) : xBalRaw;
+  const availY = await tokenBalance(w, yTok);
+  const size = sizeTwoSidedDeposit(cfg.targetUsd, xPrice, availX, availY, xTok.decimals, yTok.decimals);
+  if (size.xBase <= 0n || size.yBase <= 0n)
+    throw new Error(`cannot size two-sided: ${xTok.asset || "STX"} ${Number(availX) / 10 ** xTok.decimals}, ${yTok.asset} ${Number(availY) / 10 ** yTok.decimals}`);
   const deposits = distributeAcrossRange(activeBin, cfg.halfWidth, size.xBase, size.yBase);
-  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTokenP, yToken: yTok.principal } as PoolRefs, deposits, { minDlp: MIN_DLP, deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, deposits, { minDlp: MIN_DLP, deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   const sumX = deposits.reduce((s, d) => s + d.xAmount, 0n);
   const sumY = deposits.reduce((s, d) => s + d.yAmount, 0n);
   const pcs = buildInputCaps(w.address, [
-    { token: xTokenP, asset: "", max: sumX + sumX / 50n + 300_000n },
+    // 2% headroom for the pool's liquidity fee; +0.3 STX only when X is native STX (the fee leg).
+    { token: xTok.principal, asset: xTok.asset, max: sumX + sumX / 50n + (xTok.native ? 300_000n : 0n) },
     { token: yTok.principal, asset: yTok.asset, max: sumY + sumY / 50n },
   ]);
-  log(`  add: ${(Number(sumX) / 1e6).toFixed(3)} STX + ${(Number(sumY) / 1e6).toFixed(3)} USDCx across ${deposits.length} bins [${deposits[0].signedBin}..${deposits[deposits.length - 1].signedBin}]`);
+  const xh = (Number(sumX) / 10 ** xTok.decimals).toFixed(xTok.decimals === 8 ? 6 : 3);
+  log(`  add: ${xh} ${xTok.asset || "STX"} + ${(Number(sumY) / 10 ** yTok.decimals).toFixed(3)} ${yTok.asset} across ${deposits.length} bins [${deposits[0].signedBin}..${deposits[deposits.length - 1].signedBin}]`);
   const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
   const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
   if (!r.txid) throw new Error("add broadcast returned no txid");
@@ -123,7 +151,6 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   const st = await readDlmmState(poolDef);
   if (!st) throw new Error(`could not read pool state for ${cfg.pair}`);
   const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
-  if (!xTok.native) throw new Error("expected X = native STX for the STX-side funding model");
   const pos = await readUserPosition(poolDef, w.address);
   const dec = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, cfg.halfWidth);
   const base: RecenterResult = {
@@ -135,7 +162,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   if (dec.action === "hold" || !live) return base;
 
   if (dec.action === "open") {
-    const addTxid = await executeAdd(w, poolDef, st.activeBinId, st.xToken, yTok, cfg, log);
+    const addTxid = await executeAdd(w, poolDef, st.activeBinId, xTok, yTok, cfg, log);
     const s = await waitForTx(addTxid, log);
     return { ...base, executed: s === "success", addTxid, reason: s === "success" ? "opened" : `open ${s}` };
   }
@@ -151,7 +178,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   if (ws !== "success") return { ...base, withdrawTxid: wr.txid, reason: `withdraw ${ws} — aborted before re-add (funds safe in wallet)` };
   const st2 = (await readDlmmState(poolDef)) ?? st;
   log(`  recenter 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const addTxid = await executeAdd(w, poolDef, st2.activeBinId, st2.xToken, yTok, cfg, log);
+  const addTxid = await executeAdd(w, poolDef, st2.activeBinId, xTok, yTok, cfg, log);
   const as = await waitForTx(addTxid, log);
   return { ...base, executed: as === "success", withdrawTxid: wr.txid, addTxid, reason: as === "success" ? "recentered" : `re-add ${as}` };
 }

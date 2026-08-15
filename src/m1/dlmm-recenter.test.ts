@@ -72,3 +72,17 @@ test("sizeTwoSidedDeposit: degenerate inputs → zero, never NaN/negative", () =
   assert.deepEqual(sizeTwoSidedDeposit(0, 0.14, 1n, 1n), { xBase: 0n, yBase: 0n, valueUsd: 0 });
   assert.deepEqual(sizeTwoSidedDeposit(200, 0, 1n, 1n), { xBase: 0n, yBase: 0n, valueUsd: 0 });
 });
+
+test("sizeTwoSidedDeposit: 8-decimal X (sBTC) prices and scales correctly", () => {
+  // $200 target, sBTC @ $65k, ample balances → ~$100 sBTC (8dp) + ~$100 USDCx (6dp)
+  const s = sizeTwoSidedDeposit(200, 65000, 10n ** 12n, 10n ** 12n, 8, 6);
+  assert.equal(s.yBase, 100_000_000n); // $100 USDCx at 6dp
+  assert.equal(s.xBase, BigInt(Math.floor((100 / 65000) * 1e8))); // ~0.001538 sBTC at 8dp
+  assert.ok(Math.abs(s.valueUsd - 200) < 0.5);
+});
+
+test("sizeTwoSidedDeposit: 8-decimal X respects an sBTC balance cap", () => {
+  // only 0.001 sBTC (100000 at 8dp) available → X side capped there
+  const s = sizeTwoSidedDeposit(200, 65000, 100_000n, 10n ** 12n, 8, 6);
+  assert.equal(s.xBase, 100_000n);
+});

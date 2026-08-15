@@ -19,7 +19,7 @@
 //   npm run m1:dlmm-recenter -- open 40 --yes-mainnet
 //   npm run m1:dlmm-recenter -- recenter --yes-mainnet
 
-import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
+import { fetchNonce } from "@stacks/transactions";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, type DlmmPool } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
@@ -28,12 +28,13 @@ import {
   buildAddLiquidity,
   buildWithdrawLiquidity,
   buildInputCaps,
-  isNativeStxToken,
   type PoolRefs,
   type BinWithdraw,
 } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter } from "./dlmm-recenter.js";
 import { executeDescriptor } from "./dlmm-execute.js";
+// Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.).
+import { resolveToken, ftBalance, priceOfToken, type TokenMeta } from "./dlmm-recenter-exec.js";
 
 const PAIR = process.env.DLMM_PAIR ?? "stx-usdcx";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
@@ -46,38 +47,10 @@ const DEADLINE_SECS = 600;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const API = "https://api.mainnet.hiro.so";
 
-interface TokenMeta { principal: string; native: boolean; asset: string; decimals: number }
-
 function parseArgs() {
   const a = process.argv.slice(2);
   const pos = a.filter((x) => !x.startsWith("--"));
   return { action: pos[0], amount: pos[1], yes: a.includes("--yes-mainnet") };
-}
-
-async function resolveToken(principal: string): Promise<TokenMeta> {
-  if (isNativeStxToken(principal)) return { principal, native: true, asset: "", decimals: 6 };
-  const [addr, name] = principal.split(".");
-  const iface = await (await fetch(`${API}/v2/contracts/interface/${addr}/${name}`)).json();
-  const asset = ((iface.fungible_tokens ?? []).map((f: any) => f.name).find((n: string) => !/locked/.test(n))) ?? name;
-  let decimals = 6;
-  try {
-    const dj = cvToJSON(await fetchCallReadOnlyFunction({ contractAddress: addr, contractName: name, functionName: "get-decimals", functionArgs: [], network: "mainnet", senderAddress: addr })) as any;
-    decimals = Number(dj?.value?.value ?? dj?.value ?? 6);
-  } catch { /* keep default */ }
-  return { principal, native: false, asset, decimals };
-}
-
-async function ftBalance(addr: string, assetId: string): Promise<bigint> {
-  const j = await (await fetch(`${API}/extended/v1/address/${addr}/balances`)).json();
-  const ft = j.fungible_tokens ?? {};
-  return ft[assetId] ? BigInt(ft[assetId].balance) : 0n;
-}
-
-async function stxPriceUsd(): Promise<number> {
-  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:blockstack")).json();
-  const p = j?.coins?.["coingecko:blockstack"]?.price;
-  if (!(p > 0)) throw new Error("could not read STX price");
-  return p;
 }
 
 async function waitFor(txid: string): Promise<string> {
@@ -97,33 +70,39 @@ async function waitFor(txid: string): Promise<string> {
   return "timeout";
 }
 
-// Build + (optionally) broadcast a two-sided open centered on the active bin. Returns txid or null (preview).
-async function doOpen(w: Wallet, poolDef: DlmmPool, activeBin: number, xTokenP: string, yTok: TokenMeta, target: number, yes: boolean): Promise<string | null> {
+// Build + (optionally) broadcast a two-sided open centered on the active bin. Handles X = native
+// STX (stx-usdcx) or a SIP-010 like sBTC (sbtc-usdcx). Returns txid or null (preview).
+async function doOpen(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok: TokenMeta, yTok: TokenMeta, target: number, yes: boolean): Promise<string | null> {
   if (target <= 0 || target > MAX_TARGET_USD) throw new Error(`target must be >0 and ≤ ${MAX_TARGET_USD}`);
-  const price = await stxPriceUsd();
-  const bal = await getStxBalance(w.address, w.network);
-  const usdcxAssetId = `${yTok.principal}::${yTok.asset}`;
-  const usdcxBal = await ftBalance(w.address, usdcxAssetId);
-  const availStx = bal.microStx > GAS_RESERVE_USTX ? bal.microStx - GAS_RESERVE_USTX : 0n;
-  const size = sizeTwoSidedDeposit(target, price, availStx, usdcxBal);
+  const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
+  const xSym = xTok.asset || "STX";
+  const xdp = xTok.decimals === 8 ? 6 : 3;
+  const xPrice = await priceOfToken(xTok);
+  const nativeStx = (await getStxBalance(w.address, w.network)).microStx;
+  if (nativeStx < FEE_USTX) throw new Error(`insufficient native STX for gas (need ~${Number(FEE_USTX) / 1e6})`);
+  const xBalRaw = xTok.native ? nativeStx : await ftBalance(w.address, `${xTok.principal}::${xTok.asset}`);
+  const availX = xTok.native ? (xBalRaw > GAS_RESERVE_USTX ? xBalRaw - GAS_RESERVE_USTX : 0n) : xBalRaw;
+  const availY = await ftBalance(w.address, `${yTok.principal}::${yTok.asset}`);
+  const size = sizeTwoSidedDeposit(target, xPrice, availX, availY, xTok.decimals, yTok.decimals);
   if (size.xBase <= 0n || size.yBase <= 0n)
-    throw new Error(`cannot size two-sided: STX avail ${Number(availStx) / 1e6}, USDCx avail ${Number(usdcxBal) / 1e6}`);
+    throw new Error(`cannot size two-sided: ${xSym} avail ${Number(availX) / xUnit}, ${yTok.asset} avail ${Number(availY) / yUnit}`);
 
   const deposits = distributeAcrossRange(activeBin, HALF_WIDTH, size.xBase, size.yBase);
-  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTokenP, yToken: yTok.principal } as PoolRefs, deposits, { minDlp: MIN_DLP, deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, deposits, { minDlp: MIN_DLP, deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   const sumX = deposits.reduce((s, d) => s + d.xAmount, 0n);
   const sumY = deposits.reduce((s, d) => s + d.yAmount, 0n);
-  const stxCap = sumX + sumX / 50n + 300_000n;
-  const usdcxCap = sumY + sumY / 50n;
+  const xCap = sumX + sumX / 50n + (xTok.native ? 300_000n : 0n);
+  const yCap = sumY + sumY / 50n;
   const pcs = buildInputCaps(w.address, [
-    { token: xTokenP, asset: "", max: stxCap },
-    { token: yTok.principal, asset: yTok.asset, max: usdcxCap },
+    { token: xTok.principal, asset: xTok.asset, max: xCap },
+    { token: yTok.principal, asset: yTok.asset, max: yCap },
   ]);
 
-  console.log(`  open: ~$${target} → ${(Number(size.xBase) / 1e6).toFixed(3)} STX + ${(Number(size.yBase) / 1e6).toFixed(3)} USDCx across ${deposits.length} bins [${deposits[0].signedBin}..${deposits[deposits.length - 1].signedBin}]`);
-  console.log(`  caps: STX ≤ ${(Number(stxCap) / 1e6).toFixed(3)} · USDCx ≤ ${(Number(usdcxCap) / 1e6).toFixed(3)} (${usdcxAssetId})`);
-  if (bal.microStx < stxCap + FEE_USTX) throw new Error(`insufficient STX: need ~${Number(stxCap + FEE_USTX) / 1e6}, have ${bal.stx}`);
-  if (usdcxBal < usdcxCap) throw new Error(`insufficient USDCx: need ~${Number(usdcxCap) / 1e6}, have ${Number(usdcxBal) / 1e6}`);
+  console.log(`  open: ~$${target} → ${(Number(sumX) / xUnit).toFixed(xdp)} ${xSym} + ${(Number(sumY) / yUnit).toFixed(3)} ${yTok.asset} across ${deposits.length} bins [${deposits[0].signedBin}..${deposits[deposits.length - 1].signedBin}]`);
+  console.log(`  caps: ${(Number(xCap) / xUnit).toFixed(xdp)} ${xSym} · ${(Number(yCap) / yUnit).toFixed(3)} ${yTok.asset}`);
+  if (xTok.native && nativeStx < xCap + FEE_USTX) throw new Error(`insufficient STX: need ~${Number(xCap + FEE_USTX) / 1e6}, have ${Number(nativeStx) / 1e6}`);
+  if (!xTok.native && xBalRaw < xCap) throw new Error(`insufficient ${xSym}: need ~${Number(xCap) / xUnit}, have ${Number(xBalRaw) / xUnit}`);
+  if (availY < yCap) throw new Error(`insufficient ${yTok.asset}: need ~${Number(yCap) / yUnit}, have ${Number(availY) / yUnit}`);
   if (!yes) { console.log("  (preview — not broadcast)"); return null; }
   const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
   const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
@@ -142,18 +121,17 @@ async function main() {
   const st = await readDlmmState(poolDef);
   if (!st) throw new Error(`could not read pool state for ${PAIR}`);
   const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
-  if (!xTok.native) throw new Error("expected X = native STX for the STX-side funding model");
   const pos = await readUserPosition(poolDef, w.address);
   const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, HALF_WIDTH);
 
-  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | x=STX y=${yTok.asset}`);
+  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | x=${xTok.asset || "STX"} y=${yTok.asset}`);
   console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / 1e6).toFixed(3)} STX + ${(Number(pos.totalY) / 1e6).toFixed(3)} USDCx` : "none"}`);
   console.log(`decision: ${decision.action} — ${decision.reason}\n`);
   if (action === "status") return;
 
   if (action === "open") {
     if (pos.bins.length > 0) throw new Error("a position already exists — use `recenter`");
-    const txid = await doOpen(w, poolDef, st.activeBinId, st.xToken, yTok, Number(amount ?? TARGET_USD), yes);
+    const txid = await doOpen(w, poolDef, st.activeBinId, xTok, yTok, Number(amount ?? TARGET_USD), yes);
     if (txid) { const s = await waitFor(txid); if (s === "success") console.log("\n✅ position opened."); else process.exitCode = 1; }
     else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first: touch /opt/deepstack/KILL).");
     return;
@@ -179,7 +157,7 @@ async function main() {
   // 2) re-add two-sided centered on the CURRENT active bin (re-read — it moves)
   const st2 = (await readDlmmState(poolDef)) ?? st;
   console.log(`recenter step 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const txid = await doOpen(w, poolDef, st2.activeBinId, st2.xToken, yTok, TARGET_USD, yes);
+  const txid = await doOpen(w, poolDef, st2.activeBinId, xTok, yTok, TARGET_USD, yes);
   if (txid) { const s = await waitFor(txid); if (s === "success") console.log("\n✅ recenter complete."); else process.exitCode = 1; }
   else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first).");
 }

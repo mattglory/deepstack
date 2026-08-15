@@ -104,16 +104,19 @@ export interface TwoSidedSize {
  */
 export function sizeTwoSidedDeposit(
   targetValueUsd: number,
-  stxPriceUsd: number,
-  availStxBase: bigint, // already net of the gas reserve the caller wants to keep
-  availUsdcxBase: bigint,
+  xPriceUsd: number, // USD price of the X token (STX for stx-usdcx, BTC for sbtc-usdcx)
+  availXBase: bigint, // X available, in X base units, net of any reserve the caller keeps
+  availYBase: bigint, // Y (USDCx) available, in Y base units
+  xDecimals = 6, // X token decimals (STX/USDCx = 6, sBTC = 8)
+  yDecimals = 6, // Y (USDCx) decimals
 ): TwoSidedSize {
-  if (!(targetValueUsd > 0) || !(stxPriceUsd > 0)) return { xBase: 0n, yBase: 0n, valueUsd: 0 };
+  if (!(targetValueUsd > 0) || !(xPriceUsd > 0)) return { xBase: 0n, yBase: 0n, valueUsd: 0 };
   const halfUsd = targetValueUsd / 2;
-  let yBase = BigInt(Math.floor(halfUsd * 1e6)); // USDCx ≈ $1
-  let xBase = BigInt(Math.floor((halfUsd / stxPriceUsd) * 1e6)); // STX worth ~halfUsd
-  if (yBase > availUsdcxBase) yBase = availUsdcxBase < 0n ? 0n : availUsdcxBase;
-  if (xBase > availStxBase) xBase = availStxBase < 0n ? 0n : availStxBase;
-  const valueUsd = (Number(xBase) / 1e6) * stxPriceUsd + Number(yBase) / 1e6;
+  const xUnit = 10 ** xDecimals, yUnit = 10 ** yDecimals;
+  let yBase = BigInt(Math.floor(halfUsd * yUnit)); // Y is USDCx ≈ $1
+  let xBase = BigInt(Math.floor((halfUsd / xPriceUsd) * xUnit)); // X worth ~halfUsd
+  if (yBase > availYBase) yBase = availYBase < 0n ? 0n : availYBase;
+  if (xBase > availXBase) xBase = availXBase < 0n ? 0n : availXBase;
+  const valueUsd = (Number(xBase) / xUnit) * xPriceUsd + Number(yBase) / yUnit;
   return { xBase, yBase, valueUsd };
 }
