@@ -9,6 +9,7 @@
 //   open <usd>  open a two-sided position (must be flat)
 //   recenter    if the active bin has drifted out of the band: withdraw all bins, then re-add
 //               two-sided centered on the new active bin (two sequential broadcasts)
+//   withdraw    withdraw all bins and stop — no re-add (winding a position down)
 //
 // SAFETY: mainnet-only; PREVIEW by default; broadcasts only with --yes-mainnet; Allow mode +
 // INPUT-CAP post-conditions on the adds (asset names/decimals RESOLVED from source at runtime);
@@ -18,6 +19,7 @@
 //   npm run m1:dlmm-recenter -- status
 //   npm run m1:dlmm-recenter -- open 40 --yes-mainnet
 //   npm run m1:dlmm-recenter -- recenter --yes-mainnet
+//   npm run m1:dlmm-recenter -- withdraw --yes-mainnet
 
 import { fetchNonce } from "@stacks/transactions";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
@@ -109,10 +111,25 @@ async function doOpen(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok: Tok
   return r.txid ?? null;
 }
 
+// Withdraw every bin in the current position. Returns true once the withdraw has confirmed
+// (or immediately in preview mode, where nothing is broadcast).
+async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<typeof readDlmmState>>, pos: Awaited<ReturnType<typeof readUserPosition>>, yes: boolean): Promise<boolean> {
+  if (!st) throw new Error(`could not read pool state for ${poolDef.key}`);
+  const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
+  const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  console.log(`withdraw ${pos.bins.length} bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / 1e6).toFixed(3)} STX + ${(Number(pos.totalY) / 1e6).toFixed(3)} USDCx`);
+  if (!yes) { console.log("  (preview — not broadcast)"); return false; }
+  const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
+  const r = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce });
+  if (!r.txid) throw new Error("withdraw broadcast returned no txid");
+  const s = await waitFor(r.txid);
+  return s === "success";
+}
+
 async function main() {
   console.log("=== DeepStack — DLMM recenter (two-sided concentrated position) ===\n");
   const { action, amount, yes } = parseArgs();
-  if (!["status", "open", "recenter"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter> [--yes-mainnet]");
+  if (!["status", "open", "recenter", "withdraw"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw> [--yes-mainnet]");
 
   const w = await getWallet();
   if (w.network !== "mainnet") throw new Error(`refusing: STACKS_NETWORK is ${w.network}; DLMM is mainnet-only.`);
@@ -137,22 +154,22 @@ async function main() {
     return;
   }
 
+  if (action === "withdraw") {
+    if (pos.bins.length === 0) throw new Error("no position to withdraw");
+    const ok = await doWithdraw(w, poolDef, st, pos, yes);
+    if (yes) { if (ok) console.log("\n✅ withdrawn."); else { console.log("\n⚠ withdraw did not confirm."); process.exitCode = 1; } }
+    else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first: touch /opt/deepstack/KILL).");
+    return;
+  }
+
   // recenter
   if (pos.bins.length === 0) throw new Error("no position — use `open` first");
   if (decision.action === "hold") { console.log("in band — no recenter needed."); return; }
 
   // 1) withdraw all bins — nominal min-out on the value side (min-sum>0 rule)
-  const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
-  const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
-  console.log(`recenter step 1/2 — withdraw ${pos.bins.length} bins [${pos.lowerSignedBin}..${pos.upperSignedBin}]`);
-  if (!yes) { console.log("  (preview — not broadcast)"); }
-  else {
-    const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
-    const r = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce });
-    if (!r.txid) throw new Error("withdraw broadcast returned no txid");
-    const s = await waitFor(r.txid);
-    if (s !== "success") { console.log("\n⚠ withdraw did not confirm — aborting recenter (no re-add)."); process.exitCode = 1; return; }
-  }
+  console.log("recenter step 1/2 —");
+  const withdrew = await doWithdraw(w, poolDef, st, pos, yes);
+  if (yes && !withdrew) { console.log("\n⚠ withdraw did not confirm — aborting recenter (no re-add)."); process.exitCode = 1; return; }
 
   // 2) re-add two-sided centered on the CURRENT active bin (re-read — it moves)
   const st2 = (await readDlmmState(poolDef)) ?? st;
