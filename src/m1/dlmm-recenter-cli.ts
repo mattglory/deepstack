@@ -142,7 +142,9 @@ async function main() {
   const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, HALF_WIDTH);
 
   console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | x=${xTok.asset || "STX"} y=${yTok.asset}`);
-  console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / 1e6).toFixed(3)} STX + ${(Number(pos.totalY) / 1e6).toFixed(3)} USDCx` : "none"}`);
+  const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
+  const xdp = xTok.decimals === 8 ? 6 : 3;
+  console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}` : "none"}`);
   console.log(`decision: ${decision.action} — ${decision.reason}\n`);
   if (action === "status") return;
 
