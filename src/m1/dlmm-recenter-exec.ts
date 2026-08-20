@@ -15,7 +15,7 @@
 // re-add (funds sit safely in the wallet as loose tokens — no half-built position).
 
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, type DlmmPool } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
@@ -36,18 +36,18 @@ export interface TokenMeta { principal: string; native: boolean; asset: string; 
 export async function resolveToken(principal: string): Promise<TokenMeta> {
   if (isNativeStxToken(principal)) return { principal, native: true, asset: "", decimals: 6 };
   const [addr, name] = principal.split(".");
-  const iface = await (await fetch(`${API}/v2/contracts/interface/${addr}/${name}`)).json();
+  const iface = await (await fetch(`${API}/v2/contracts/interface/${addr}/${name}`, { headers: hiroHeaders(API) })).json();
   const asset = ((iface.fungible_tokens ?? []).map((f: any) => f.name).find((n: string) => !/locked/.test(n))) ?? name;
   let decimals = 6;
   try {
-    const dj = cvToJSON(await fetchCallReadOnlyFunction({ contractAddress: addr, contractName: name, functionName: "get-decimals", functionArgs: [], network: "mainnet", senderAddress: addr })) as any;
+    const dj = cvToJSON(await withRpc((baseUrl) => fetchCallReadOnlyFunction({ contractAddress: addr, contractName: name, functionName: "get-decimals", functionArgs: [], network: "mainnet", senderAddress: addr, client: { baseUrl, fetch: hiroFetch(baseUrl) } }))) as any;
     decimals = Number(dj?.value?.value ?? dj?.value ?? 6);
   } catch { /* keep default */ }
   return { principal, native: false, asset, decimals };
 }
 
 export async function ftBalance(addr: string, assetId: string): Promise<bigint> {
-  const j = await (await fetch(`${API}/extended/v1/address/${addr}/balances`)).json();
+  const j = await (await fetch(`${API}/extended/v1/address/${addr}/balances`, { headers: hiroHeaders(API) })).json();
   const ft = j.fungible_tokens ?? {};
   return ft[assetId] ? BigInt(ft[assetId].balance) : 0n;
 }
@@ -78,7 +78,7 @@ export async function waitForTx(txid: string, log: (s: string) => void): Promise
   log(`  ${txid} — confirming…`);
   for (let i = 0; i < 40; i++) {
     await sleep(6000);
-    const res = await fetch(`${API}/extended/v1/tx/${txid}`);
+    const res = await fetch(`${API}/extended/v1/tx/${txid}`, { headers: hiroHeaders(API) });
     if (res.ok) {
       const j = (await res.json()) as { tx_status?: string; tx_result?: { repr?: string } };
       if (j.tx_status && j.tx_status !== "pending") { log(`  status: ${j.tx_status}${j.tx_result?.repr ? `  ${j.tx_result.repr}` : ""}`); return j.tx_status; }
@@ -135,7 +135,7 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok:
   ]);
   const xh = (Number(sumX) / 10 ** xTok.decimals).toFixed(xTok.decimals === 8 ? 6 : 3);
   log(`  add: ${xh} ${xTok.asset || "STX"} + ${(Number(sumY) / 10 ** yTok.decimals).toFixed(3)} ${yTok.asset} across ${deposits.length} bins [${deposits[0].signedBin}..${deposits[deposits.length - 1].signedBin}]`);
-  const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl } }));
+  const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
   if (!r.txid) throw new Error("add broadcast returned no txid");
   return r.txid;
@@ -172,7 +172,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   log(`  recenter 1/2 — withdraw ${pos.bins.length} bins`);
-  const wnonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl } }));
+  const wnonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce: wnonce });
   if (!wr.txid) throw new Error("withdraw returned no txid");
   const ws = await waitForTx(wr.txid, log);

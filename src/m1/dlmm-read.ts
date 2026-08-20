@@ -13,7 +13,7 @@
 // get-bin-balances(id) returns { bin-shares uint, x-balance uint, y-balance uint }.
 
 import { fetchCallReadOnlyFunction, cvToJSON, Cl } from "@stacks/transactions";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 
 const DEPLOYER = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
 
@@ -106,7 +106,7 @@ async function callRead(pool: DlmmPool, fn: string, args: any[] = []): Promise<a
           functionName: fn,
           functionArgs: args,
           network: "mainnet",
-          client: { baseUrl },
+          client: { baseUrl, fetch: hiroFetch(baseUrl) },
           senderAddress: DEPLOYER,
         }),
       ),

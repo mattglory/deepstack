@@ -11,7 +11,7 @@
 // this. Pure math is split out and unit-tested; the on-chain read never throws.
 
 import { fetchCallReadOnlyFunction, cvToJSON, Cl } from "@stacks/transactions";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 import { binSignedId, type DlmmPool } from "./dlmm-read.js";
 
 const DEPLOYER = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
@@ -87,7 +87,7 @@ async function callRead(pool: DlmmPool, fn: string, args: any[]): Promise<any | 
           functionName: fn,
           functionArgs: args,
           network: "mainnet",
-          client: { baseUrl },
+          client: { baseUrl, fetch: hiroFetch(baseUrl) },
           senderAddress: DEPLOYER,
         }),
       ),

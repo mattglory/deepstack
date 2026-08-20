@@ -9,7 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { getAddressFromPrivateKey } from "@stacks/transactions";
 import { generateWallet, generateNewAccount } from "@stacks/wallet-sdk";
 import { activePool, contractId, tokenId, type Token } from "./contracts.js";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroHeaders } from "./rpc.js";
 
 // Minimal zero-dependency .env loader (only sets vars not already in env).
 export function loadDotenv(path = ".env"): void {
@@ -49,7 +49,7 @@ export function apiBase(network: Network): string {
 // pilot down. Testnet keeps the single public endpoint; it carries no uptime SLA.
 async function hiroJson<T>(network: Network, path: string): Promise<T> {
   const get = async (base: string) => {
-    const res = await fetch(base + path);
+    const res = await fetch(base + path, { headers: hiroHeaders(base) });
     if (!res.ok) throw new Error(`fetch failed: ${res.status} (${path})`);
     return (await res.json()) as T;
   };

@@ -22,6 +22,7 @@
 //   npm run m1:verify-write -- --yes-mainnet
 
 import { makeSTXTokenTransfer, broadcastTransaction, fetchNonce } from "@stacks/transactions";
+import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
 import { getWallet, getStxBalance } from "./wallet.js";
 
 const AMOUNT_USTX = 1n; // 1 microSTX, to self — the transfer itself costs nothing net
@@ -35,7 +36,7 @@ function parseArgs() {
 async function waitForConfirmation(txid: string) {
   for (let i = 0; i < 24; i++) {
     await sleep(5000);
-    const r = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txid}`);
+    const r = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txid}`, { headers: hiroHeaders("https://api.mainnet.hiro.so") });
     if (r.ok) {
       const j = (await r.json()) as { tx_status?: string };
       if (j.tx_status && j.tx_status !== "pending") return j.tx_status;
@@ -72,7 +73,7 @@ async function main() {
     return;
   }
 
-  const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
+  const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const tx = await makeSTXTokenTransfer({
     recipient: w.address, // to self
     amount: AMOUNT_USTX,

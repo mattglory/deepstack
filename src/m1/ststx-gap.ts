@@ -17,7 +17,7 @@
 // receiver is made by this series — a week-plus of data before any capital moves.
 
 import { fetchCallReadOnlyFunction, cvToJSON, Cl } from "@stacks/transactions";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 
 const DEPLOYER = "SPQC38PW542EQJ5M11CR25P7BS1CA6QT4TBXGB3M";
 const STSTX = { address: "SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG", name: "ststx-token" };
@@ -65,7 +65,7 @@ async function readUint(pool: (typeof POOLS)[number], fn: string, amount: bigint
             Cl.uint(amount),
           ],
           network: "mainnet",
-          client: { baseUrl },
+          client: { baseUrl, fetch: hiroFetch(baseUrl) },
           senderAddress: DEPLOYER,
         }),
       ),
@@ -95,7 +95,7 @@ async function pairApproved(pool: (typeof POOLS)[number]): Promise<boolean> {
             Cl.contractPrincipal(DEPLOYER, pool.lp),
           ],
           network: "mainnet",
-          client: { baseUrl },
+          client: { baseUrl, fetch: hiroFetch(baseUrl) },
           senderAddress: DEPLOYER,
         }),
       ),

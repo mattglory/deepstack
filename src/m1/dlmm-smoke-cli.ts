@@ -20,6 +20,7 @@
 // agent paused (touch /opt/deepstack/KILL) or when it is not about to broadcast.
 
 import { fetchNonce } from "@stacks/transactions";
+import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
 import { getWallet, getStxBalance } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
@@ -113,7 +114,7 @@ async function main() {
 
     if (!yes) return preview();
     console.log("\nbroadcasting…");
-    const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
     const r = await executeDescriptor(desc, {
       live: true,
       yesMainnet: true,
@@ -152,7 +153,7 @@ async function main() {
 
   if (!yes) return preview();
   console.log("\nbroadcasting…");
-  const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
+  const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const r = await executeDescriptor(desc, {
     live: true,
     yesMainnet: true,
@@ -181,7 +182,7 @@ async function report(txid?: string) {
   console.log("  confirming…");
   for (let i = 0; i < 40; i++) {
     await sleep(6000);
-    const r = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txid}`);
+    const r = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txid}`, { headers: hiroHeaders("https://api.mainnet.hiro.so") });
     if (r.ok) {
       const j = (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
       if (j.tx_status && j.tx_status !== "pending") {

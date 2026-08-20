@@ -4,7 +4,7 @@
 import { fetchCallReadOnlyFunction, Cl, cvToJSON } from "@stacks/transactions";
 import { config } from "../config.js";
 import { CORE, activePool } from "./contracts.js";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 
 const poolTraitArgs = () => {
   const p = activePool();
@@ -23,7 +23,7 @@ async function callCore(functionName: string, extraArgs: ReturnType<typeof Cl.ui
       functionName,
       functionArgs: [...poolTraitArgs(), ...extraArgs],
       network: "mainnet",
-      client: { baseUrl },
+      client: { baseUrl, fetch: hiroFetch(baseUrl) },
       senderAddress: config.senderAddress,
     }),
   );
@@ -69,7 +69,7 @@ export async function getPoolRaw(): Promise<{
       functionName: "get-pool",
       functionArgs: [],
       network: "mainnet",
-      client: { baseUrl },
+      client: { baseUrl, fetch: hiroFetch(baseUrl) },
       senderAddress: config.senderAddress,
     }),
   );
