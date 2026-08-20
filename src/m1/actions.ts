@@ -21,6 +21,7 @@ import {
   type PostCondition,
 } from "@stacks/transactions";
 import { CORE, activePool, contractId, tokenId, type Token } from "./contracts.js";
+import { withRpc } from "./rpc.js";
 import {
   getAddLiquidityQuote,
   getSwapXForYQuote,
@@ -86,7 +87,8 @@ async function finalize(
   const { conditions, human: pcHuman } = pcFor(sender);
 
   const nonce =
-    opts.nonce ?? (broadcasting ? await fetchNonce({ address: sender, network }) : 0n);
+    opts.nonce ??
+    (broadcasting ? await withRpc((baseUrl) => fetchNonce({ address: sender, network, client: { baseUrl } })) : 0n);
   const fee = opts.feeMicroStx ?? (broadcasting ? 50_000n : 10_000n);
 
   const tx = await makeContractCall({
