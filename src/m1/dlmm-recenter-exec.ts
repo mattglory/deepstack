@@ -15,6 +15,7 @@
 // re-add (funds sit safely in the wallet as loose tokens — no half-built position).
 
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
+import { withRpc } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, type DlmmPool } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
@@ -134,7 +135,7 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok:
   ]);
   const xh = (Number(sumX) / 10 ** xTok.decimals).toFixed(xTok.decimals === 8 ? 6 : 3);
   log(`  add: ${xh} ${xTok.asset || "STX"} + ${(Number(sumY) / 10 ** yTok.decimals).toFixed(3)} ${yTok.asset} across ${deposits.length} bins [${deposits[0].signedBin}..${deposits[deposits.length - 1].signedBin}]`);
-  const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
+  const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl } }));
   const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
   if (!r.txid) throw new Error("add broadcast returned no txid");
   return r.txid;
@@ -171,7 +172,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   log(`  recenter 1/2 — withdraw ${pos.bins.length} bins`);
-  const wnonce = await fetchNonce({ address: w.address, network: "mainnet" });
+  const wnonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl } }));
   const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce: wnonce });
   if (!wr.txid) throw new Error("withdraw returned no txid");
   const ws = await waitForTx(wr.txid, log);
