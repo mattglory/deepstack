@@ -22,6 +22,7 @@
 //   npm run m1:dlmm-recenter -- withdraw --yes-mainnet
 
 import { fetchNonce } from "@stacks/transactions";
+import { withRpc } from "./rpc.js";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, type DlmmPool } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
@@ -106,7 +107,7 @@ async function doOpen(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok: Tok
   if (!xTok.native && xBalRaw < xCap) throw new Error(`insufficient ${xSym}: need ~${Number(xCap) / xUnit}, have ${Number(xBalRaw) / xUnit}`);
   if (availY < yCap) throw new Error(`insufficient ${yTok.asset}: need ~${Number(yCap) / yUnit}, have ${Number(availY) / yUnit}`);
   if (!yes) { console.log("  (preview — not broadcast)"); return null; }
-  const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
+  const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl } }));
   const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
   return r.txid ?? null;
 }
@@ -119,7 +120,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   console.log(`withdraw ${pos.bins.length} bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / 1e6).toFixed(3)} STX + ${(Number(pos.totalY) / 1e6).toFixed(3)} USDCx`);
   if (!yes) { console.log("  (preview — not broadcast)"); return false; }
-  const nonce = await fetchNonce({ address: w.address, network: "mainnet" });
+  const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl } }));
   const r = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce });
   if (!r.txid) throw new Error("withdraw broadcast returned no txid");
   const s = await waitFor(r.txid);
