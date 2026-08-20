@@ -8,7 +8,11 @@
 // the position doesn't fall out of range (and stop earning) every time price twitches.
 //
 // Still no writes. The add/move/withdraw path (step 3) and the flash-receiver (step 5) build on
-// this. Pure math is split out and unit-tested; the on-chain read never throws.
+// this. Pure math is split out and unit-tested; the on-chain read THROWS on any failed call
+// rather than treating it as "no position here" — an incomplete read silently masquerading as
+// a complete-but-smaller position is worse than a loud failure, since callers (recenter's
+// withdraw list, in particular) trust this to be the whole position. Found the hard way: a
+// rate-limited run once silently dropped 18 of 51 real bins from a withdrawal (2026-08-20).
 
 import { fetchCallReadOnlyFunction, cvToJSON, Cl } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
@@ -77,7 +81,7 @@ export function binRangeFromVol(sigmaDaily: number, binStepBps: number, opts: Ra
   return { halfWidthBins, rangeBps: Math.round(halfRangeBps * 2) };
 }
 
-async function callRead(pool: DlmmPool, fn: string, args: any[]): Promise<any | null> {
+async function callRead(pool: DlmmPool, fn: string, args: any[]): Promise<any> {
   try {
     return cvToJSON(
       await withRpc((baseUrl) =>
@@ -92,14 +96,17 @@ async function callRead(pool: DlmmPool, fn: string, args: any[]): Promise<any | 
         }),
       ),
     );
-  } catch {
-    return null;
+  } catch (err) {
+    throw new Error(`readUserPosition: ${pool.key}.${fn} failed, position read is incomplete: ${(err as Error).message ?? err}`);
   }
 }
 
 /**
  * Read a user's concentrated position: their bins (via get-user-bins), their shares in each
- * (get-balance), and their prorated x/y (share of get-bin-balances). Never throws.
+ * (get-balance), and their prorated x/y (share of get-bin-balances). THROWS if any of those
+ * calls fails — see the module comment for why a partial read must not look like a complete
+ * empty-ish position. Callers that want to tolerate a transient miss (e.g. an observe-only
+ * cycle) should catch at the call site, where "what to do if we don't know" is actually known.
  */
 export async function readUserPosition(pool: DlmmPool, user: string): Promise<DlmmPosition> {
   const empty: DlmmPosition = { pool: pool.key, user, bins: [], lowerSignedBin: null, upperSignedBin: null, totalX: 0n, totalY: 0n };
