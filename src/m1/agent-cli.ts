@@ -13,7 +13,7 @@
 import { getWallet, getStxBalance, getTokenBalance, getLpBalance, type Wallet } from "./wallet.js";
 import { getPoolState } from "../pool.js";
 import { getWithdrawQuote } from "./quotes.js";
-import { activePool, contractId } from "./contracts.js";
+import { activePool, contractId, tokenId, type Token } from "./contracts.js";
 import {
   buildSwapYForX,
   buildSwapXForY,
@@ -25,7 +25,9 @@ import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, deci
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
 import { scanStstxGap } from "./ststx-gap.js";
-import { recenterOnce } from "./dlmm-recenter-exec.js";
+import { recenterOnce, resolveToken, stxPriceUsd } from "./dlmm-recenter-exec.js";
+import { readUserPosition } from "./dlmm-position.js";
+import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
@@ -89,6 +91,7 @@ interface Snapshot {
   nativeStxMicro: bigint;
   lpBalanceBase: bigint;
   lpValueY: number;
+  dlmmValueY: number;
   portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
@@ -96,6 +99,42 @@ interface Snapshot {
   yReserve: number;
   poolFeeBps: number;
   market: MarketState;
+}
+
+// Value of the DLMM position (if any), in Y terms — reused so portfolioY (and therefore the
+// drawdown safety gate) actually reflects capital the autonomous DLMM step has parked there,
+// instead of reading it as vanished the moment a recenter moves it out of the free wallet.
+// Opt-in via DLMM_OBSERVE_PAIR, matching the DLMM step's own gate (unset = 0, untouched).
+//
+// On a read failure this reuses the last successfully-read value rather than 0 — a transient
+// Hiro hiccup must not masquerade as the DLMM position suddenly losing its entire value and
+// falsely spiking the drawdown reading (the exact class of bug this function exists to fix,
+// see the 2026-08-21 false-halt incident: readMarket() used to omit DLMM value entirely).
+let lastDlmmValueY = 0;
+
+async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<number> {
+  const pairKey = process.env.DLMM_OBSERVE_PAIR;
+  if (!pairKey) return 0;
+  try {
+    const poolDef = DLMM_POOLS.find((p) => p.key === pairKey);
+    if (!poolDef) return 0;
+    const st = await readDlmmState(poolDef);
+    if (!st) return lastDlmmValueY;
+    if (st.xToken !== tokenId(xToken)) {
+      console.warn(`  [dlmm-value] pool x-token (${st.xToken}) isn't the pair's x-token (${tokenId(xToken)}) — skipping DLMM valuation this tick`);
+      return lastDlmmValueY;
+    }
+    const pos = await readUserPosition(poolDef, w.address);
+    const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
+    const xValueY = (Number(pos.totalX) / 10 ** xTok.decimals) * midXinY;
+    const usdPerStx = await stxPriceUsd();
+    const yValueY = Number(pos.totalY) / 10 ** yTok.decimals / usdPerStx;
+    lastDlmmValueY = xValueY + yValueY;
+    return lastDlmmValueY;
+  } catch (err) {
+    console.warn(`  [dlmm-value] read failed, reusing last known value (${lastDlmmValueY.toFixed(2)}): ${(err as Error).message}`);
+    return lastDlmmValueY;
+  }
 }
 
 async function readMarket(w: Wallet): Promise<Snapshot> {
@@ -116,7 +155,8 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     lpValueY = (Number(q.xOut) / 10 ** cfg.x.decimals) * pool.midXinY + Number(q.yOut) / 10 ** cfg.y.decimals;
   }
   const freeValueY = xH * pool.midXinY + yH;
-  const portfolioY = freeValueY + lpValueY;
+  const dlmmValueY = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
+  const portfolioY = freeValueY + lpValueY + dlmmValueY;
   const yFraction = freeValueY > 0 ? yH / freeValueY : 0;
   return {
     midXinY: pool.midXinY,
@@ -126,6 +166,7 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     nativeStxMicro: stx.microStx,
     lpBalanceBase: lp,
     lpValueY,
+    dlmmValueY,
     portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
@@ -172,6 +213,7 @@ async function act(
   console.log(
     `  free: ${s.xHuman} ${x.symbol} + ${s.yHuman} ${y.symbol} | ` +
       `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueY.toFixed(2)} ${y.symbol}) | ` +
+      `DLMM: ~${s.dlmmValueY.toFixed(2)} ${y.symbol} | ` +
       `portfolio ~${s.portfolioY.toFixed(2)} ${y.symbol}`,
   );
 
