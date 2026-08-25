@@ -190,7 +190,11 @@
         const vmid = agentMid || mid;
         // Free inventory + LP position (agent-valued; only counted while LP tokens are held).
         const lpVal = lp > 0 ? agentLpValueY : 0;
-        const portfolio = stx + (vmid ? sbtc * vmid : 0) + lpVal;
+        // Prefer the agent's own telemetry total: it also folds in the DLMM position value
+        // (client-side balances here only cover the XYK free inventory + LP), so recomputing
+        // locally would silently undercount by whatever's parked in DLMM. Falls back to the
+        // old local sum before the first heartbeat lands (agentPortfolioY still 0).
+        const portfolio = agentPortfolioY > 0 ? agentPortfolioY : stx + (vmid ? sbtc * vmid : 0) + lpVal;
         const successRate = acts.length ? Math.round((ok / acts.length) * 100) : 0;
 
         // hero
@@ -262,6 +266,7 @@
       // but not its value — the agent computes that each cycle from a withdraw quote, so
       // the portfolio tile borrows it rather than undercounting by the LP position.
       let agentLpValueY = 0;
+      let agentPortfolioY = 0; // agent's own total (free + LP + DLMM) — see render()
       let agentLpBasis = null; // deposited leg quantities {xQty, yQty, t} (agent-tracked)
       let agentPilotStart = null; // ISO time the official pilot window opened (scopes Net)
       let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
@@ -378,6 +383,7 @@
         }
         const last = ss[ss.length - 1];
         agentLpValueY = last.lpValueY ?? 0;
+        agentPortfolioY = last.portfolioY ?? 0;
         agentMid = last.mid ?? 0;
         renderPerformance(m, ss, pilot);
         renderSafety(m, ss);
