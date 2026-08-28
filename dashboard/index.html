@@ -400,20 +400,19 @@
         }
 
         // IL-adjusted return: current portfolio vs HODLing the baseline inventory at the current mid.
-        // Only meaningful from a CLEAN fixed inception (m.pilotBaseline, set by m2:pilot-start). Before
-        // the pilot window is anchored, m.baseline can predate capital top-ups, so the HODL comparison
-        // measures deposits as "return" (a nonsensical figure). Gate the NUMBER behind the anchored
-        // pilot window; until then show n/a and point to the cost-basis Economics panel, which is the
-        // honest fees-net-of-IL return regardless of funding history.
-        const b = pilot ? m.pilotBaseline : m.baseline;
-        const hodlNow = (Number(b?.xBase ?? 0) / 1e8) * last.mid + Number(b?.yBase ?? 0) / 1e6;
-        const ilAdj = hodlNow > 0 ? ((last.portfolioY - hodlNow) / hodlNow) * 100 : 0;
-        const ilCol = ilAdj >= 0 ? "var(--ok)" : "var(--bad)";
+        //
+        // GATED OFF (2026-08-28): m.pilotBaseline only ever records the free-wallet x/y snapshot
+        // (xBase/yBase), but portfolioY is the FULL portfolio (free + LP + DLMM + free-USDCx, since
+        // the same-day fixes to readMarket()). Comparing all of that against a HODL baseline of only
+        // the free-wallet slice isn't net-of-IL return, it's "total capital vs a third of it" — the
+        // exact shape of bug that produced the +3827% incident, just re-triggered by making
+        // portfolioY MORE complete than the baseline it's diffed against. Confirmed live: this
+        // produced +148% within 30 minutes of pilot-start, which is what caught it.
+        // Needs pilotBaseline to capture a full, composable position (LP + DLMM legs too, not just
+        // free xBase/yBase) before this can be shown honestly — real fix, not a same-session patch.
+        // Economics panel's LP P&L net of IL stays the honest, narrower return figure meanwhile.
         const staleMin = (Date.now() - t1) / 6e4;
-        const ilTile =
-          pilot && m.pilotBaseline
-            ? small("IL-adjusted return", `<span style="color:${ilCol}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs HODL baseline (${fmt(last.portfolioY, 1)} vs ${fmt(hodlNow, 1)} STX)</div>`)
-            : small("IL-adjusted return", `n/a<div class="sub2">anchored at pilot start — see Economics</div>`);
+        const ilTile = small("IL-adjusted return", `n/a<div class="sub2">baseline fix pending — see Economics for LP P&L net of IL</div>`);
 
         tiles.innerHTML =
           small("Uptime", `${uptime}<div class="sub2">${upSub}</div>`) +
