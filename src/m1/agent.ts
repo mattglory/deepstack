@@ -42,8 +42,8 @@ export function defaultParams(): AgentParams {
   return {
     targetYFraction: 0.5,
     rebalanceBandBps: 500, // 5%
-    maxSwapYBase: 10_000_000n, // e.g. 10 STX when y is STX
-    maxSwapXBase: 30_000n,
+    maxSwapYBase: 50_000_000n, // e.g. 50 STX when y is STX
+    maxSwapXBase: 150_000n,
     slippageBps: 100,
     targetLpFraction: Number(process.env.TARGET_LP_FRACTION ?? 0),
     lpBandBps: 1000, // 10%
