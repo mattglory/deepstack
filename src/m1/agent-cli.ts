@@ -93,6 +93,7 @@ interface Snapshot {
   lpValueY: number;
   dlmmValueY: number;
   freeUsdcxValueY: number;
+  usdPerStx: number;
   portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
@@ -120,14 +121,15 @@ interface Snapshot {
 // false-halt incident: readMarket() used to omit DLMM value entirely).
 let lastDlmmValueY = 0;
 let lastFreeUsdcxValueY = 0;
+let lastUsdPerStx = 0;
 
-async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<{ dlmmValueY: number; freeUsdcxValueY: number }> {
+async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<{ dlmmValueY: number; freeUsdcxValueY: number; usdPerStx: number }> {
   const pairKey = process.env.DLMM_OBSERVE_PAIR;
-  if (!pairKey) return { dlmmValueY: 0, freeUsdcxValueY: 0 };
-  const last = { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY };
+  if (!pairKey) return { dlmmValueY: 0, freeUsdcxValueY: 0, usdPerStx: 0 };
+  const last = { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx };
   try {
     const poolDef = DLMM_POOLS.find((p) => p.key === pairKey);
-    if (!poolDef) return { dlmmValueY: 0, freeUsdcxValueY: 0 };
+    if (!poolDef) return { dlmmValueY: 0, freeUsdcxValueY: 0, usdPerStx: 0 };
     const st = await readDlmmState(poolDef);
     if (!st) return last;
     if (st.xToken !== tokenId(xToken)) {
@@ -136,6 +138,7 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     }
     const [pos, xTok, yTok] = await Promise.all([readUserPosition(poolDef, w.address), resolveToken(st.xToken), resolveToken(st.yToken)]);
     const usdPerStx = await stxPriceUsd();
+    lastUsdPerStx = usdPerStx;
     const xValueY = (Number(pos.totalX) / 10 ** xTok.decimals) * midXinY;
     const yValueY = Number(pos.totalY) / 10 ** yTok.decimals / usdPerStx;
     lastDlmmValueY = xValueY + yValueY;
@@ -143,7 +146,7 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     const freeYBase = await ftBalance(w.address, `${yTok.principal}::${yTok.asset}`);
     lastFreeUsdcxValueY = Number(freeYBase) / 10 ** yTok.decimals / usdPerStx;
 
-    return { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY };
+    return { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx };
   } catch (err) {
     console.warn(`  [dlmm-value] read failed, reusing last known values (dlmm ${last.dlmmValueY.toFixed(2)}, free-y ${last.freeUsdcxValueY.toFixed(2)}): ${(err as Error).message}`);
     return last;
@@ -168,7 +171,7 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     lpValueY = (Number(q.xOut) / 10 ** cfg.x.decimals) * pool.midXinY + Number(q.yOut) / 10 ** cfg.y.decimals;
   }
   const freeValueY = xH * pool.midXinY + yH;
-  const { dlmmValueY, freeUsdcxValueY } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
+  const { dlmmValueY, freeUsdcxValueY, usdPerStx } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
   const portfolioY = freeValueY + lpValueY + dlmmValueY + freeUsdcxValueY;
   const yFraction = freeValueY > 0 ? yH / freeValueY : 0;
   return {
@@ -181,6 +184,7 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     lpValueY,
     dlmmValueY,
     freeUsdcxValueY,
+    usdPerStx,
     portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
@@ -315,6 +319,7 @@ async function act(
     yBase: s.inv.yBase.toString(),
     lpValueY: s.lpValueY,
     dlmmValueY: s.dlmmValueY,
+    stxUsd: s.usdPerStx || undefined,
     portfolioY: s.portfolioY,
     safe: safety.safe,
     poolX: s.xReserve,

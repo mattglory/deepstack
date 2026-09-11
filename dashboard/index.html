@@ -224,25 +224,39 @@
           lpDays = (Date.now() - new Date(agentLpBasis.t).getTime()) / 864e5;
           if (hodlLegs > 0 && lpDays >= 3) lpApr = (lpNet / hodlLegs) * (365 / lpDays) * 100;
         }
+        // Same idea for the DLMM position — its y-leg is USDCx, not native STX, so the
+        // HODL-the-legs comparison needs the USD/STX rate the agent itself used that
+        // cycle (agentStxUsd), not a fresh client-side fetch, to stay methodologically
+        // consistent with how dlmmValueY was computed in the first place.
+        let dlmmNet = null, dlmmApr = null, dlmmDays = 0;
+        if (agentDlmmValueY > 0 && agentDlmmBasis && agentMid > 0 && agentStxUsd > 0) {
+          const hodlLegs = agentDlmmBasis.xQty * agentMid + agentDlmmBasis.yQty / agentStxUsd;
+          dlmmNet = agentDlmmValueY - hodlLegs;
+          dlmmDays = (Date.now() - new Date(agentDlmmBasis.t).getTime()) / 864e5;
+          if (hodlLegs > 0 && dlmmDays >= 3) dlmmApr = (dlmmNet / hodlLegs) * (365 / dlmmDays) * 100;
+        }
         // Net = LP fees earned − gas paid. Scoped to the pilot window once it opens, so it
         // reads as operational P&L for the run, not lifetime (setup + demo txs excluded).
         const netFees = agentPilotStart ? feesWindow : fees;
-        const net = (lpNet ?? 0) - uSTX(netFees);
+        const net = (lpNet ?? 0) + (dlmmNet ?? 0) - uSTX(netFees);
         const signed = (v, d = 3) =>
           `<span style="color:${v >= 0 ? "var(--ok)" : "var(--bad)"}">${v >= 0 ? "+" : ""}${fmt(v, d)} STX</span>`;
-        const aprTile =
-          lpNet === null ? `—<div class="sub2">no LP basis yet</div>`
-          : lpApr === null ? `<span style="color:var(--muted)">measuring</span><div class="sub2">${lpDays.toFixed(1)}d of ≥3d window</div>`
-          : `<span style="color:${lpApr >= 0 ? "var(--ok)" : "var(--bad)"}">${lpApr >= 0 ? "+" : ""}${fmt(lpApr, 1)}%</span><div class="sub2">net of IL · ${lpDays.toFixed(0)}d observed</div>`;
+        const aprHtml = (net, apr, days) =>
+          net === null ? `—<div class="sub2">no basis yet</div>`
+          : apr === null ? `<span style="color:var(--muted)">measuring</span><div class="sub2">${days.toFixed(1)}d of ≥3d window</div>`
+          : `<span style="color:${apr >= 0 ? "var(--ok)" : "var(--bad)"}">${apr >= 0 ? "+" : ""}${fmt(apr, 1)}%</span><div class="sub2">net of IL · ${days.toFixed(0)}d observed</div>`;
         $("econ").innerHTML =
           small("LP P&L (fees − IL)", lpNet === null ? `—<div class="sub2">no LP basis yet</div>` : signed(lpNet)) +
-          small("LP APR (annualised)", aprTile) +
+          small("LP APR (annualised)", aprHtml(lpNet, lpApr, lpDays)) +
+          small("DLMM P&L (fees − IL)", dlmmNet === null ? `—<div class="sub2">no DLMM basis yet</div>` : signed(dlmmNet)) +
+          small("DLMM APR (annualised)", aprHtml(dlmmNet, dlmmApr, dlmmDays)) +
           small("Fees paid", `${fmt(uSTX(fees), 3)} STX`) +
           small(agentPilotStart ? "Net (pilot)" : "Net", signed(net)) +
-          small("LP position", `${fmt(lp, 6)}<div class="sub2">~${fmt(agentLpValueY, 1)} STX</div>`);
+          small("LP position", `${fmt(lp, 6)}<div class="sub2">~${fmt(agentLpValueY, 1)} STX</div>`) +
+          small("DLMM position", `~${fmt(agentDlmmValueY, 1)} STX`);
         $("econNote").innerHTML =
           "Rebalancing swaps <b>pay</b> the pool fee — they manage inventory, they don't earn. " +
-          "The LP position earns a share of the 0.5% pool fee, shown here as value vs cost basis — " +
+          "The LP and DLMM positions each earn a share of pool fees, shown here as value vs cost basis — " +
           "fees <b>net of impermanent loss</b>, tracked from the agent's telemetry. No guaranteed yield.";
 
         // table
@@ -268,6 +282,9 @@
       let agentLpValueY = 0;
       let agentPortfolioY = 0; // agent's own total (free + LP + DLMM) — see render()
       let agentLpBasis = null; // deposited leg quantities {xQty, yQty, t} (agent-tracked)
+      let agentDlmmValueY = 0; // agent's latest DLMM position valuation (in STX)
+      let agentDlmmBasis = null; // deposited leg quantities {xQty (sBTC), yQty (USDCx), t}
+      let agentStxUsd = 0; // USD per STX, as used to value the DLMM position's USDCx leg
       let agentPilotStart = null; // ISO time the official pilot window opened (scopes Net)
       let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
       // Performance curve — the institutional headline: cumulative return vs HODL (net of IL)
@@ -362,6 +379,7 @@
 
       function renderPilot(m) {
         if (m && m.lpBasis) agentLpBasis = m.lpBasis;
+        if (m && m.dlmmBasis) agentDlmmBasis = m.dlmmBasis;
         if (m && m.pilotStartedAt) agentPilotStart = m.pilotStartedAt;
         const tiles = $("pilotTiles"), note = $("pilotNote"), wrap = $("midWrap");
         if (!m || !m.samples || m.samples.length === 0) {
@@ -383,6 +401,8 @@
         }
         const last = ss[ss.length - 1];
         agentLpValueY = last.lpValueY ?? 0;
+        agentDlmmValueY = last.dlmmValueY ?? 0;
+        agentStxUsd = last.stxUsd ?? 0;
         agentPortfolioY = last.portfolioY ?? 0;
         agentMid = last.mid ?? 0;
         renderPerformance(m, ss, pilot);

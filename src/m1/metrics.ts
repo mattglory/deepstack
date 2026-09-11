@@ -25,6 +25,7 @@ export interface MetricsSample {
   yBase: string; // free y inventory
   lpValueY: number; // LP position value in y
   dlmmValueY?: number; // DLMM position value in y (optional — only present once DLMM is active)
+  stxUsd?: number; // USD per STX used to value the DLMM position's non-STX leg this tick
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
   // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y
