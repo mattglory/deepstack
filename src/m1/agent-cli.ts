@@ -314,6 +314,7 @@ async function act(
     xBase: s.inv.xBase.toString(),
     yBase: s.inv.yBase.toString(),
     lpValueY: s.lpValueY,
+    dlmmValueY: s.dlmmValueY,
     portfolioY: s.portfolioY,
     safe: safety.safe,
     poolX: s.xReserve,

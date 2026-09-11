@@ -24,6 +24,7 @@ export interface MetricsSample {
   xBase: string; // free x inventory (base units, stringified bigint)
   yBase: string; // free y inventory
   lpValueY: number; // LP position value in y
+  dlmmValueY?: number; // DLMM position value in y (optional — only present once DLMM is active)
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
   // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y
@@ -48,6 +49,14 @@ export interface MetricsFile {
   // predate tracking (fresh XYK deposits are always 50/50 by value).
   lpBasis?: { xQty: number; yQty: number; t: string };
   lpBasisY?: number; // legacy scalar — migrated to lpBasis on the next sample
+  // Same idea as lpBasis, for the DLMM position: deposited leg quantities (x in human
+  // units, y/USDCx in human units) plus when tracking started. Recenters (withdraw +
+  // immediate re-add of the SAME wallet-owned capital) do not move this — only a genuine
+  // net capital add/withdraw to the DLMM position should. Auto-initialised 50/50 by value
+  // on the first sample that has a positive dlmmValueY and no existing basis; a more
+  // accurate basis (the position's real x/y split, not a 50/50 guess) can be seeded
+  // manually when the true composition is known, e.g. via a historical on-chain read.
+  dlmmBasis?: { xQty: number; yQty: number; t: string };
   // Official pilot window. When set, the dashboard scopes uptime, IL-adjusted return,
   // and the price chart to the window, and the P&L report defaults its --since to it.
   // Set once by `m2:pilot-start` on the pilot box; funding must be complete BEFORE this.
@@ -113,6 +122,12 @@ export function recordSample(
       const v = m.lpBasisY ?? (s.lpValueY > 0 ? s.lpValueY : 0);
       if (v > 0) m.lpBasis = { xQty: v / 2 / s.mid, yQty: v / 2, t: s.t };
       delete m.lpBasisY;
+    }
+    if (!m.dlmmBasis && s.mid > 0 && (s.dlmmValueY ?? 0) > 0) {
+      // Same 50/50-by-value fallback as lpBasis. A caller with the real x/y split (e.g.
+      // from a historical on-chain read) should seed dlmmBasis directly instead — this
+      // auto-init only fires when nothing better has been set yet.
+      m.dlmmBasis = { xQty: s.dlmmValueY! / 2 / s.mid, yQty: s.dlmmValueY! / 2, t: s.t };
     }
     m.samples.push(s);
     if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);
