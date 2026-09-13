@@ -62,7 +62,15 @@ export interface MetricsFile {
   // and the price chart to the window, and the P&L report defaults its --since to it.
   // Set once by `m2:pilot-start` on the pilot box; funding must be complete BEFORE this.
   pilotStartedAt?: string;
-  pilotBaseline?: { t: string; xBase: string; yBase: string; mid: number; portfolioY: number };
+  // usdcxQty: free (non-DLMM-locked) USDCx held at anchor, in human units. Added after
+  // the fact (2026-09-13) once IL-adjusted return was found comparing the FULL portfolio
+  // (free + LP + DLMM + free-USDCx, since the readMarket() fixes) against a baseline that
+  // only ever captured free xBase/yBase — an apples-to-a-third-of-an-orange comparison.
+  // Without this field, hodlNow undercounts the true anchor-time baseline by whatever
+  // free USDCx existed then. Combined with lpBasis and dlmmBasis (both already tracked),
+  // this is the last piece needed for a complete, honest "hold everything since pilot
+  // start" comparison.
+  pilotBaseline?: { t: string; xBase: string; yBase: string; mid: number; portfolioY: number; usdcxQty?: number };
   samples: MetricsSample[];
   updated: string;
 }

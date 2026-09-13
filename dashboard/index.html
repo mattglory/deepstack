@@ -287,6 +287,26 @@
       let agentStxUsd = 0; // USD per STX, as used to value the DLMM position's USDCx leg
       let agentPilotStart = null; // ISO time the official pilot window opened (scopes Net)
       let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
+      // Full portfolio HODL-if-untouched value, marked to a given sample's own mid/stxUsd —
+      // spans every book portfolioY does: free x/y, LP legs, DLMM legs, free USDCx (via
+      // pilotBaseline.usdcxQty, added 2026-09-13 once the tile below was found comparing
+      // the full portfolio against a baseline that only ever captured free xBase/yBase).
+      // Returns null when a required piece isn't available for THIS sample — a sample's
+      // own stxUsd (needed to value the USDCx-denominated legs) only exists from when that
+      // tracking started, so earlier samples correctly fall out of the series rather than
+      // being charted with an incomplete, silently-wrong comparison.
+      function hodlNow(m, s) {
+        const b = m.pilotBaseline;
+        if (!b || !(s.mid > 0)) return null;
+        const usdcxQty = (b.usdcxQty ?? 0) + (m.dlmmBasis?.yQty ?? 0);
+        if (usdcxQty > 0 && !(s.stxUsd > 0)) return null;
+        let v = (Number(b.xBase) / 1e8) * s.mid + Number(b.yBase) / 1e6;
+        if (m.lpBasis) v += m.lpBasis.xQty * s.mid + m.lpBasis.yQty;
+        if (m.dlmmBasis) v += m.dlmmBasis.xQty * s.mid;
+        if (usdcxQty > 0) v += usdcxQty / s.stxUsd;
+        return v;
+      }
+
       // Performance curve — the institutional headline: cumulative return vs HODL (net of IL)
       // from a clean, fixed-inception baseline. Gated behind pilot start ON PURPOSE — a track
       // record means a top-up-free window with a stable baseline; pre-pilot telemetry (capital
@@ -300,16 +320,16 @@
           note.innerHTML = "Track record begins at <b>pilot start</b> — a clean, fixed-inception equity curve with no capital top-ups (the honest way to show performance). Current LP&nbsp;P&amp;L net of IL is in Economics above.";
           return;
         }
-        const b = m.pilotBaseline;
         const series = ss
           .map((s) => {
-            const hodl = (Number(b.xBase) / 1e8) * s.mid + Number(b.yBase) / 1e6;
+            const hodl = hodlNow(m, s);
             return { t: s.t, hodl, port: s.portfolioY, v: hodl > 0 ? ((s.portfolioY - hodl) / hodl) * 100 : 0 };
           })
-          // Glitch filter: a failed LP-value read shows as an implausible portfolio spike/drop.
-          // Drop samples where |portfolio − HODL| exceeds 20% of HODL — beyond realistic IL for
-          // this pair — so a bad read is never charted as return.
-          .filter((d) => d.hodl > 0 && Math.abs(d.port - d.hodl) < 0.2 * d.hodl);
+          // Drop samples hodlNow can't value yet (no stxUsd recorded that tick — only
+          // samples from 2026-09-11 onward have it), plus the existing glitch filter: a
+          // failed LP/DLMM-value read shows as an implausible portfolio spike/drop, so drop
+          // samples where |portfolio − HODL| exceeds 20% of HODL, beyond realistic IL here.
+          .filter((d) => d.hodl !== null && d.hodl > 0 && Math.abs(d.port - d.hodl) < 0.2 * d.hodl);
         if (series.length < 2) {
           wrap.style.display = "none";
           note.textContent = "Pilot window open — awaiting clean in-window heartbeats.";
@@ -419,20 +439,21 @@
           upSub = `${ss.length} beats / ${expected} expected · ${elapsedH.toFixed(1)}h ${pilot ? "pilot" : "window"}`;
         }
 
-        // IL-adjusted return: current portfolio vs HODLing the baseline inventory at the current mid.
-        //
-        // GATED OFF (2026-08-28): m.pilotBaseline only ever records the free-wallet x/y snapshot
-        // (xBase/yBase), but portfolioY is the FULL portfolio (free + LP + DLMM + free-USDCx, since
-        // the same-day fixes to readMarket()). Comparing all of that against a HODL baseline of only
-        // the free-wallet slice isn't net-of-IL return, it's "total capital vs a third of it" — the
-        // exact shape of bug that produced the +3827% incident, just re-triggered by making
-        // portfolioY MORE complete than the baseline it's diffed against. Confirmed live: this
-        // produced +148% within 30 minutes of pilot-start, which is what caught it.
-        // Needs pilotBaseline to capture a full, composable position (LP + DLMM legs too, not just
-        // free xBase/yBase) before this can be shown honestly — real fix, not a same-session patch.
-        // Economics panel's LP P&L net of IL stays the honest, narrower return figure meanwhile.
+        // IL-adjusted return: current portfolio vs HODLing the FULL baseline position (free
+        // x/y + LP legs + DLMM legs + free USDCx, via hodlNow) at the current mid/stxUsd.
+        // Was gated off 2026-08-28 to 2026-09-13: pilotBaseline only recorded the free-wallet
+        // x/y snapshot, so comparing the full portfolio against it was "total capital vs a
+        // third of it," not net-of-IL return — the exact shape of bug behind the earlier
+        // +3827% incident, re-triggered by making portfolioY more complete than the baseline.
+        // Fixed by backfilling pilotBaseline.usdcxQty (the missing piece — lpBasis and
+        // dlmmBasis were already tracked) so hodlNow can value all four books consistently.
         const staleMin = (Date.now() - t1) / 6e4;
-        const ilTile = small("IL-adjusted return", `n/a<div class="sub2">baseline fix pending — see Economics for LP P&L net of IL</div>`);
+        const hodlNowVal = hodlNow(m, last);
+        const ilAdj = hodlNowVal !== null && hodlNowVal > 0 ? ((last.portfolioY - hodlNowVal) / hodlNowVal) * 100 : null;
+        const ilTile =
+          ilAdj === null
+            ? small("IL-adjusted return", `n/a<div class="sub2">measuring — see Economics for LP/DLMM P&L net of IL</div>`)
+            : small("IL-adjusted return", `<span style="color:${ilAdj >= 0 ? "var(--ok)" : "var(--bad)"}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs full HODL baseline (${fmt(last.portfolioY, 1)} vs ${fmt(hodlNowVal, 1)} STX)</div>`);
 
         tiles.innerHTML =
           small("Uptime", `${uptime}<div class="sub2">${upSub}</div>`) +
