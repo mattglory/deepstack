@@ -119,13 +119,42 @@ interface Snapshot {
 // Hiro hiccup must not masquerade as this capital suddenly vanishing and falsely spiking the
 // drawdown reading (the exact class of bug this function exists to fix, see the 2026-08-21
 // false-halt incident: readMarket() used to omit DLMM value entirely).
+//
+// That cache is only as good as its last write, though — an in-memory `let` starts every
+// process restart at 0. Found 2026-09-15: a restart landed exactly on a tick whose DLMM read
+// also failed (Hiro's authenticated quota exhausted, throttled unauthenticated fallback
+// couldn't complete a 51-bin position read in time), so the "reuse last known value" fallback
+// had nothing to reuse — it fell back to 0, understated portfolioY by ~1,900 STX, and the LP
+// allocation logic reacted to that corrupted total by deciding to withdraw LP that wasn't
+// actually oversized. The broadcast itself happened to also fail, so nothing executed, but the
+// decision layer had already acted on bad data — the fix belongs here, not just luck.
+// lazyInitDone seeds the cache from the last real value already on disk (recordSample persists
+// dlmmValueY/freeUsdcxValueY/stxUsd every successful tick) before ever falling back to 0.
 let lastDlmmValueY = 0;
 let lastFreeUsdcxValueY = 0;
 let lastUsdPerStx = 0;
+let lazyInitDone = false;
+
+function lazyInitFromDisk(): void {
+  if (lazyInitDone) return;
+  lazyInitDone = true;
+  const hist = loadHistory();
+  for (let i = hist.length - 1; i >= 0; i--) {
+    const s = hist[i];
+    if ((s.dlmmValueY ?? 0) > 0 || (s.freeUsdcxValueY ?? 0) > 0) {
+      lastDlmmValueY = s.dlmmValueY ?? 0;
+      lastFreeUsdcxValueY = s.freeUsdcxValueY ?? 0;
+      lastUsdPerStx = s.stxUsd ?? 0;
+      console.log(`  [dlmm-value] seeded cache from disk (t=${s.t}): dlmm ${lastDlmmValueY.toFixed(2)}, free-y ${lastFreeUsdcxValueY.toFixed(2)}`);
+      return;
+    }
+  }
+}
 
 async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<{ dlmmValueY: number; freeUsdcxValueY: number; usdPerStx: number }> {
   const pairKey = process.env.DLMM_OBSERVE_PAIR;
   if (!pairKey) return { dlmmValueY: 0, freeUsdcxValueY: 0, usdPerStx: 0 };
+  lazyInitFromDisk();
   const last = { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx };
   try {
     const poolDef = DLMM_POOLS.find((p) => p.key === pairKey);
@@ -319,6 +348,7 @@ async function act(
     yBase: s.inv.yBase.toString(),
     lpValueY: s.lpValueY,
     dlmmValueY: s.dlmmValueY,
+    freeUsdcxValueY: s.freeUsdcxValueY || undefined,
     stxUsd: s.usdPerStx || undefined,
     portfolioY: s.portfolioY,
     safe: safety.safe,
