@@ -171,20 +171,20 @@
       function card(k, v, sub) { return `<div class="card big"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="sub2">${sub}</div>` : ""}</div>`; }
       function small(k, v) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
 
-      // Swap volume + count over an arbitrary set of transaction rows (same rule as the
-      // main render() loop below). Pulled out so it can run over both the last-50 window
-      // and a full pilot-window fetch without duplicating the swap-detection logic.
-      function swapStats(rows) {
-        let volume = 0, swaps = 0;
+      // Full census (volume, swap count, fees, success/abort) over an arbitrary set of
+      // already-CFG.actions-filtered rows. Pulled out so the same rule can run over both
+      // the last-50 window and a full pilot-window fetch without duplicating it.
+      function actCensus(rows) {
+        let volume = 0, swaps = 0, fees = 0, ok = 0, ab = 0;
         for (const r of rows) {
-          const t = r.tx;
-          if (t?.tx_type !== "contract_call" || t.contract_call?.function_name?.startsWith("swap") !== true) continue;
-          if (t.tx_status !== "success") continue;
-          const fn = t.contract_call.function_name, sb = sbtcLeg(r);
-          const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(t.fee_rate) : Number(r.stx_received);
-          volume += Math.max(0, leg); swaps++;
+          const t = r.tx, fn = t.contract_call.function_name, s = t.tx_status === "success";
+          fees += Number(t.fee_rate || 0); s ? ok++ : ab++;
+          if (fn.startsWith("swap") && s) {
+            const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(t.fee_rate) : Number(r.stx_received);
+            volume += Math.max(0, leg); swaps++;
+          }
         }
-        return { volume, swaps };
+        return { count: rows.length, volume, swaps, fees, ok, ab };
       }
       // Every transaction since the official pilot window opened — paginated because a
       // 30-day pilot can outgrow a single 50-row page. Capped at 10 pages (500 txs) as a
@@ -227,11 +227,14 @@
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
             volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); }
         }
-        // "Volume facilitated" specifically uses the full pilot-window fetch when it's
-        // available (falls back to the last-50-window figures above until the pilot has
-        // officially started) — see fetchAllSince()'s comment for why.
-        let heroVolume = volume, heroSwaps = swaps;
-        if (pilotTxs) { const ps = swapStats(pilotTxs); heroVolume = ps.volume; heroSwaps = ps.swaps; }
+        // The hero row's four activity cards (Volume, Fees, Success rate) all use the full
+        // pilot-window fetch when it's available, so they agree on what "since pilot start"
+        // means (falls back to the last-50-window census above until the pilot has
+        // officially started) — see fetchAllSince()'s comment for why this matters.
+        const pilotActs = pilotTxs
+          ? pilotTxs.filter((r) => r.tx?.tx_type === "contract_call" && CFG.actions.includes(r.tx.contract_call?.function_name))
+          : null;
+        const hero = pilotActs ? actCensus(pilotActs) : actCensus(acts);
         // Valuation mid: prefer the agent's telemetry mid (fresh pool-reserves read every
         // cycle) over the swap-implied mid, which only updates when a swap happens and can
         // go stale for days in quiet periods. Swap-implied remains the no-telemetry fallback.
@@ -243,14 +246,15 @@
         // locally would silently undercount by whatever's parked in DLMM. Falls back to the
         // old local sum before the first heartbeat lands (agentPortfolioY still 0).
         const portfolio = agentPortfolioY > 0 ? agentPortfolioY : stx + (vmid ? sbtc * vmid : 0) + lpVal;
-        const successRate = acts.length ? Math.round((ok / acts.length) * 100) : 0;
+        const successRate = hero.count ? Math.round((hero.ok / hero.count) * 100) : 0;
+        const sincePilot = pilotActs ? " · since pilot start" : "";
 
         // hero
         $("hero").innerHTML =
           card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
-          card("Volume facilitated", `${fmt(uSTX(heroVolume), 2)} <small>STX</small>`, `${heroSwaps} swaps${pilotTxs ? " · since pilot start" : ""}`) +
-          card("Network fees paid", `${fmt(uSTX(fees), 3)} <small>STX</small>`, `${acts.length} txs`) +
-          card("Success rate", `${successRate}%`, `${ok} ok · ${ab} aborted`);
+          card("Volume facilitated", `${fmt(uSTX(hero.volume), 2)} <small>STX</small>`, `${hero.swaps} swaps${sincePilot}`) +
+          card("Network fees paid", `${fmt(uSTX(hero.fees), 3)} <small>STX</small>`, `${hero.count} txs${sincePilot}`) +
+          card("Success rate", `${successRate}%`, `${hero.ok} ok · ${hero.ab} aborted`);
 
         // allocation
         const sbtcVal = vmid ? sbtc * vmid : 0, total = stx + sbtcVal;
