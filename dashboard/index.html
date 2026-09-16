@@ -138,7 +138,15 @@
         api: "https://api.mainnet.hiro.so",
         sbtcAsset: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
         lpAsset: "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1::pool-token",
-        actions: ["swap-y-for-x", "swap-x-for-y", "add-liquidity", "withdraw-liquidity"],
+        // Bitflow's pool now routes LP ops through the "-multi" function variants (recenters
+        // etc.) alongside the older plain names — both must be recognised or real add/withdraw
+        // activity silently disappears from every card and the activity table (found 2026-09-16:
+        // 15 of the last 50 on-chain txs were "-multi" calls the old list didn't match).
+        actions: [
+          "swap-y-for-x", "swap-x-for-y",
+          "add-liquidity", "withdraw-liquidity",
+          "add-liquidity-multi", "withdraw-liquidity-multi",
+        ],
         // Gist raw URL the pilot agent mirrors metrics.json to (see src/m1/publish.ts).
         // Same-origin metrics.json only updates when the dashboard is redeployed; during
         // the 30-day pilot the mirror is the live copy. Empty = same-origin only.
@@ -163,7 +171,42 @@
       function card(k, v, sub) { return `<div class="card big"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="sub2">${sub}</div>` : ""}</div>`; }
       function small(k, v) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
 
-      function render(bal, txs) {
+      // Swap volume + count over an arbitrary set of transaction rows (same rule as the
+      // main render() loop below). Pulled out so it can run over both the last-50 window
+      // and a full pilot-window fetch without duplicating the swap-detection logic.
+      function swapStats(rows) {
+        let volume = 0, swaps = 0;
+        for (const r of rows) {
+          const t = r.tx;
+          if (t?.tx_type !== "contract_call" || t.contract_call?.function_name?.startsWith("swap") !== true) continue;
+          if (t.tx_status !== "success") continue;
+          const fn = t.contract_call.function_name, sb = sbtcLeg(r);
+          const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(t.fee_rate) : Number(r.stx_received);
+          volume += Math.max(0, leg); swaps++;
+        }
+        return { volume, swaps };
+      }
+      // Every transaction since the official pilot window opened — paginated because a
+      // 30-day pilot can outgrow a single 50-row page. Capped at 10 pages (500 txs) as a
+      // sane ceiling for a wallet this size; stops early once a page's oldest row predates
+      // the window. Used only for "Volume facilitated" so that tile reads as a genuine
+      // pilot-to-date total instead of "whatever fits in the last 50 transactions" (which
+      // shrinks as DLMM recenters — no swap needed — crowd swaps out of a fixed window).
+      async function fetchAllSince(addr, sinceIso, maxPages = 10) {
+        const sinceSec = new Date(sinceIso).getTime() / 1000;
+        let offset = 0, out = [];
+        for (let page = 0; page < maxPages; page++) {
+          const r = await getJson(`/extended/v1/address/${addr}/transactions_with_transfers?limit=50&offset=${offset}`);
+          const results = r.results || [];
+          out.push(...results);
+          const oldest = results[results.length - 1];
+          if (results.length < 50 || !oldest || (oldest.tx.burn_block_time || 0) < sinceSec) break;
+          offset += 50;
+        }
+        return out.filter((r) => (r.tx.burn_block_time || 0) >= sinceSec);
+      }
+
+      function render(bal, txs, pilotTxs) {
         const stx = uSTX(bal.stx?.balance ?? 0);
         const sbtc = baseBTC(bal.fungible_tokens?.[CFG.sbtcAsset]?.balance ?? 0);
         const lp = uSTX(bal.fungible_tokens?.[CFG.lpAsset]?.balance ?? 0); // LP token, 6dp
@@ -184,6 +227,11 @@
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
             volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); }
         }
+        // "Volume facilitated" specifically uses the full pilot-window fetch when it's
+        // available (falls back to the last-50-window figures above until the pilot has
+        // officially started) — see fetchAllSince()'s comment for why.
+        let heroVolume = volume, heroSwaps = swaps;
+        if (pilotTxs) { const ps = swapStats(pilotTxs); heroVolume = ps.volume; heroSwaps = ps.swaps; }
         // Valuation mid: prefer the agent's telemetry mid (fresh pool-reserves read every
         // cycle) over the swap-implied mid, which only updates when a swap happens and can
         // go stale for days in quiet periods. Swap-implied remains the no-telemetry fallback.
@@ -200,7 +248,7 @@
         // hero
         $("hero").innerHTML =
           card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
-          card("Volume facilitated", `${fmt(uSTX(volume), 2)} <small>STX</small>`, `${swaps} swaps`) +
+          card("Volume facilitated", `${fmt(uSTX(heroVolume), 2)} <small>STX</small>`, `${heroSwaps} swaps${pilotTxs ? " · since pilot start" : ""}`) +
           card("Network fees paid", `${fmt(uSTX(fees), 3)} <small>STX</small>`, `${acts.length} txs`) +
           card("Success rate", `${successRate}%`, `${ok} ok · ${ab} aborted`);
 
@@ -265,8 +313,8 @@
               const t = r.tx, fn = t.contract_call.function_name, sb = sbtcLeg(r), s = t.tx_status === "success";
               const detail = fn === "swap-y-for-x" ? `${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 3)} STX → ${fmt(baseBTC(sb), 8)} sBTC`
                 : fn === "swap-x-for-y" ? `${fmt(baseBTC(sb), 8)} sBTC → ${fmt(uSTX(r.stx_received), 3)} STX`
-                : fn === "add-liquidity" ? `deposited ${fmt(baseBTC(sbtcDir(r, "out")), 8)} sBTC + ${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 2)} STX`
-                : fn === "withdraw-liquidity" ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX` : fn;
+                : fn.startsWith("add-liquidity") ? `deposited ${fmt(baseBTC(sbtcDir(r, "out")), 8)} sBTC + ${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 2)} STX`
+                : fn.startsWith("withdraw-liquidity") ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX` : fn;
               return `<tr><td class="tnum">${tstr(t.burn_block_time)}</td><td>${fn}</td><td class="tnum">${detail}</td>
                 <td class="tnum">${fmt(uSTX(t.fee_rate), 3)}</td>
                 <td><span class="tag ${s ? "ok" : "bad"}">${s ? "success" : t.tx_status.replace(/_/g, " ")}</span></td>
@@ -524,7 +572,8 @@
             getJson(`/extended/v1/address/${a}/balances`),
             getJson(`/extended/v1/address/${a}/transactions_with_transfers?limit=50`),
           ]);
-          render(bal, tt.results || []);
+          const pilotTxs = agentPilotStart ? await fetchAllSince(a, agentPilotStart) : null;
+          render(bal, tt.results || [], pilotTxs);
           $("status").innerHTML = `updated ${new Date().toUTCString().slice(17, 25)} UTC`;
         } catch (e) { $("status").textContent = "error: " + e.message; }
       }

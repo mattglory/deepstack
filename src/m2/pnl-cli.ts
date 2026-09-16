@@ -10,7 +10,7 @@
 // window opens, never during).
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { buildReport, renderMarkdown, type TickRecord, type MetricsSampleLite } from "./pnl.js";
+import { buildReport, renderMarkdown, type TickRecord, type MetricsSampleLite, type T0Basis } from "./pnl.js";
 import { METRICS_PATH } from "../m1/metrics.js";
 
 const JOURNAL_DIR = process.env.JOURNAL_DIR ?? "journal";
@@ -37,19 +37,27 @@ function loadJournal(): TickRecord[] {
   return out;
 }
 
-function loadSamples(): { samples: MetricsSampleLite[]; intervalSec: number; pilotStartedAt?: string } {
+function loadSamples(): {
+  samples: MetricsSampleLite[];
+  intervalSec: number;
+  pilotStartedAt?: string;
+  t0Basis?: T0Basis;
+} {
   try {
     const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
-    return { samples: m.samples ?? [], intervalSec: m.intervalSec ?? 0, pilotStartedAt: m.pilotStartedAt };
+    const t0Basis: T0Basis | undefined = m.pilotStartedAt
+      ? { t: m.pilotStartedAt, lpBasis: m.lpBasis, dlmmBasis: m.dlmmBasis, usdcxQty: m.pilotBaseline?.usdcxQty }
+      : undefined;
+    return { samples: m.samples ?? [], intervalSec: m.intervalSec ?? 0, pilotStartedAt: m.pilotStartedAt, t0Basis };
   } catch {
     return { samples: [], intervalSec: 0 };
   }
 }
 
-const { samples, intervalSec, pilotStartedAt } = loadSamples();
+const { samples, intervalSec, pilotStartedAt, t0Basis } = loadSamples();
 // The pilot window is the default report window once it exists — pass --since to override.
 const since = flag("--since") ?? pilotStartedAt;
 const until = flag("--until");
 if (!flag("--since") && pilotStartedAt) console.log(`(window: official pilot, since ${pilotStartedAt})\n`);
-const report = buildReport(loadJournal(), samples, intervalSec, since, until);
+const report = buildReport(loadJournal(), samples, intervalSec, since, until, t0Basis);
 console.log(renderMarkdown(report));

@@ -32,6 +32,18 @@ export interface MetricsSampleLite {
   xBase: string;
   yBase: string;
   portfolioY: number;
+  stxUsd?: number; // USD per STX at sample time — needed to reprice a HODL'd USDCx leg
+}
+
+// The LP and DLMM positions' underlying (x,y) quantities at the window's start sample —
+// the same basis metrics.ts tracks for fees-net-IL. Only applied when its `t` matches the
+// window's first sample (see buildReport): a mismatch means the basis was anchored
+// elsewhere (e.g. a custom --since), where it would misrepresent the true start holdings.
+export interface T0Basis {
+  t: string;
+  lpBasis?: { xQty: number; yQty: number };
+  dlmmBasis?: { xQty: number; yQty: number };
+  usdcxQty?: number;
 }
 
 export interface PnlReport {
@@ -71,6 +83,7 @@ export function buildReport(
   intervalSec: number,
   from?: string,
   to?: string,
+  t0Basis?: T0Basis,
 ): PnlReport {
   const ticks = entries.filter((e) => !e.type && inWindow(e.t, from, to));
   const tunes = entries.filter((e) => e.type === "tune" && inWindow(e.t, from, to));
@@ -112,7 +125,15 @@ export function buildReport(
   if (ss.length >= 2) {
     const a = ss[0];
     const z = ss[ss.length - 1];
-    const hodlEndY = (Number(a.xBase) / XD) * z.mid + Number(a.yBase) / YD;
+    // Free-wallet legs always count. LP/DLMM/USDCx legs held at window start are added
+    // only when the basis was anchored at exactly this start sample — otherwise those
+    // positions' start composition is unknown and must be left out rather than guessed.
+    let hodlEndY = (Number(a.xBase) / XD) * z.mid + Number(a.yBase) / YD;
+    if (t0Basis && t0Basis.t === a.t) {
+      if (t0Basis.lpBasis) hodlEndY += t0Basis.lpBasis.xQty * z.mid + t0Basis.lpBasis.yQty;
+      if (t0Basis.dlmmBasis) hodlEndY += t0Basis.dlmmBasis.xQty * z.mid + t0Basis.dlmmBasis.yQty;
+      if (t0Basis.usdcxQty && z.stxUsd) hodlEndY += t0Basis.usdcxQty / z.stxUsd;
+    }
     pnl = {
       startY: +a.portfolioY.toFixed(2),
       endY: +z.portfolioY.toFixed(2),
