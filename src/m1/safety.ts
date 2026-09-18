@@ -26,13 +26,20 @@ export async function getExternalMid(): Promise<ExternalMid | null> {
     const r = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd`,
     );
-    if (!r.ok) return null;
+    if (!r.ok) {
+      console.warn(`(external price unavailable: CoinGecko HTTP ${r.status})`);
+      return null;
+    }
     const j = (await r.json()) as Record<string, { usd?: number }>;
     const xUsd = Number(j[p.x.coingecko]?.usd);
     const yUsd = Number(j[p.y.coingecko]?.usd);
-    if (!(xUsd > 0 && yUsd > 0)) return null;
+    if (!(xUsd > 0 && yUsd > 0)) {
+      console.warn(`(external price unavailable: CoinGecko returned no usable price for ${ids.join(",")})`);
+      return null;
+    }
     return { xUsd, yUsd, midXinY: xUsd / yUsd };
-  } catch {
+  } catch (err) {
+    console.warn(`(external price unavailable: ${(err as Error).message})`);
     return null;
   }
 }
