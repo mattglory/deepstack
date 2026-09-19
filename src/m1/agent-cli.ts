@@ -510,6 +510,22 @@ function applyVolBand(params: AgentParams): { params: AgentParams; sigmaDaily: n
   return { params: { ...params, rebalanceBandBps: bandBps }, sigmaDaily, bandBps };
 }
 
+/**
+ * Realised daily vol of the DLMM pair's OWN underlying price — deliberately NOT the sBTC-STX
+ * series applyVolBand() uses above (see the DLMM section's comment: that series is the wrong
+ * pair for sizing a sBTC-USDCx range). Derives an implied USD-per-sBTC ("BTC/USD") series from
+ * the recorded telemetry (mid = STX per sBTC, stxUsd = USD per STX; their product is USD per
+ * sBTC) — no new data collection needed, both are already recorded every cycle once DLMM is
+ * live. Returns null (→ recenterOnce falls back to the fixed halfWidth) until stxUsd has enough
+ * history, same honesty rule as applyVolBand's null case.
+ */
+function dlmmSigmaDaily(): number | null {
+  const history = loadHistory()
+    .filter((s) => s.mid > 0 && (s.stxUsd ?? 0) > 0)
+    .map((s) => ({ t: s.t, mid: s.mid * (s.stxUsd as number), lpValueY: 0 }));
+  return realizedVolDaily(history);
+}
+
 // Regime-aware defensive allocation (allocation.ts). Gated OFF by default — the pilot runs
 // the declared static 50/50 — so this only alters targetY/targetLp when ALLOCATION_MODE=
 // adaptive. The AI regime call may tighten risk but never loosen it.
@@ -618,18 +634,21 @@ async function main() {
       // AND within a per-run recenter budget. Opt-in via DLMM_OBSERVE_PAIR (unset = no DLMM;
       // current pilot behaviour untouched). Own try/catch: a DLMM failure must never turn a good
       // XYK tick into a logged failure/alert. Shares one execution path with the CLI
-      // (dlmm-recenter-exec). Fixed half-width (DLMM_HALF_WIDTH): the agent's measured vol is
-      // sBTC-STX, not the DLMM pair, so vol-scaling the DLMM range needs its own vol series.
+      // (dlmm-recenter-exec). DLMM_HALF_WIDTH is now only the fallback/floor: dlmmSigmaDaily()
+      // gives recenterOnce the DLMM pair's own vol series, so the range (and so the recenter
+      // trigger, since they're the same number) widens automatically in a trending/volatile
+      // market instead of thrashing a fixed ±N band — see dlmm-recenter-exec.ts's RecenterConfig.
       const dlmmPair = process.env.DLMM_OBSERVE_PAIR;
       if (dlmmPair) {
         try {
           const halfWidth = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
           const targetUsd = Number(process.env.DLMM_TARGET_USD ?? 40);
           const dlmmLive = process.env.DLMM_LIVE === "1" && live && dlmmRecenters < f.maxTrades;
-          const res = await recenterOnce(w, { pair: dlmmPair, halfWidth, targetUsd }, dlmmLive, (m) => console.log(m));
+          const sigmaDaily = dlmmSigmaDaily();
+          const res = await recenterOnce(w, { pair: dlmmPair, halfWidth, targetUsd, sigmaDaily }, dlmmLive, (m) => console.log(m));
           if (res.executed) dlmmRecenters++;
-          appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, ...res });
-          console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${halfWidth} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
+          appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, ...res });
+          console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
         } catch (e) {
           appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message });
         }

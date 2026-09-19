@@ -21,6 +21,7 @@ import { DLMM_POOLS, readDlmmState, type DlmmPool } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter } from "./dlmm-recenter.js";
+import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 
 const API = "https://api.mainnet.hiro.so";
@@ -87,7 +88,19 @@ export async function waitForTx(txid: string, log: (s: string) => void): Promise
   return "timeout";
 }
 
-export interface RecenterConfig { pair: string; halfWidth: number; targetUsd: number; maxTargetUsd?: number }
+export interface RecenterConfig {
+  pair: string;
+  halfWidth: number; // fallback/floor when sigmaDaily is absent — always used by the manual CLI
+  targetUsd: number;
+  maxTargetUsd?: number;
+  // Vol-adaptive width (opt-in): when set and usable, the DLMM pair's OWN realised vol (not the
+  // XYK pair's — see agent-cli.ts) replaces halfWidth via binRangeFromVol, using the pool's real
+  // on-chain bin step. Widens the deployed range — and so the recenter trigger, since decideRecenter
+  // treats halfWidth as both — during vol spikes, instead of thrashing a fixed-width band against a
+  // trending price (the DLMM analogue of bandBpsFromVol for the XYK rebalance band).
+  sigmaDaily?: number | null;
+  rangeOpts?: RangeOpts;
+}
 export interface RecenterResult {
   action: "open" | "hold" | "recenter" | "skip";
   reason: string;
@@ -151,19 +164,24 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   if (!poolDef) throw new Error(`unknown DLMM pair '${cfg.pair}'`);
   const st = await readDlmmState(poolDef);
   if (!st) throw new Error(`could not read pool state for ${cfg.pair}`);
+  const halfWidth =
+    cfg.sigmaDaily != null && cfg.sigmaDaily > 0
+      ? binRangeFromVol(cfg.sigmaDaily, st.binStep, { maxHalfWidthBins: 50, ...cfg.rangeOpts }).halfWidthBins
+      : cfg.halfWidth;
+  const effCfg: RecenterConfig = { ...cfg, halfWidth };
   const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
   const pos = await readUserPosition(poolDef, w.address);
-  const dec = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, cfg.halfWidth);
+  const dec = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
   const base: RecenterResult = {
     action: dec.action, reason: dec.reason, activeBin: st.activeBinId,
     posLo: pos.lowerSignedBin, posHi: pos.upperSignedBin,
     posX: +(Number(pos.totalX) / 1e6).toFixed(4), posY: +(Number(pos.totalY) / 1e6).toFixed(4),
-    halfWidth: cfg.halfWidth, executed: false,
+    halfWidth, executed: false,
   };
   if (dec.action === "hold" || !live) return base;
 
   if (dec.action === "open") {
-    const addTxid = await executeAdd(w, poolDef, st.activeBinId, xTok, yTok, cfg, log);
+    const addTxid = await executeAdd(w, poolDef, st.activeBinId, xTok, yTok, effCfg, log);
     const s = await waitForTx(addTxid, log);
     return { ...base, executed: s === "success", addTxid, reason: s === "success" ? "opened" : `open ${s}` };
   }
@@ -179,7 +197,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   if (ws !== "success") return { ...base, withdrawTxid: wr.txid, reason: `withdraw ${ws} — aborted before re-add (funds safe in wallet)` };
   const st2 = (await readDlmmState(poolDef)) ?? st;
   log(`  recenter 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const addTxid = await executeAdd(w, poolDef, st2.activeBinId, xTok, yTok, cfg, log);
+  const addTxid = await executeAdd(w, poolDef, st2.activeBinId, xTok, yTok, effCfg, log);
   const as = await waitForTx(addTxid, log);
   return { ...base, executed: as === "success", withdrawTxid: wr.txid, addTxid, reason: as === "success" ? "recentered" : `re-add ${as}` };
 }
