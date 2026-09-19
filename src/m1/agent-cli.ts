@@ -30,6 +30,7 @@ import { readUserPosition } from "./dlmm-position.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
+import { checkNonceSafety } from "./nonce-safety.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
 import { decideHaven, defaultHavenParams } from "./haven.js";
@@ -39,7 +40,7 @@ import { publishMetrics } from "./publish.js";
 import { withRpc } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
-import { createSupervisor } from "./supervise.js";
+import { createSupervisor, type Supervisor } from "./supervise.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
 // and flushed once per tick in step(). See src/m1/journal.ts.
@@ -264,6 +265,19 @@ async function act(
       `portfolio ~${s.portfolioY.toFixed(2)} ${y.symbol}`,
   );
 
+  // Nonce-gap / pending-tx safety (nonce-safety.ts): fails closed on ANY doubt — an unclear
+  // read is treated the same as a real gap, matching the external-price fail-closed rule in
+  // safety.ts. Only checked when a broadcast is actually possible (observe-mode ticks don't
+  // need it); guarded so an API hiccup here can never crash a tick that would otherwise be fine.
+  let nonceSafety: { safe: boolean; reason?: string } = { safe: true };
+  if (canTrade) {
+    try {
+      nonceSafety = await checkNonceSafety(w.address);
+    } catch (err) {
+      nonceSafety = { safe: false, reason: `nonce check failed: ${(err as Error).message}` };
+    }
+  }
+
   // Oracle-sanity + kill-switch gate.
   const safety = assessSafety(
     {
@@ -392,6 +406,7 @@ async function act(
       console.log(`  LP: ${lp.action}  ${detail}  (${lp.reason})`);
       tickJournal.lpDecision = { action: lp.action, detail, reason: lp.reason };
       if (!canTrade) { console.log("  observe mode — not executing"); return false; }
+      if (!nonceSafety.safe) return refuse(nonceSafety.reason ?? "nonce check failed");
       if (w.network !== "mainnet") return refuse("not mainnet");
       const nativeNeed = FEE_USTX + (lp.action === "add-liquidity" && x.native ? lp.xBase : 0n);
       if (s.nativeStxMicro < nativeNeed) return refuse("insufficient native STX for fee");
@@ -457,6 +472,7 @@ async function act(
   rebalDefer = 0;
 
   if (!canTrade) { console.log("  observe mode — not executing"); return false; }
+  if (!nonceSafety.safe) return refuse(nonceSafety.reason ?? "nonce check failed");
   if (w.network !== "mainnet") return refuse("not mainnet");
   if (d.action === "swap-y-for-x" && d.amountBase > params.maxSwapYBase) return refuse("y over cap");
   if (d.action === "swap-x-for-y" && d.amountBase > params.maxSwapXBase) return refuse("x over cap");
@@ -566,6 +582,15 @@ async function main() {
   let dlmmRecenters = 0; // per-run DLMM recenter budget (shares --max-trades ceiling)
   let i = 0;
   let sessionStart = 0;
+  // Forward reference: the supervisor is created after step() below (it wraps step itself),
+  // but step's own circuit-breaker check needs its live streak. Assigned once, right after
+  // creation, before runStep() ever calls step() — closures capture the variable, not its
+  // value at definition time, so this is safe despite the apparent ordering.
+  let supervisorRef: Supervisor | undefined;
+  // Consecutive cycle failures at/above this freeze new trading (same number Bitflow's public
+  // MM bot defaults MAX_CONSECUTIVE_API_ERRORS to) — a sustained outage, not the odd blip
+  // supervise.ts already tolerates by design. Resets the moment any cycle succeeds.
+  const CIRCUIT_BREAKER_THRESHOLD = Math.max(1, Number(process.env.MAX_CONSECUTIVE_FAILURES ?? 5));
   const step = async () => {
     const snap = await readMarket(w);
     if (sessionStart === 0) sessionStart = snap.portfolioY;
@@ -611,8 +636,13 @@ async function main() {
       });
     }
     i++;
+    const failStreak = supervisorRef?.consecutiveFailures() ?? 0;
+    if (failStreak >= CIRCUIT_BREAKER_THRESHOLD) {
+      console.log(`  ⛔ CIRCUIT BREAKER — ${failStreak} consecutive cycle failures ≥ ${CIRCUIT_BREAKER_THRESHOLD} — freezing all new trading until one succeeds`);
+    }
+    const circuitOk = failStreak < CIRCUIT_BREAKER_THRESHOLD;
     try {
-      if (await act(w, snap, params, live && trades < f.maxTrades, sessionStart, f.interval)) trades++;
+      if (await act(w, snap, params, live && circuitOk && trades < f.maxTrades, sessionStart, f.interval)) trades++;
     } finally {
       appendJournal(tickJournal); // one journal line per tick, whatever happened
       // Cross-pool spread observations (read-only) — the dataset that decides whether
@@ -643,7 +673,7 @@ async function main() {
         try {
           const halfWidth = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
           const targetUsd = Number(process.env.DLMM_TARGET_USD ?? 40);
-          const dlmmLive = process.env.DLMM_LIVE === "1" && live && dlmmRecenters < f.maxTrades;
+          const dlmmLive = process.env.DLMM_LIVE === "1" && live && circuitOk && dlmmRecenters < f.maxTrades;
           const sigmaDaily = dlmmSigmaDaily();
           const res = await recenterOnce(w, { pair: dlmmPair, halfWidth, targetUsd, sigmaDaily }, dlmmLive, (m) => console.log(m));
           if (res.executed) dlmmRecenters++;
@@ -672,9 +702,10 @@ async function main() {
     console.error(`  ✗ cycle failed (${consecutive} in a row): ${error}`);
     appendJournal({ t: new Date().toISOString(), type: "cycle-error", error, consecutive });
     await pingHealthcheck("fail");
-    if (consecutive >= 5)
-      console.error(`  ⚠ ${consecutive} consecutive failures — agent is live but not trading. Check RPC/network.`);
+    if (consecutive >= CIRCUIT_BREAKER_THRESHOLD)
+      console.error(`  ⚠ ${consecutive} consecutive failures — circuit breaker active, no new trades until one succeeds. Check RPC/network.`);
   });
+  supervisorRef = supervisor; // step()'s circuit-breaker check reads this each cycle
   const runStep = () => supervisor.run(step);
 
   if (f.interval) {

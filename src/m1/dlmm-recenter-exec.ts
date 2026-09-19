@@ -23,6 +23,7 @@ import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, build
 import { sizeTwoSidedDeposit, decideRecenter } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
+import { checkNonceSafety } from "./nonce-safety.js";
 
 const API = "https://api.mainnet.hiro.so";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
@@ -179,6 +180,14 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     halfWidth, executed: false,
   };
   if (dec.action === "hold" || !live) return base;
+
+  // Same fail-closed nonce-gap / pending-tx check as the XYK path (agent-cli.ts) — a
+  // withdraw-then-add recenter is two sequential broadcasts, so a stuck prior tx here is
+  // exactly the condition that risks piling nonces on top of an unconfirmed one.
+  const nonceSafety = await checkNonceSafety(w.address).catch(
+    (err) => ({ safe: false, reason: `nonce check failed: ${(err as Error).message}`, missingNonces: [], mempoolPending: 0 }),
+  );
+  if (!nonceSafety.safe) return { ...base, reason: nonceSafety.reason ?? "nonce check failed" };
 
   if (dec.action === "open") {
     const addTxid = await executeAdd(w, poolDef, st.activeBinId, xTok, yTok, effCfg, log);
