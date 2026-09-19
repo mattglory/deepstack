@@ -52,6 +52,27 @@ test("pnl: decision + tx census counts what happened, halts included", () => {
   assert.equal(r.txs.feesStx, 0.1);
 });
 
+test("pnl: DLMM recenter/open activity counts toward decisions and the tx tally", () => {
+  const entries: TickRecord[] = [
+    // opened a fresh position: 1 broadcast (the add), confirmed
+    { t: "2026-09-01T00:00:00Z", type: "dlmm-recenter", action: "open", executed: true, addTxid: "op1" },
+    // a completed recenter: 2 broadcasts (withdraw + re-add), both confirmed
+    { t: "2026-09-01T00:30:00Z", type: "dlmm-recenter", action: "recenter", executed: true, withdrawTxid: "w1", addTxid: "a1" },
+    // withdrew but the re-add never happened — a real attempted broadcast, not a confirmed one
+    { t: "2026-09-01T01:00:00Z", type: "dlmm-recenter", action: "recenter", executed: false, withdrawTxid: "w2" },
+    // ordinary hold — no broadcast at all
+    { t: "2026-09-01T01:30:00Z", type: "dlmm-recenter", action: "hold", executed: false },
+  ];
+  const r = buildReport(entries, [], 1800);
+  assert.equal(r.decisions.dlmmOpens, 1);
+  assert.equal(r.decisions.dlmmRecenters, 1); // only the COMPLETED recenter counts
+  assert.equal(r.txs.broadcasts, 4); // 1 (open) + 2 (completed recenter) + 1 (aborted withdraw)
+  assert.equal(r.txs.successes, 3); // the aborted-mid-recenter withdraw is NOT counted as a success
+  assert.equal(r.txs.feesStx, +(4 * 0.3).toFixed(3));
+  // and none of this leaks into the ordinary XYK tick census
+  assert.equal(r.decisions.ticks, 0);
+});
+
 test("pnl: arb edge sums observed opportunities; window filter applies", () => {
   const entries: TickRecord[] = [
     tick("2026-09-01T00:00:00Z", { arb: { netEdgeY: 1.5 } }),

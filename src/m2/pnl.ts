@@ -18,12 +18,18 @@ export interface TickRecord {
   safe?: boolean;
   rebalance?: { action?: string; reason?: string };
   lpDecision?: { action?: string };
-  action?: string; // present when something was broadcast
+  action?: string; // present when something was broadcast (XYK), or the DLMM decision ("open"/"hold"/"recenter"/"skip")
   txid?: string;
   status?: string;
   arb?: { netEdgeY?: number; divergenceBps?: number };
-  type?: string; // "tune" | "cycle-error" | undefined (tick)
+  type?: string; // "tune" | "cycle-error" | "dlmm-recenter" | "dlmm-observe" | undefined (XYK tick)
   haltReasons?: string[];
+  // dlmm-recenter/dlmm-observe entries (RecenterResult, spread into the journal line — see
+  // agent-cli.ts's DLMM section): these are a SEPARATE type from the XYK tick above, so the
+  // plain `ticks` census below never sees them without its own pass (see `dlmm` below).
+  executed?: boolean;
+  withdrawTxid?: string;
+  addTxid?: string;
 }
 
 export interface MetricsSampleLite {
@@ -55,6 +61,8 @@ export interface PnlReport {
     rebalances: number;
     lpAdds: number;
     lpWithdraws: number;
+    dlmmOpens: number;
+    dlmmRecenters: number;
     safetyHalts: number;
     cycleErrors: number;
     tunes: number;
@@ -73,6 +81,7 @@ export interface PnlReport {
 const XD = 1e8; // sBTC base units
 const YD = 1e6; // STX base units
 const FEE_STX_PER_TX = 0.05;
+const DLMM_FEE_STX_PER_TX = 0.3; // the deterministic FEE_USTX constant in dlmm-recenter-exec.ts
 
 const inWindow = (t: string, from?: string, to?: string) =>
   (!from || t >= from) && (!to || t <= to);
@@ -88,6 +97,11 @@ export function buildReport(
   const ticks = entries.filter((e) => !e.type && inWindow(e.t, from, to));
   const tunes = entries.filter((e) => e.type === "tune" && inWindow(e.t, from, to));
   const errors = entries.filter((e) => e.type === "cycle-error" && inWindow(e.t, from, to));
+  // DLMM recenter/open decisions are a separate journal type (see TickRecord) — the plain
+  // `ticks` filter above never sees them, so without this pass real, executed, on-chain DLMM
+  // activity is invisible to the whole report (found 2026-09-19: a real recenter, two
+  // confirmed transactions, showed up nowhere in this file's output).
+  const dlmm = entries.filter((e) => e.type === "dlmm-recenter" && inWindow(e.t, from, to));
   const ss = samples.filter((s) => inWindow(s.t, from, to));
 
   const t0 = ss[0]?.t ?? ticks[0]?.t ?? "";
@@ -106,6 +120,8 @@ export function buildReport(
     rebalances: ticks.filter((e) => (e.action ?? "").startsWith("swap") && e.status === "success").length,
     lpAdds: ticks.filter((e) => e.action === "add-liquidity" && e.status === "success").length,
     lpWithdraws: ticks.filter((e) => e.action === "withdraw-liquidity" && e.status === "success").length,
+    dlmmOpens: dlmm.filter((e) => e.action === "open" && e.executed).length,
+    dlmmRecenters: dlmm.filter((e) => e.action === "recenter" && e.executed).length,
     safetyHalts: ticks.filter((e) => e.safe === false).length,
     cycleErrors: errors.length,
     tunes: tunes.length,
@@ -113,10 +129,22 @@ export function buildReport(
 
   const broadcasts = ticks.filter((e) => e.txid);
   const successes = broadcasts.filter((e) => e.status === "success");
+  // DLMM broadcasts don't carry a per-txid on-chain status in the journal (no I/O here to go
+  // fetch one — see the file header), so success is inferred conservatively from `executed`:
+  // a completed "open" confirms 1 broadcast (the add), a completed "recenter" confirms 2 (the
+  // withdraw + the re-add). An incomplete recenter still attempted a withdraw broadcast — that
+  // counts toward `broadcasts` (an honest attempt happened) but never toward `successes` unless
+  // `executed` says the whole sequence confirmed, which is the direction it's safe to err in.
+  let dlmmBroadcasts = 0, dlmmSuccesses = 0;
+  for (const e of dlmm) {
+    const legs = (e.withdrawTxid ? 1 : 0) + (e.addTxid ? 1 : 0);
+    dlmmBroadcasts += legs;
+    if (e.executed) dlmmSuccesses += legs;
+  }
   const txs = {
-    broadcasts: broadcasts.length,
-    successes: successes.length,
-    feesStx: +(broadcasts.length * FEE_STX_PER_TX).toFixed(3),
+    broadcasts: broadcasts.length + dlmmBroadcasts,
+    successes: successes.length + dlmmSuccesses,
+    feesStx: +(broadcasts.length * FEE_STX_PER_TX + dlmmBroadcasts * DLMM_FEE_STX_PER_TX).toFixed(3),
   };
 
   // P&L vs HODL, from the telemetry (needs at least a start and an end sample).
@@ -158,9 +186,9 @@ export function renderMarkdown(r: PnlReport): string {
   const L: string[] = [];
   L.push(`## Pilot report — ${r.window.from} → ${r.window.to} (${r.window.hours}h)`);
   L.push("");
-  L.push(`| Uptime | Ticks | Holds | Rebalances | LP add/wd | Halts | Errors |`);
-  L.push(`|---|---|---|---|---|---|---|`);
-  L.push(`| ${r.uptime.pct === null ? "n/a (ad-hoc)" : r.uptime.pct + "%"} (${r.uptime.beats}/${r.uptime.expected ?? "—"}) | ${r.decisions.ticks} | ${r.decisions.holds} | ${r.decisions.rebalances} | ${r.decisions.lpAdds}/${r.decisions.lpWithdraws} | ${r.decisions.safetyHalts} | ${r.decisions.cycleErrors} |`);
+  L.push(`| Uptime | Ticks | Holds | Rebalances | LP add/wd | DLMM open/recenter | Halts | Errors |`);
+  L.push(`|---|---|---|---|---|---|---|---|`);
+  L.push(`| ${r.uptime.pct === null ? "n/a (ad-hoc)" : r.uptime.pct + "%"} (${r.uptime.beats}/${r.uptime.expected ?? "—"}) | ${r.decisions.ticks} | ${r.decisions.holds} | ${r.decisions.rebalances} | ${r.decisions.lpAdds}/${r.decisions.lpWithdraws} | ${r.decisions.dlmmOpens}/${r.decisions.dlmmRecenters} | ${r.decisions.safetyHalts} | ${r.decisions.cycleErrors} |`);
   L.push("");
   if (r.pnl) {
     L.push(`| Portfolio (STX) | vs HODL (IL-adj) | Total | Network fees paid |`);
