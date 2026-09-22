@@ -20,7 +20,12 @@ const sample = (lpValueY: number, mid = 400_000) => ({
   t: "2026-09-01T00:00:00Z", mid, ext: null,
   xBase: "100000", yBase: "400000000", lpValueY, portfolioY: 800, safe: true,
 });
+const dlmmSample = (t: string, dlmmValueY: number, mid = 400_000) => ({
+  t, mid, ext: null,
+  xBase: "100000", yBase: "400000000", lpValueY: 0, dlmmValueY, portfolioY: 800, safe: true,
+});
 const readBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).lpBasis;
+const readDlmmBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).dlmmBasis;
 
 beforeEach(() => rmSync(METRICS_PATH, { force: true }));
 
@@ -120,4 +125,39 @@ test("basis: survives the sample-cap slicing", () => {
   writeFileSync(METRICS_PATH, JSON.stringify(m));
   recordSample("sbtc-stx", "SPX", 1800, sample(201));
   assert.equal(readBasis().yQty, 100);
+});
+
+test("dlmmBasis: auto-initialises 50/50 at current mid, and growth does not re-init", () => {
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-01T00:00:00Z", 200));
+  let b = readDlmmBasis();
+  assert.equal(b.yQty, 100);
+  assert.equal(b.xQty, 100 / 400_000);
+  assert.equal(b.t, "2026-09-01T00:00:00Z");
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-01T00:30:00Z", 210)); // fees grew it
+  b = readDlmmBasis();
+  assert.equal(b.yQty, 100); // unchanged — growth is income, not a new deposit
+  assert.equal(b.t, "2026-09-01T00:00:00Z");
+});
+
+test("dlmmBasis: RESETS when the position goes empty and is later reopened — a real capital event, not a recenter", () => {
+  // Regression for the 2026-09-22 bug: a position withdrawn then reopened hours later was
+  // still compared against its original pilot-start basis, fabricating a -60.8% APR on what
+  // was actually a ~2h-old, roughly breakeven position.
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-01T00:00:00Z", 150, 400_000)); // opened
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-05T00:00:00Z", 0, 500_000)); // withdrawn (price moved a lot while out)
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-06T00:00:00Z", 160, 500_000)); // reopened fresh
+  const b = readDlmmBasis();
+  assert.equal(b.t, "2026-09-06T00:00:00Z"); // anchored to the REOPEN, not the original Sep 1 deposit
+  assert.equal(b.yQty, 80); // 50/50 of the fresh 160, at the fresh mid — not derived from the old basis at all
+  assert.equal(b.xQty, 80 / 500_000);
+});
+
+test("dlmmBasis: a same-cycle recenter (no intervening zero SAMPLE) does not reset the basis", () => {
+  // decideRecenter's withdraw+immediate-readd happens between two recorded samples, so the
+  // agent never observes an intervening zero — this is the case the reset must NOT fire on.
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-01T00:00:00Z", 150, 400_000));
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-01T00:30:00Z", 152, 410_000)); // recentered, still holding
+  const b = readDlmmBasis();
+  assert.equal(b.t, "2026-09-01T00:00:00Z"); // untouched
+  assert.equal(b.yQty, 75);
 });

@@ -133,7 +133,16 @@ export function recordSample(
       if (v > 0) m.lpBasis = { xQty: v / 2 / s.mid, yQty: v / 2, t: s.t };
       delete m.lpBasisY;
     }
-    if (!m.dlmmBasis && s.mid > 0 && (s.dlmmValueY ?? 0) > 0) {
+    // Re-anchors on the FIRST sample ever, and again any time the position goes from empty
+    // back to nonzero — a genuine withdraw-then-later-reopen is a new deposit, not a
+    // continuation of the old one, and comparing it against a stale basis overstates IL by
+    // whatever the price drifted across the whole gap (found 2026-09-22: a position reopened
+    // ~2h earlier was being compared against its pilot-start basis from 25 days prior, showing
+    // a fabricated -60.8% APR on what was actually a +2h-old, roughly breakeven position). A
+    // same-cycle recenter (withdraw immediately followed by re-add) never shows an intervening
+    // zero sample, so it correctly does NOT reset the basis — only a REAL gap does.
+    const prevDlmmValueY = m.samples.length ? (m.samples[m.samples.length - 1].dlmmValueY ?? 0) : 0;
+    if ((!m.dlmmBasis || prevDlmmValueY <= 0) && s.mid > 0 && (s.dlmmValueY ?? 0) > 0) {
       // Same 50/50-by-value fallback as lpBasis. A caller with the real x/y split (e.g.
       // from a historical on-chain read) should seed dlmmBasis directly instead — this
       // auto-init only fires when nothing better has been set yet.
