@@ -159,8 +159,14 @@ export function buildReport(
     let hodlEndY = (Number(a.xBase) / XD) * z.mid + Number(a.yBase) / YD;
     if (t0Basis && t0Basis.t === a.t) {
       if (t0Basis.lpBasis) hodlEndY += t0Basis.lpBasis.xQty * z.mid + t0Basis.lpBasis.yQty;
-      if (t0Basis.dlmmBasis) hodlEndY += t0Basis.dlmmBasis.xQty * z.mid + t0Basis.dlmmBasis.yQty;
-      if (t0Basis.usdcxQty && z.stxUsd) hodlEndY += t0Basis.usdcxQty / z.stxUsd;
+      // dlmmBasis.yQty is USDCx (see metrics.ts: "y/USDCx in human units"), NOT y (STX) —
+      // adding it directly here (as the code did until 2026-09-22) silently treated ~80
+      // USDCx as ~80 STX, understating hodlEndY by roughly 1/stxUsd of that leg and inflating
+      // vsHodlPct by several points. Fold it into the SAME USDCx→STX conversion as usdcxQty,
+      // matching the dashboard's hodlNow() exactly.
+      if (t0Basis.dlmmBasis) hodlEndY += t0Basis.dlmmBasis.xQty * z.mid;
+      const usdcxQty = (t0Basis.usdcxQty ?? 0) + (t0Basis.dlmmBasis?.yQty ?? 0);
+      if (usdcxQty > 0 && z.stxUsd) hodlEndY += usdcxQty / z.stxUsd;
     }
     pnl = {
       startY: +a.portfolioY.toFixed(2),

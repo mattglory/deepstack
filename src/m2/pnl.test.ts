@@ -52,6 +52,20 @@ test("pnl: decision + tx census counts what happened, halts included", () => {
   assert.equal(r.txs.feesStx, 0.1);
 });
 
+test("pnl: dlmmBasis.yQty is USDCx, not STX — hodlEndY must convert it via stxUsd, not add it raw", () => {
+  // Regression for a real bug found 2026-09-22: hodlEndY added t0Basis.dlmmBasis.yQty
+  // directly, as if it were already y (STX) — but metrics.ts documents it as "y/USDCx in
+  // human units". 100 USDCx at stxUsd=0.5 is worth 200 STX; the old code would have added
+  // 100 STX outright, understating hodlEndY (and so inflating vsHodlPct) by half that leg.
+  const a: MetricsSampleLite = { t: "2026-09-01T00:00:00Z", mid: 300_000, portfolioY: 200, xBase: "0", yBase: "0" };
+  const z: MetricsSampleLite = { t: "2026-09-10T00:00:00Z", mid: 300_000, portfolioY: 250, xBase: "0", yBase: "0", stxUsd: 0.5 };
+  const t0Basis = { t: a.t, dlmmBasis: { xQty: 0, yQty: 100 } }; // pure USDCx leg, isolates the conversion
+  const r = buildReport([], [a, z], 1800, undefined, undefined, t0Basis);
+  assert.ok(r.pnl);
+  assert.equal(r.pnl.hodlEndY, 200); // 100 USDCx / 0.5 stxUsd = 200 STX, NOT 100
+  assert.equal(r.pnl.vsHodlPct, 25); // (250-200)/200*100 — NOT the inflated figure a raw add would give
+});
+
 test("pnl: DLMM recenter/open activity counts toward decisions and the tx tally", () => {
   const entries: TickRecord[] = [
     // opened a fresh position: 1 broadcast (the add), confirmed
