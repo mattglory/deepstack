@@ -580,6 +580,16 @@ async function main() {
 
   let trades = 0;
   let dlmmRecenters = 0; // per-run DLMM recenter budget (shares --max-trades ceiling)
+  // Sep 21 2026: a bad min-dlp guard made every DLMM add abort, and nothing stopped the agent
+  // retrying it every cycle — 15 failed broadcasts over ~7 hours before a human noticed and
+  // killed it by hand. Root cause is now fixed (see dlmm-recenter-exec.ts's per-bin min-dlp),
+  // but this is the backstop: after DLMM_FAIL_STREAK_LIMIT consecutive failed LIVE attempts,
+  // stop trying until the human running this resets it (restart, or a code/config change) —
+  // deliberately NOT auto-clearing on its own like the cycle-failure circuit breaker, since a
+  // repeatedly-aborting DLMM add is a real "something is still wrong" signal, not a transient
+  // API blip.
+  let dlmmFailStreak = 0;
+  const DLMM_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.DLMM_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
   let sessionStart = 0;
   // Forward reference: the supervisor is created after step() below (it wraps step itself),
@@ -670,17 +680,27 @@ async function main() {
       // market instead of thrashing a fixed ±N band — see dlmm-recenter-exec.ts's RecenterConfig.
       const dlmmPair = process.env.DLMM_OBSERVE_PAIR;
       if (dlmmPair) {
+        let dlmmLive = false; // hoisted so the catch block below can still count a thrown add
         try {
           const halfWidth = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
           const targetUsd = Number(process.env.DLMM_TARGET_USD ?? 40);
-          const dlmmLive = process.env.DLMM_LIVE === "1" && live && circuitOk && dlmmRecenters < f.maxTrades;
+          if (dlmmFailStreak >= DLMM_FAIL_STREAK_LIMIT) {
+            console.log(`  [dlmm ${dlmmPair}] ⛔ ${dlmmFailStreak} consecutive failed adds ≥ ${DLMM_FAIL_STREAK_LIMIT} — DLMM broadcasts stopped until manually reset`);
+          }
+          dlmmLive = process.env.DLMM_LIVE === "1" && live && circuitOk && dlmmFailStreak < DLMM_FAIL_STREAK_LIMIT && dlmmRecenters < f.maxTrades;
           const sigmaDaily = dlmmSigmaDaily();
           const res = await recenterOnce(w, { pair: dlmmPair, halfWidth, targetUsd, sigmaDaily }, dlmmLive, (m) => console.log(m));
+          // A real attempt is dlmmLive with a decision that wasn't "hold" and wasn't a
+          // deliberate pre-broadcast skip (kill switch / nonce gate — see RecenterResult.skipped).
+          const attempted = dlmmLive && res.action !== "hold" && !res.skipped;
+          if (res.executed) dlmmFailStreak = 0;
+          else if (attempted) dlmmFailStreak++;
           if (res.executed) dlmmRecenters++;
-          appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, ...res });
+          appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, dlmmFailStreak, ...res });
           console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
         } catch (e) {
-          appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message });
+          if (dlmmLive) dlmmFailStreak++; // a thrown add (e.g. sizing/network) is still a real failed attempt
+          appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message, dlmmFailStreak });
         }
       }
       // Haven rotation (haven.ts): the full stablecoin capital-preservation reflex. Armed

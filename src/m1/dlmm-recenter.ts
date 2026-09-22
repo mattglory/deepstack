@@ -13,6 +13,21 @@ export interface PositionRange {
   hi: number | null; // highest signed bin held
 }
 
+// y per x, scaled by PRICE_SCALE_BPS — the core contract's own fixed-point convention
+// (SP1PFR4V…dlmm-core-v-1-1, verified against its live source 2026-09-21).
+const PRICE_SCALE = 100_000_000n;
+
+function sqrtBig(n: bigint): bigint {
+  if (n < 2n) return n;
+  let x = n;
+  let y = (x + 1n) / 2n;
+  while (y < x) {
+    x = y;
+    y = (x + n / x) / 2n;
+  }
+  return x;
+}
+
 export interface RecenterDecision {
   action: "open" | "hold" | "recenter";
   reason: string;
@@ -64,10 +79,37 @@ export function decideRecenter(
 }
 
 /**
- * min-dlp for an add: expected LP shares minus slippage, never below the pool's share floor
- * (minimum-bin-shares, 10000 on-chain — a deposit that would mint fewer aborts anyway, so
- * clamping up to the floor keeps the guard valid rather than accidentally zero). The core also
- * rejects min-dlp = 0, so the floor doubles as the "> 0" guarantee.
+ * Expected LP shares (dlp) a deposit of (xAmount, yAmount) mints in one bin — mirrors the core
+ * contract's add-liquidity formula exactly (verified against its live source, 2026-09-21):
+ * sqrt(value) minus the one-time burn for a bin's first-ever deposit (bin-shares == 0), or a
+ * value-proportional share of the bin's existing shares otherwise. Deliberately does NOT model
+ * the small liquidity-fee deduction the core applies at the ACTIVE bin only — that second-order
+ * effect is what minDlpFromExpected's slippage margin exists to absorb, not a math error here.
+ */
+export function expectedDlp(
+  xAmount: bigint,
+  yAmount: bigint,
+  bin: { xBalance: bigint; yBalance: bigint; binShares: bigint; binPrice: bigint },
+  minimumBurntShares: bigint,
+): bigint {
+  const addValue = bin.binPrice * xAmount + yAmount * PRICE_SCALE;
+  if (bin.binShares === 0n) {
+    const intended = sqrtBig(addValue);
+    return intended > minimumBurntShares ? intended - minimumBurntShares : 0n;
+  }
+  const binValue = bin.binPrice * bin.xBalance + bin.yBalance * PRICE_SCALE;
+  if (binValue === 0n) return sqrtBig(addValue);
+  return (addValue * bin.binShares) / binValue;
+}
+
+/**
+ * min-dlp for an add: expected LP shares minus a slippage margin (covers price movement between
+ * sizing and confirmation), never below `floor`. The core's own minimum-bin-shares check ONLY
+ * applies when a bin's dlp-post-fees is computed via the bin-shares==0 branch (a genuinely empty
+ * bin) — for every other bin, min-dlp is a caller-supplied guard with no protocol-enforced floor
+ * beyond "> 0". Callers must pass the RIGHT floor per bin (minimumBinShares for an empty bin, 1n
+ * otherwise) — see expectedDlp's caller in dlmm-recenter-exec.ts. The core also rejects
+ * min-dlp = 0 outright, so a floor of at least 1n is required regardless.
  */
 export function minDlpFromExpected(expectedShares: bigint, slippageBps: number, floor: bigint): bigint {
   const bps = BigInt(Math.max(0, Math.min(10_000, Math.floor(slippageBps))));

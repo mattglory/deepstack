@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decideRecenter, minDlpFromExpected, minOutFromExpected } from "./dlmm-recenter.js";
+import { decideRecenter, minDlpFromExpected, minOutFromExpected, expectedDlp } from "./dlmm-recenter.js";
 
 test("decideRecenter: no position → open a band around the active bin", () => {
   const d = decideRecenter(-236, { lo: null, hi: null }, 5);
@@ -37,6 +37,39 @@ test("decideRecenter: halfWidth floored to at least 1 bin", () => {
   const d = decideRecenter(0, { lo: null, hi: null }, 0);
   assert.equal(d.targetLo, -1);
   assert.equal(d.targetHi, 1);
+});
+
+test("expectedDlp: empty bin (bin-shares=0) — sqrt(value) minus the one-time burn", () => {
+  // binPrice = 1e8 (price 1.0), x=1000, y=2000 → addValue = 1e8*1000 + 2000*1e8 = 3e11, isqrt = 547722
+  const bin = { xBalance: 0n, yBalance: 0n, binShares: 0n, binPrice: 100_000_000n };
+  assert.equal(expectedDlp(1000n, 2000n, bin, 1000n), 546_722n);
+});
+
+test("expectedDlp: empty bin — burn can't take the result negative", () => {
+  const bin = { xBalance: 0n, yBalance: 0n, binShares: 0n, binPrice: 100_000_000n };
+  assert.equal(expectedDlp(1n, 0n, bin, 1_000_000n), 0n); // tiny deposit, huge burn → floored at 0, not negative
+});
+
+test("expectedDlp: occupied bin — value-proportional share of existing bin-shares", () => {
+  // same addValue (3e11) into a bin already holding value 3e12 at 500000 shares → 1/10 of shares
+  const bin = { xBalance: 10_000n, yBalance: 20_000n, binShares: 500_000n, binPrice: 100_000_000n };
+  assert.equal(expectedDlp(1000n, 2000n, bin, 1000n), 50_000n);
+});
+
+test("expectedDlp: occupied bin with zero recorded value falls back to sqrt(value), like the core does", () => {
+  const bin = { xBalance: 0n, yBalance: 0n, binShares: 500_000n, binPrice: 100_000_000n };
+  assert.equal(expectedDlp(1000n, 2000n, bin, 1000n), 547_722n); // no burn subtracted — only the bin-shares=0 branch burns
+});
+
+test("expectedDlp: matches the class of bin that broke on 2026-09-21 — thin outer bins mint far fewer shares than a flat 10000 floor allows", () => {
+  // A small slice of a $150 deposit landing in a bin that already holds much more value than
+  // the slice being added mints proportionally few shares — this is exactly why a single flat
+  // min-dlp for every bin in a multi-position add aborted the whole transaction.
+  const thinSlice = { xAmount: 8n, yAmount: 15n }; // a tiny per-bin slice, ~$150 spread over 100+ bins
+  const bin = { xBalance: 1_000_000n, yBalance: 2_000_000n, binShares: 50_000_000n, binPrice: 100_000_000n };
+  const dlp = expectedDlp(thinSlice.xAmount, thinSlice.yAmount, bin, 1000n);
+  assert.ok(dlp < 10_000n, `expected a thin slice to mint under the old flat floor, got ${dlp}`);
+  assert.ok(dlp > 0n, "still a real, valid, nonzero mint — min-dlp just needs to fit it, not exclude it");
 });
 
 test("minDlpFromExpected: applies slippage but never drops below the floor", () => {

@@ -14,20 +14,27 @@
 // kept; target is hard-capped. If a withdraw does not confirm, the recenter aborts before the
 // re-add (funds sit safely in the wallet as loose tokens — no half-built position).
 
+import { existsSync } from "node:fs";
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
 import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
-import { DLMM_POOLS, readDlmmState, type DlmmPool } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
 
 const API = "https://api.mainnet.hiro.so";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
-const MIN_DLP = 10_000n; // pool share floor — valid (>0); input caps are the real bound
+// Slippage margin for the per-bin min-dlp guard (dlmm-recenter.ts's expectedDlp), matching the
+// codebase's other default slippage (agent.ts's slippageBps: 100). Covers price movement between
+// simulation and confirmation, and the active-bin liquidity fee expectedDlp deliberately doesn't
+// model. NOT the old MIN_DLP flat-10000 constant — that was the Sep 21 incident's root cause
+// (see docs/… incident note): every bin in a multi-position add shared one floor regardless of
+// its own size, aborting the whole transaction whenever any thin outer bin couldn't clear it.
+const ADD_MIN_DLP_SLIPPAGE_BPS = 100;
 const FEE_USTX = 300_000n;
 const DEADLINE_SECS = 600;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -112,6 +119,11 @@ export interface RecenterResult {
   posY: number;
   halfWidth: number;
   executed: boolean;
+  // True only for a deliberate pre-broadcast skip (kill switch, nonce-gate) — distinguishes
+  // "chose not to try this cycle" from "tried and the chain rejected it", so a caller counting
+  // consecutive failures (agent-cli.ts's DLMM_FAIL_STREAK_LIMIT) doesn't penalize a condition
+  // that's expected to clear on its own next cycle.
+  skipped?: boolean;
   withdrawTxid?: string;
   addTxid?: string;
 }
@@ -125,7 +137,7 @@ async function tokenBalance(w: Wallet, tok: TokenMeta): Promise<bigint> {
 // Build + broadcast a two-sided add centered on `activeBin`. Handles X = native STX (stx-usdcx)
 // or a SIP-010 like sBTC (sbtc-usdcx): price + decimals come from the resolved token, input caps
 // branch native/FT automatically. Returns txid, or throws.
-async function executeAdd(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void): Promise<string> {
+async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void): Promise<string> {
   const cap = cfg.maxTargetUsd ?? 250;
   if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) throw new Error(`target must be >0 and ≤ ${cap}`);
   const xPrice = await priceOfToken(xTok);
@@ -138,8 +150,25 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok:
   const size = sizeTwoSidedDeposit(cfg.targetUsd, xPrice, availX, availY, xTok.decimals, yTok.decimals);
   if (size.xBase <= 0n || size.yBase <= 0n)
     throw new Error(`cannot size two-sided: ${xTok.asset || "STX"} ${Number(availX) / 10 ** xTok.decimals}, ${yTok.asset} ${Number(availY) / 10 ** yTok.decimals}`);
-  const deposits = distributeAcrossRange(activeBin, cfg.halfWidth, size.xBase, size.yBase);
-  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, deposits, { minDlp: MIN_DLP, deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  const deposits = distributeAcrossRange(st.activeBinId, cfg.halfWidth, size.xBase, size.yBase);
+
+  // Per-bin min-dlp, sized from each bin's OWN live state (dlmm-recenter.ts's expectedDlp) — the
+  // Sep 21 incident (15 real aborted transactions) happened because a single flat floor was
+  // applied to every bin in a multi-position add regardless of how many shares that bin's slice
+  // actually mints. Throws if any bin can't be read: an incomplete pre-flight must not broadcast
+  // a real transaction on a partial guess, same discipline dlmm-position.ts's readUserPosition
+  // already applies to reading an existing position.
+  const bins = await readBinLiquidityStates(poolDef, st.coreAddress, st.initialPrice, st.binStep, deposits.map((d) => d.signedBin));
+  const { minBinShares, minBurntShares } = await readShareFloors(st.coreAddress);
+  const sized = deposits.map((d) => {
+    const bin = bins.get(d.signedBin);
+    if (!bin) throw new Error(`no live state for bin ${d.signedBin} — aborting add rather than guessing min-dlp`);
+    const expected = expectedDlp(d.xAmount, d.yAmount, bin, minBurntShares);
+    const floor = bin.binShares === 0n ? minBinShares : 1n; // the core's own floor is EMPTY-bin-only
+    return { ...d, minDlp: minDlpFromExpected(expected, ADD_MIN_DLP_SLIPPAGE_BPS, floor) };
+  });
+
+  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, sized, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   const sumX = deposits.reduce((s, d) => s + d.xAmount, 0n);
   const sumY = deposits.reduce((s, d) => s + d.yAmount, 0n);
   const pcs = buildInputCaps(w.address, [
@@ -181,16 +210,23 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   };
   if (dec.action === "hold" || !live) return base;
 
+  // The manual kill switch (safety.ts's own check) previously covered only the XYK path — the
+  // Sep 21 incident's failure loop ran for ~7 hours with no way to stop it short of editing
+  // .env and restarting the whole process. Same check, same file (KILL), now here too.
+  if (process.env.KILL_SWITCH === "1" || existsSync("KILL")) {
+    return { ...base, reason: "kill switch engaged — DLMM broadcast skipped", skipped: true };
+  }
+
   // Same fail-closed nonce-gap / pending-tx check as the XYK path (agent-cli.ts) — a
   // withdraw-then-add recenter is two sequential broadcasts, so a stuck prior tx here is
   // exactly the condition that risks piling nonces on top of an unconfirmed one.
   const nonceSafety = await checkNonceSafety(w.address).catch(
     (err) => ({ safe: false, reason: `nonce check failed: ${(err as Error).message}`, missingNonces: [], mempoolPending: 0 }),
   );
-  if (!nonceSafety.safe) return { ...base, reason: nonceSafety.reason ?? "nonce check failed" };
+  if (!nonceSafety.safe) return { ...base, reason: nonceSafety.reason ?? "nonce check failed", skipped: true };
 
   if (dec.action === "open") {
-    const addTxid = await executeAdd(w, poolDef, st.activeBinId, xTok, yTok, effCfg, log);
+    const addTxid = await executeAdd(w, poolDef, st, xTok, yTok, effCfg, log);
     const s = await waitForTx(addTxid, log);
     return { ...base, executed: s === "success", addTxid, reason: s === "success" ? "opened" : `open ${s}` };
   }
@@ -206,7 +242,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   if (ws !== "success") return { ...base, withdrawTxid: wr.txid, reason: `withdraw ${ws} — aborted before re-add (funds safe in wallet)` };
   const st2 = (await readDlmmState(poolDef)) ?? st;
   log(`  recenter 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const addTxid = await executeAdd(w, poolDef, st2.activeBinId, xTok, yTok, effCfg, log);
+  const addTxid = await executeAdd(w, poolDef, st2, xTok, yTok, effCfg, log);
   const as = await waitForTx(addTxid, log);
   return { ...base, executed: as === "success", withdrawTxid: wr.txid, addTxid, reason: as === "success" ? "recentered" : `re-add ${as}` };
 }

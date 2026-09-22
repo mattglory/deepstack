@@ -24,7 +24,7 @@
 import { fetchNonce } from "@stacks/transactions";
 import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
-import { DLMM_POOLS, readDlmmState, type DlmmPool } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
 import {
   distributeAcrossRange,
@@ -34,7 +34,7 @@ import {
   type PoolRefs,
   type BinWithdraw,
 } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } from "./dlmm-recenter.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.).
 import { resolveToken, ftBalance, priceOfToken, type TokenMeta } from "./dlmm-recenter-exec.js";
@@ -44,7 +44,7 @@ const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
 const HALF_WIDTH = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
 const TARGET_USD = Number(process.env.DLMM_TARGET_USD ?? 40); // recenter re-adds to this size
 const MAX_TARGET_USD = 250;
-const MIN_DLP = 10_000n; // pool share floor — valid (>0); input caps are the real bound
+const ADD_MIN_DLP_SLIPPAGE_BPS = 100; // matches dlmm-recenter-exec.ts's live-agent value
 const FEE_USTX = 300_000n;
 const DEADLINE_SECS = 600;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -75,7 +75,7 @@ async function waitFor(txid: string): Promise<string> {
 
 // Build + (optionally) broadcast a two-sided open centered on the active bin. Handles X = native
 // STX (stx-usdcx) or a SIP-010 like sBTC (sbtc-usdcx). Returns txid or null (preview).
-async function doOpen(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok: TokenMeta, yTok: TokenMeta, target: number, yes: boolean): Promise<string | null> {
+async function doOpen(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, target: number, yes: boolean): Promise<string | null> {
   if (target <= 0 || target > MAX_TARGET_USD) throw new Error(`target must be >0 and ≤ ${MAX_TARGET_USD}`);
   const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
   const xSym = xTok.asset || "STX";
@@ -90,8 +90,22 @@ async function doOpen(w: Wallet, poolDef: DlmmPool, activeBin: number, xTok: Tok
   if (size.xBase <= 0n || size.yBase <= 0n)
     throw new Error(`cannot size two-sided: ${xSym} avail ${Number(availX) / xUnit}, ${yTok.asset} avail ${Number(availY) / yUnit}`);
 
-  const deposits = distributeAcrossRange(activeBin, HALF_WIDTH, size.xBase, size.yBase);
-  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, deposits, { minDlp: MIN_DLP, deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  const deposits = distributeAcrossRange(st.activeBinId, HALF_WIDTH, size.xBase, size.yBase);
+  // Same per-bin min-dlp sizing as the live agent (dlmm-recenter-exec.ts) — this CLI used to
+  // have its OWN flat MIN_DLP=10000, a second copy of the bug that caused the 2026-09-21
+  // incident. An attended run through this CLI is meant to validate the same logic the
+  // autonomous agent runs; it can't do that while sizing min-dlp differently.
+  const bins = await readBinLiquidityStates(poolDef, st.coreAddress, st.initialPrice, st.binStep, deposits.map((d) => d.signedBin));
+  const { minBinShares, minBurntShares } = await readShareFloors(st.coreAddress);
+  const sized = deposits.map((d) => {
+    const bin = bins.get(d.signedBin);
+    if (!bin) throw new Error(`no live state for bin ${d.signedBin} — aborting rather than guessing min-dlp`);
+    const expected = expectedDlp(d.xAmount, d.yAmount, bin, minBurntShares);
+    const floor = bin.binShares === 0n ? minBinShares : 1n;
+    return { ...d, minDlp: minDlpFromExpected(expected, ADD_MIN_DLP_SLIPPAGE_BPS, floor) };
+  });
+  console.log(`  min-dlp per bin: ${sized.map((d) => `${d.signedBin}:${d.minDlp}`).join(", ")}`);
+  const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, sized, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   const sumX = deposits.reduce((s, d) => s + d.xAmount, 0n);
   const sumY = deposits.reduce((s, d) => s + d.yAmount, 0n);
   const xCap = sumX + sumX / 50n + (xTok.native ? 300_000n : 0n);
@@ -151,7 +165,7 @@ async function main() {
 
   if (action === "open") {
     if (pos.bins.length > 0) throw new Error("a position already exists — use `recenter`");
-    const txid = await doOpen(w, poolDef, st.activeBinId, xTok, yTok, Number(amount ?? TARGET_USD), yes);
+    const txid = await doOpen(w, poolDef, st, xTok, yTok, Number(amount ?? TARGET_USD), yes);
     if (txid) { const s = await waitFor(txid); if (s === "success") console.log("\n✅ position opened."); else process.exitCode = 1; }
     else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first: touch /opt/deepstack/KILL).");
     return;
@@ -177,7 +191,7 @@ async function main() {
   // 2) re-add two-sided centered on the CURRENT active bin (re-read — it moves)
   const st2 = (await readDlmmState(poolDef)) ?? st;
   console.log(`recenter step 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const txid = await doOpen(w, poolDef, st2.activeBinId, xTok, yTok, TARGET_USD, yes);
+  const txid = await doOpen(w, poolDef, st2, xTok, yTok, TARGET_USD, yes);
   if (txid) { const s = await waitFor(txid); if (s === "success") console.log("\n✅ recenter complete."); else process.exitCode = 1; }
   else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first).");
 }

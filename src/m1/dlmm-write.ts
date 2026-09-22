@@ -58,6 +58,12 @@ export interface BinDeposit {
   signedBin: number;
   xAmount: bigint;
   yAmount: bigint;
+  // Per-bin min-dlp override. Each bin in a multi-position add mints shares proportional to
+  // its OWN slice of the deposit and its OWN existing liquidity — a single flat min-dlp for
+  // every bin in the list aborts the WHOLE transaction the moment any one (typically thin,
+  // outer) bin can't clear it. See dlmm-recenter.ts's expectedDlp/minDlpFromExpected for how
+  // this should be sized. Falls back to opts.minDlp when unset (unchanged old behavior).
+  minDlp?: bigint;
 }
 
 /**
@@ -136,7 +142,7 @@ export function buildAddLiquidity(pool: PoolRefs, deposits: BinDeposit[], opts: 
       "bin-id": Cl.int(d.signedBin),
       "max-x-liquidity-fee": Cl.uint(opts.maxLiquidityFee ?? d.xAmount),
       "max-y-liquidity-fee": Cl.uint(opts.maxLiquidityFee ?? d.yAmount),
-      "min-dlp": Cl.uint(opts.minDlp ?? 0),
+      "min-dlp": Cl.uint(d.minDlp ?? opts.minDlp ?? 0),
       "pool-trait": principalCV(`${DEPLOYER}.${pool.poolName}`),
       "x-amount": Cl.uint(d.xAmount),
       "x-token-trait": principalCV(pool.xToken),

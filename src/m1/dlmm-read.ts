@@ -58,6 +58,7 @@ export interface DlmmState {
   yToken: string;
   coreAddress: string;
   binChangeCount: number; // lifetime recenters — an activity signal
+  initialPrice: bigint; // the pool's price anchor (PRICE_SCALE_BPS = 1e8 fixed point) — get-bin-price needs it
 }
 
 export interface DlmmDepth {
@@ -116,6 +117,84 @@ async function callRead(pool: DlmmPool, fn: string, args: any[] = []): Promise<a
   }
 }
 
+// Same shape as callRead, but against the CORE contract (st.coreAddress) rather than the pool —
+// get-bin-price and the share-floor data vars live on the core, not the pool. THROWS on failure
+// (unlike callRead's null-on-failure): callers here are sizing a real broadcast, and a silent
+// null masquerading as "read this, got nothing" is exactly the class of bug the module header
+// warns about for readUserPosition — loud failure beats a wrong min-dlp.
+async function callCoreRead(coreAddress: string, fn: string, args: any[] = []): Promise<any> {
+  const [addr, name] = coreAddress.split(".");
+  return cvToJSON(
+    await withRpc((baseUrl) =>
+      fetchCallReadOnlyFunction({
+        contractAddress: addr,
+        contractName: name,
+        functionName: fn,
+        functionArgs: args,
+        network: "mainnet",
+        client: { baseUrl, fetch: hiroFetch(baseUrl) },
+        senderAddress: addr,
+      }),
+    ),
+  );
+}
+
+export interface BinLiquidityState {
+  xBalance: bigint;
+  yBalance: bigint;
+  binShares: bigint;
+  binPrice: bigint; // y per x, scaled by PRICE_SCALE_BPS (1e8) — the core's own fixed-point convention
+}
+
+/**
+ * Live per-bin state for exactly the bins a deposit is about to touch — the input
+ * expectedDlp() (dlmm-recenter.ts) needs to size a REAL min-dlp per bin instead of one flat
+ * guess for the whole multi-position add. THROWS if any requested bin can't be read (rather
+ * than silently sizing off an incomplete set): an add that goes out with wrong min-dlp values
+ * for bins we couldn't see is worse than one skipped cycle.
+ */
+export async function readBinLiquidityStates(
+  pool: DlmmPool,
+  coreAddress: string,
+  initialPrice: bigint,
+  binStep: number,
+  bins: number[],
+): Promise<Map<number, BinLiquidityState>> {
+  const out = new Map<number, BinLiquidityState>();
+  for (const signedBin of bins) {
+    const key = binUintKey(signedBin);
+    if (key < 0 || key > MAX_BIN_KEY) throw new Error(`bin ${signedBin} outside the pool's valid range`);
+    const [bal, pr] = await Promise.all([
+      callRead(pool, "get-bin-balances", [Cl.uint(key)]),
+      callCoreRead(coreAddress, "get-bin-price", [Cl.uint(initialPrice), Cl.uint(binStep), Cl.int(signedBin)]),
+    ]);
+    const v = bal?.value?.value;
+    const price = pr?.value?.value;
+    if (!v || price == null) throw new Error(`could not read live state for bin ${signedBin}`);
+    out.set(signedBin, {
+      xBalance: BigInt(v["x-balance"]?.value ?? 0),
+      yBalance: BigInt(v["y-balance"]?.value ?? 0),
+      binShares: BigInt(v["bin-shares"]?.value ?? 0),
+      binPrice: BigInt(price),
+    });
+  }
+  return out;
+}
+
+/**
+ * The core's live minimum-bin-shares / minimum-burnt-shares data-vars — read, never hardcoded,
+ * since they're admin-settable and expectedDlp() must match whatever the core enforces today.
+ */
+export async function readShareFloors(coreAddress: string): Promise<{ minBinShares: bigint; minBurntShares: bigint }> {
+  const [minBin, minBurnt] = await Promise.all([
+    callCoreRead(coreAddress, "get-minimum-bin-shares"),
+    callCoreRead(coreAddress, "get-minimum-burnt-shares"),
+  ]);
+  const a = minBin?.value?.value, b = minBurnt?.value?.value;
+  if (a == null || b == null) throw new Error("could not read the core's share-floor settings");
+  return { minBinShares: BigInt(a), minBurntShares: BigInt(b) };
+}
+
 /** Read the pool's swap-facing state: active bin, step, tokens, core, and activity. */
 export async function readDlmmState(pool: DlmmPool): Promise<DlmmState | null> {
   const j = await callRead(pool, "get-pool-for-swap", [Cl.bool(true)]);
@@ -131,6 +210,7 @@ export async function readDlmmState(pool: DlmmPool): Promise<DlmmState | null> {
     yToken: String(t["y-token"]?.value ?? ""),
     coreAddress: String(t["core-address"]?.value ?? ""),
     binChangeCount: changeCount,
+    initialPrice: BigInt(t["initial-price"]?.value ?? 0),
   };
 }
 
