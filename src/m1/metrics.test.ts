@@ -111,6 +111,8 @@ test("pilot window: anchors + re-bases LP to zero-P&L at start, refuses to move 
   // Re-anchored to the CURRENT 260 → P&L resets to ~0 at pilot start (yQty 130, not the old 100):
   assert.ok(Math.abs(m.lpBasis.yQty - 130) < 1e-6);
   assert.equal(m.lpBasis.t, "2026-09-01T00:00:00Z");
+  // pilotBaseline gets its OWN fixed snapshot, matching the re-anchored lpBasis at this instant:
+  assert.ok(Math.abs(m.pilotBaseline.lpBasis.yQty - 130) < 1e-6);
   assert.throws(() => markPilotStart(), /already started/); // evidence windows don't move
 });
 
@@ -150,6 +152,25 @@ test("dlmmBasis: RESETS when the position goes empty and is later reopened — a
   assert.equal(b.t, "2026-09-06T00:00:00Z"); // anchored to the REOPEN, not the original Sep 1 deposit
   assert.equal(b.yQty, 80); // 50/50 of the fresh 160, at the fresh mid — not derived from the old basis at all
   assert.equal(b.xQty, 80 / 500_000);
+});
+
+test("pilotBaseline.dlmmBasis stays FIXED across a real withdraw-then-reopen, even though the top-level dlmmBasis correctly resets", () => {
+  // Regression for the second half of the 2026-09-22 bug: fixing the top-level dlmmBasis
+  // (so the DLMM P&L card is right) must NOT also move hodlNow()/pnl.ts's pilot-wide
+  // "hold the original basket" comparison — that needs pilotBaseline.dlmmBasis specifically,
+  // captured once and never touched again, independent of what happens to the live position.
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-01T00:00:00Z", 150, 400_000)); // dlmmBasis auto-inits
+  const r = markPilotStart();
+  assert.equal(r.startedAt, "2026-09-01T00:00:00Z");
+  let m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  assert.equal(m.pilotBaseline.dlmmBasis.yQty, 75); // snapshot taken at pilot start
+  assert.equal(m.dlmmBasis.yQty, 75); // top-level starts out equal to the snapshot
+
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-05T00:00:00Z", 0, 500_000)); // withdrawn
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-09-06T00:00:00Z", 160, 500_000)); // reopened fresh
+  m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  assert.equal(m.dlmmBasis.yQty, 80); // top-level correctly reset to the fresh deposit (DLMM card)
+  assert.equal(m.pilotBaseline.dlmmBasis.yQty, 75); // pilot-wide snapshot UNCHANGED (Performance chart)
 });
 
 test("dlmmBasis: a same-cycle recenter (no intervening zero SAMPLE) does not reset the basis", () => {

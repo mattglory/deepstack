@@ -68,10 +68,23 @@ export interface MetricsFile {
   // (free + LP + DLMM + free-USDCx, since the readMarket() fixes) against a baseline that
   // only ever captured free xBase/yBase — an apples-to-a-third-of-an-orange comparison.
   // Without this field, hodlNow undercounts the true anchor-time baseline by whatever
-  // free USDCx existed then. Combined with lpBasis and dlmmBasis (both already tracked),
-  // this is the last piece needed for a complete, honest "hold everything since pilot
-  // start" comparison.
-  pilotBaseline?: { t: string; xBase: string; yBase: string; mid: number; portfolioY: number; usdcxQty?: number };
+  // free USDCx existed then.
+  //
+  // lpBasis/dlmmBasis (added 2026-09-22): a SNAPSHOT of the top-level lpBasis/dlmmBasis at
+  // the moment the pilot started — deliberately separate from those top-level fields, which
+  // are meant to evolve (adjustLpBasis on real add/withdraw events; dlmmBasis resets when a
+  // position goes empty and is later reopened, see recordSample). "IL-adjusted return"/the
+  // Performance chart need a genuinely FIXED, top-up-free baseline for the life of the pilot
+  // (see dashboard's hodlNow doc comment) — pointing them at the mutable top-level fields
+  // instead is exactly the bug found 2026-09-22: a DLMM position withdrawn and reopened hours
+  // later (a real capital event, correctly resetting the top-level dlmmBasis for the DLMM
+  // P&L card) silently moved the PILOT-WIDE comparison's basis too, retroactively changing
+  // what "hold your original pilot-start basket" meant for the whole chart.
+  pilotBaseline?: {
+    t: string; xBase: string; yBase: string; mid: number; portfolioY: number; usdcxQty?: number;
+    lpBasis?: { xQty: number; yQty: number };
+    dlmmBasis?: { xQty: number; yQty: number };
+  };
   samples: MetricsSample[];
   updated: string;
 }
@@ -174,6 +187,14 @@ export function markPilotStart(): { startedAt: string; portfolioY: number } {
   // Re-anchor the LP basis to the position as it stands NOW, so LP P&L measures fees-net-IL
   // earned DURING the pilot — not dragged by the pre-pilot ramp. Same reason uptime/IL reset.
   if (s.lpValueY > 0 && s.mid > 0) m.lpBasis = { xQty: s.lpValueY / 2 / s.mid, yQty: s.lpValueY / 2, t: s.t };
+  if (s.dlmmValueY && s.dlmmValueY > 0 && s.mid > 0 && !m.dlmmBasis) {
+    m.dlmmBasis = { xQty: s.dlmmValueY / 2 / s.mid, yQty: s.dlmmValueY / 2, t: s.t };
+  }
+  // Fixed snapshot for hodlNow()/pnl.ts's "hold the original pilot-start basket" comparison —
+  // see the pilotBaseline type's doc comment for why this must NOT be the same object as the
+  // top-level lpBasis/dlmmBasis, which are meant to evolve with real capital events.
+  if (m.lpBasis) m.pilotBaseline.lpBasis = { xQty: m.lpBasis.xQty, yQty: m.lpBasis.yQty };
+  if (m.dlmmBasis) m.pilotBaseline.dlmmBasis = { xQty: m.dlmmBasis.xQty, yQty: m.dlmmBasis.yQty };
   writeFileSync(METRICS_PATH, JSON.stringify(m));
   return { startedAt: s.t, portfolioY: s.portfolioY };
 }

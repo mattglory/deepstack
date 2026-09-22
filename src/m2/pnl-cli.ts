@@ -45,8 +45,19 @@ function loadSamples(): {
 } {
   try {
     const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+    // Prefer the FIXED snapshot taken once at pilot start (m.pilotBaseline.lpBasis/dlmmBasis)
+    // over the top-level lpBasis/dlmmBasis, which evolve with real capital events (an
+    // add/withdraw, or a DLMM position going empty and later reopening) — using the mutable
+    // ones here would retroactively change what "hold the original pilot-start basket" means
+    // every time either basis moves. Falls back to the mutable fields for older metrics files
+    // that predate this snapshot (2026-09-22).
     const t0Basis: T0Basis | undefined = m.pilotStartedAt
-      ? { t: m.pilotStartedAt, lpBasis: m.lpBasis, dlmmBasis: m.dlmmBasis, usdcxQty: m.pilotBaseline?.usdcxQty }
+      ? {
+          t: m.pilotStartedAt,
+          lpBasis: m.pilotBaseline?.lpBasis ?? m.lpBasis,
+          dlmmBasis: m.pilotBaseline?.dlmmBasis ?? m.dlmmBasis,
+          usdcxQty: m.pilotBaseline?.usdcxQty,
+        }
       : undefined;
     return { samples: m.samples ?? [], intervalSec: m.intervalSec ?? 0, pilotStartedAt: m.pilotStartedAt, t0Basis };
   } catch {

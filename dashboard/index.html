@@ -347,11 +347,20 @@
       function hodlNow(m, s) {
         const b = m.pilotBaseline;
         if (!b || !(s.mid > 0)) return null;
-        const usdcxQty = (b.usdcxQty ?? 0) + (m.dlmmBasis?.yQty ?? 0);
+        // FIXED snapshots taken once at pilot start (b.lpBasis/b.dlmmBasis) — NOT the
+        // top-level m.lpBasis/m.dlmmBasis, which are meant to evolve with real capital
+        // events (an add/withdraw, or a DLMM position going empty and later reopening).
+        // Using the mutable ones here is exactly the 2026-09-22 bug: fixing the DLMM P&L
+        // card's basis (correctly, on a real reopen) silently moved this pilot-wide "hold
+        // your original basket" comparison too. Falls back to the mutable fields only for
+        // metrics files from before this snapshot existed.
+        const lpBasis = b.lpBasis ?? m.lpBasis;
+        const dlmmBasis = b.dlmmBasis ?? m.dlmmBasis;
+        const usdcxQty = (b.usdcxQty ?? 0) + (dlmmBasis?.yQty ?? 0);
         if (usdcxQty > 0 && !(s.stxUsd > 0)) return null;
         let v = (Number(b.xBase) / 1e8) * s.mid + Number(b.yBase) / 1e6;
-        if (m.lpBasis) v += m.lpBasis.xQty * s.mid + m.lpBasis.yQty;
-        if (m.dlmmBasis) v += m.dlmmBasis.xQty * s.mid;
+        if (lpBasis) v += lpBasis.xQty * s.mid + lpBasis.yQty;
+        if (dlmmBasis) v += dlmmBasis.xQty * s.mid;
         if (usdcxQty > 0) v += usdcxQty / s.stxUsd;
         return v;
       }
