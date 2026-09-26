@@ -6,12 +6,11 @@ without trusting this document: the agent's own [journal](../journal/) and
 [telemetry](../dashboard/metrics.json), the live [dashboard](https://dashboard-two-alpha-t9c0vbn07m.vercel.app),
 and the Stacks explorer for every transaction cited.*
 
-**Status: DRAFT, pilot in progress.** All figures below are current as of **2026-09-25T15:53 UTC** —
-day 27.8 of 30. The pilot window closes ~2026-09-27T20:59 UTC. Final numbers will be
+**Status: DRAFT, pilot in progress.** All figures below are current as of **2026-09-26T03:09 UTC** —
+day 28.3 of 30. The pilot window closes ~2026-09-27T20:59 UTC. Final numbers will be
 refreshed at close before this is submitted as the milestone deliverable; treat the
-percentages here as directionally representative, not final. A planned re-add to the
-XYK LP position (see Inventory & rebalance activity) is expected 2026-09-26 and will
-need one more refresh after it confirms.
+percentages here as directionally representative, not final. Both halves of the planned
+XYK add/withdraw pair (see Inventory & rebalance activity) are now complete.
 
 ## At a glance
 
@@ -19,10 +18,10 @@ need one more refresh after it confirms.
 |---|---|
 | Pilot window | 2026-08-28T20:59:43Z → (in progress, closes ~2026-09-27T20:59Z) |
 | Wallet | `SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60` |
-| Uptime | **97%** (1,294 of 1,334 expected heartbeats) |
-| Mainnet transactions in-window | **56** (40 confirmed successful, 16 aborted — see Lessons Learned) |
-| vs-HODL (IL-adjusted return) | **+0.0%** |
-| Portfolio | 4,490.13 → 4,043.87 STX (≈$1,152 → ≈$1,287 at spot STX/USD) |
+| Uptime | **97.1%** (1,318 of 1,357 expected heartbeats) |
+| Mainnet transactions in-window | **57** (41 confirmed successful, 16 aborted — see Lessons Learned) |
+| vs-HODL (IL-adjusted return) | **-0.42%** |
+| Portfolio | 4,490.13 → 3,977.86 STX (≈$1,152 → ≈$1,299 at spot STX/USD) |
 
 ## Volume facilitated
 
@@ -40,14 +39,14 @@ beat just holding":
 
 | Position | P&L (fees − IL) | Value | Basis |
 |---|---|---|---|
-| XYK LP (sBTC-STX) | +2.11 STX | ~606.58 STX | held since pilot start; partial withdraw 2026-09-25 (see below) |
-| DLMM (sBTC-USDCx) | -1.27 STX | ~463.48 STX | reopened 2026-09-22 (see incident below); a small negative P&L on a 3-day-old position is normal short-window noise, not a trend — this figure has swung between roughly +47% and -61% annualised on the same underlying position within the last week alone, which is exactly why an APR isn't shown until 3 days of data exist |
+| XYK LP (sBTC-STX) | +1.79 STX | ~754.92 STX | held since pilot start; partial withdraw 2026-09-25, partial re-add 2026-09-26 (see below) |
+| DLMM (sBTC-USDCx) | +0.66 STX | ~455.50 STX | reopened 2026-09-22; a small P&L either side of zero on a ~4-day-old position is normal short-window noise, not a trend — this figure has swung between roughly +47% and -61% annualised on the same underlying position within the last week alone, which is exactly why an APR isn't shown until 3 days of data exist |
 
-Total network fees paid: **11.0 STX** across 40 confirmed transactions.
+Total network fees paid: **11.05 STX** across 41 confirmed transactions.
 
 ## IL-adjusted return
 
-**+0.0%** (essentially breakeven) vs holding the exact starting inventory (4,490.13
+**-0.42%**, essentially flat, vs holding the exact starting inventory (4,490.13
 STX-equivalent basket) untouched since pilot start. This number is deliberately
 market-neutral — it does not credit or blame the agent for STX or sBTC's own price
 movement, only for whether active management (fees earned, positions rebalanced) beat
@@ -57,14 +56,14 @@ This figure has moved between roughly -1.3% and +4.8% at various points across t
 pilot; the number above is a point-in-time snapshot, not a monotonic trend, and the
 final submitted figure will be whatever it reads at close.
 
-**Separately, in plain USD terms**, the portfolio moved from ≈$1,152 to ≈$1,287 (+11.7%)
+**Separately, in plain USD terms**, the portfolio moved from ≈$1,152 to ≈$1,299 (+12.7%)
 over the same window — mostly STX's own dollar price recovering, not agent skill. These
 are two different, both-true statements answering two different questions; don't cite
 one to answer the other.
 
 ## Uptime
 
-**97%** — 1,294 of 1,334 expected 30-minute heartbeats, over 667 hours of continuous
+**97.1%** — 1,318 of 1,357 expected 30-minute heartbeats, over ~679 hours of continuous
 operation. The gap is almost entirely third-party infrastructure blips (Hiro API rate
 limits and transient 503/504s), each self-healing within one 30-minute cycle; see Lessons
 Learned for the one real incident.
@@ -86,27 +85,35 @@ oracle-divergence tolerance it defends before halting, and the rebalance band it
 
 ## Inventory & rebalance activity
 
-56 mainnet transactions in-window, by function:
+57 mainnet transactions in-window, by function:
 
 | Function | Count | Pool |
 |---|---|---|
 | `swap-y-for-x` | 18 | sBTC-STX (XYK) |
 | `swap-x-for-y` | 3 | sBTC-STX (XYK) |
 | `withdraw-liquidity` | 1 | sBTC-STX (XYK) |
+| `add-liquidity` | 1 | sBTC-STX (XYK) |
 | `add-liquidity-multi` | 25 | sBTC-USDCx (DLMM) |
 | `withdraw-liquidity-multi` | 9 | sBTC-USDCx (DLMM) |
 
 The XYK sBTC-STX LP position was held continuously since before pilot start, staying
 within its target allocation band without needing an adjustment, until a deliberate,
-pre-declared partial unwind: tx [`1561040046d7df26c856760624fb4449e8f969ea900c4db8f47e0d6e98ef150c`](https://explorer.hiro.so/txid/0x1561040046d7df26c856760624fb4449e8f969ea900c4db8f47e0d6e98ef150c?chain=mainnet)
-(2026-09-25T15:40:31Z, confirmed success), reducing the target LP allocation from 33%
-to 15% of portfolio and withdrawing 4.720635 LP tokens for 0.00101259 sBTC + 263.587259
-STX. This was declared in writing before the pilot opened — see
-[`PILOT_METHODOLOGY.md`](PILOT_METHODOLOGY.md), item 2, "a partial LP unwind in the
-final week — demonstrating the exit procedure end-to-end" — not a reaction to this
-results post being written. A corresponding partial re-add (methodology item 1) is
-planned for 2026-09-26, the day after, so the two remain clearly separate genuine
-capital events rather than a same-block round trip.
+pre-declared withdraw-then-re-add pair carried out on consecutive days, both plain
+`add-liquidity`/`withdraw-liquidity` on the pilot's own named pool:
+
+1. **Partial unwind** — tx [`1561040046d7df26c856760624fb4449e8f969ea900c4db8f47e0d6e98ef150c`](https://explorer.hiro.so/txid/0x1561040046d7df26c856760624fb4449e8f969ea900c4db8f47e0d6e98ef150c?chain=mainnet)
+   (2026-09-25T15:40:31Z, confirmed success): target LP allocation reduced from 33% to
+   15% of portfolio, withdrawing 4.720635 LP tokens for 0.00101259 sBTC + 263.587259 STX.
+2. **Partial re-add** — tx [`3f807c4a8355fcf8a8a547e236721bcdccb67185e5a2482b3d067845d5a893b0`](https://explorer.hiro.so/txid/0x3f807c4a8355fcf8a8a547e236721bcdccb67185e5a2482b3d067845d5a893b0?chain=mainnet)
+   (2026-09-26T03:08:26Z, confirmed success), the next day: target restored to 33%,
+   adding 0.0003 sBTC + paired STX for 1.386272 new LP tokens.
+
+This pair was declared in writing before the pilot opened — see
+[`PILOT_METHODOLOGY.md`](PILOT_METHODOLOGY.md), items 1 and 2 ("one mid-pilot LP
+allocation adjustment... producing a real add or withdraw" and "a partial LP unwind in
+the final week — demonstrating the exit procedure end-to-end") — not a reaction to this
+results post being written, and kept a day apart on purpose so the two remain clearly
+separate genuine capital events rather than a same-block round trip.
 
 All other liquidity add/withdraw activity happened on the sBTC-USDCx DLMM position:
 1 fresh open, 7 recenters (repositioning the concentrated range as price moved), and
