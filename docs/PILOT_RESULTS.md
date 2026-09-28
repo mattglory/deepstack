@@ -12,8 +12,11 @@ re-verified against the Stacks explorer. This is the version submitted as the mi
 deliverable. Both halves of the planned XYK add/withdraw pair (see Inventory & rebalance
 activity) are complete; the re-add executed as three smaller transactions rather than
 one, for a specific, disclosed reason — see below, not a partial failure. Updated
-**2026-09-28** with one post-close finding from external review (see Lessons Learned) —
-this doesn't change any pilot-window figures above, which are unaffected.
+**2026-09-28** with two findings from external review: a DLMM safety-gate gap (fixed,
+see Lessons Learned) and a transaction/fee undercount that missed one FlashStack smoke
+test (corrected, see Inventory & rebalance activity) — the true in-window transaction
+count is 60, not the 59 first published. The safety-gate finding doesn't change any
+other figures; the count correction is reflected everywhere above.
 
 ## At a glance
 
@@ -22,7 +25,7 @@ this doesn't change any pilot-window figures above, which are unaffected.
 | Pilot window | 2026-08-28T20:59:43Z → 2026-09-27T20:59:00Z (closed, 720h) |
 | Wallet | `SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60` |
 | Uptime | **97.3%** (1,401 of 1,440 expected heartbeats) |
-| Mainnet transactions in-window | **59** (43 confirmed successful, 16 aborted — see Lessons Learned) |
+| Mainnet transactions in-window | **60** (44 confirmed successful, 16 aborted — see Lessons Learned) |
 | vs-HODL (IL-adjusted return) | **-1.08%** |
 | Portfolio | 4,490.13 → 3,868.67 STX (≈$1,152 → ≈$1,325 at spot STX/USD) |
 
@@ -45,9 +48,9 @@ beat just holding":
 | XYK LP (sBTC-STX) | +1.54 STX | ~1,047.34 STX | held since pilot start; partial withdraw 2026-09-25 (1 tx), partial re-add 2026-09-26 (3 txs, see below) |
 | DLMM (sBTC-USDCx) | +9.53 STX | ~447.28 STX | reopened 2026-09-22, ~5.6 days old at pilot close; annualises to roughly +140%, but a position this young stays noisy — treat the STX figure as the reliable number and the annualised rate as illustrative only |
 
-Total network fees paid: **11.45 STX** across all 59 mainnet transactions in-window (a
+Total network fees paid: **11.46 STX** across all 60 mainnet transactions in-window (a
 failed on-chain transaction still costs its fee — this total includes the 16 aborted
-DLMM adds from the Sep 21 incident, not just the 43 that succeeded).
+DLMM adds from the Sep 21 incident, not just the 44 that succeeded).
 
 ## IL-adjusted return
 
@@ -91,7 +94,7 @@ oracle-divergence tolerance it defends before halting, and the rebalance band it
 
 ## Inventory & rebalance activity
 
-59 mainnet transactions in-window, by function:
+60 mainnet transactions in-window, by function:
 
 | Function | Count | Pool |
 |---|---|---|
@@ -101,6 +104,7 @@ oracle-divergence tolerance it defends before halting, and the rebalance band it
 | `add-liquidity` | 3 | sBTC-STX (XYK) |
 | `add-liquidity-multi` | 25 | sBTC-USDCx (DLMM) |
 | `withdraw-liquidity-multi` | 9 | sBTC-USDCx (DLMM) |
+| `flash-loan` | 1 | FlashStack (not a pool op — see below) |
 
 The XYK sBTC-STX LP position was held continuously since before pilot start, staying
 within its target allocation band without needing an adjustment, until a deliberate,
@@ -139,6 +143,19 @@ the incident described below.
 scheduled or manufactured — each with its own logged trigger and, since 2026-09-19,
 a timing check that can defer execution up to 6 cycles for a more favorable price
 before acting on urgency alone.
+
+**One FlashStack transaction also happened during the pilot window, disclosed here for
+completeness:** tx [`cf374e8f9f79ab40e297cd44d9346cc7781f3b5103e8edbce94ed0b00ae866c1`](https://explorer.hiro.so/txid/0xcf374e8f9f79ab40e297cd44d9346cc7781f3b5103e8edbce94ed0b00ae866c1?chain=mainnet)
+(2026-09-16T21:34:13Z, confirmed success), a manually-triggered 5 STX `flash-loan` call
+against `flashstack-stx-core` with receiver `stx-test-receiver`. This was a smoke test
+of the FlashStack integration, not an attempted flash-rebalance — no rebalance logic ran,
+it borrowed and repaid 5 STX in the same transaction with a test receiver, and it wasn't
+autonomous agent activity. It does not count toward the M2 flash-rebalance criterion,
+which is separately satisfied by the pre-pilot flash-rebalance documented in
+[`FLASH_REBALANCE.md`](FLASH_REBALANCE.md) (2026-07-18, tx `1f826abe...`). Included in
+the transaction and fee totals above because it's a real transaction from the pilot
+wallet during the pilot window, and this document's own promise is that every such
+transaction is disclosed, not just the ones that make the numbers look cleanest.
 
 ## Lessons learned
 
@@ -194,8 +211,9 @@ since that's the only external price reference the agent tracks. Verified with a
 test that isolates the exact gap (an unsafe condition blocks the DLMM broadcast even
 when the kill switch and every other check pass) rather than a live attended cycle,
 because a live-only test would have been confounded by the kill switch already being
-checked independently inside `recenterOnce()` for an unrelated reason. `DLMM_LIVE`
-remains off pending a deliberate decision on when to resume.
+checked independently inside `recenterOnce()` for an unrelated reason. `DLMM_LIVE` was
+resumed the same day once the fix and its test were deployed and one live cycle
+confirmed clean.
 
 **General takeaways:**
 - Fail-closed design paid for itself three times — each incident produced a bad
