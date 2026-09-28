@@ -21,7 +21,7 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, type Inventory, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, type Inventory, type AgentParams } from "./agent.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
 import { scanStstxGap } from "./ststx-gap.js";
@@ -698,7 +698,16 @@ async function main() {
           if (process.env.DLMM_LIVE === "1" && live && !safety.safe) {
             console.log(`  [dlmm ${dlmmPair}] ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no DLMM broadcast this cycle)`);
           }
-          dlmmLive = process.env.DLMM_LIVE === "1" && live && circuitOk && safety.safe && dlmmFailStreak < DLMM_FAIL_STREAK_LIMIT && dlmmRecenters < f.maxTrades;
+          dlmmLive = dlmmLiveGate({
+            dlmmLiveFlag: process.env.DLMM_LIVE === "1",
+            live,
+            circuitOk,
+            safe: safety.safe,
+            dlmmFailStreak,
+            dlmmFailStreakLimit: DLMM_FAIL_STREAK_LIMIT,
+            dlmmRecenters,
+            maxTrades: f.maxTrades,
+          });
           const sigmaDaily = dlmmSigmaDaily();
           const res = await recenterOnce(w, { pair: dlmmPair, halfWidth, targetUsd, sigmaDaily }, dlmmLive, (m) => console.log(m));
           // A real attempt is dlmmLive with a decision that wasn't "hold" and wasn't a

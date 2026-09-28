@@ -254,3 +254,29 @@ export function decideLp(
 
   return { action: "none", xBase: 0n, lpBase: 0n, reason: "LP within band" };
 }
+
+// Whether the DLMM step is allowed to broadcast this cycle. Kept as a pure function
+// (agent-cli.ts's main() computes the inputs and calls this) specifically so it's directly
+// testable — `safe` used to be missing from this gate entirely (see the Sep 2026 external
+// review finding: DLMM only checked the kill switch and nonce safety, not oracle
+// divergence/drawdown/pool-paused), and that class of bug is exactly what a unit test on the
+// gate itself catches that a passing live cycle under normal conditions would not.
+export function dlmmLiveGate(opts: {
+  dlmmLiveFlag: boolean;
+  live: boolean;
+  circuitOk: boolean;
+  safe: boolean;
+  dlmmFailStreak: number;
+  dlmmFailStreakLimit: number;
+  dlmmRecenters: number;
+  maxTrades: number;
+}): boolean {
+  return (
+    opts.dlmmLiveFlag &&
+    opts.live &&
+    opts.circuitOk &&
+    opts.safe &&
+    opts.dlmmFailStreak < opts.dlmmFailStreakLimit &&
+    opts.dlmmRecenters < opts.maxTrades
+  );
+}

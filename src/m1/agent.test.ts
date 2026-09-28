@@ -18,7 +18,7 @@ test("pool-share cap: bounds our share AFTER the add; refuses on unreadable pool
   // unreadable pool value → refuse to grow (fail closed)
   assert.equal(exceedsPoolShare(1000, 100, 0, 200), true);
 });
-import { decide, decideLp, defaultParams, bandBpsFromVol, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, dlmmLiveGate, type AgentParams } from "./agent.js";
 import { minusSlippage, plusSlippage } from "./quotes.js";
 import { assessSafety, defaultSafetyParams } from "./safety.js";
 
@@ -183,4 +183,49 @@ test("safety: drawdown beyond limit → halt", () => {
   );
   assert.equal(r.safe, false);
   assert.ok(r.reasons.some((x) => x.includes("drawdown")));
+});
+
+// dlmmLiveGate: regression coverage for the Sep 2026 external-review finding — DLMM
+// recenters used to check only the kill switch and nonce safety before broadcasting, not
+// the same oracle-divergence/drawdown/pool-paused gate (safety.safe) that has always
+// covered XYK trades. A live cycle under normal market conditions can't distinguish "the
+// gate works" from "the gate is missing and nothing unsafe happened to trigger it" — only
+// a direct test with safe: false proves the fix.
+const gateBase = {
+  dlmmLiveFlag: true,
+  live: true,
+  circuitOk: true,
+  safe: true,
+  dlmmFailStreak: 0,
+  dlmmFailStreakLimit: 2,
+  dlmmRecenters: 0,
+  maxTrades: 10,
+};
+
+test("dlmmLiveGate: all conditions met → live", () => {
+  assert.equal(dlmmLiveGate(gateBase), true);
+});
+
+test("dlmmLiveGate: unsafe (oracle divergence / drawdown / pool-paused) blocks the broadcast even when everything else is green — the exact gap the fix closes", () => {
+  assert.equal(dlmmLiveGate({ ...gateBase, safe: false }), false);
+});
+
+test("dlmmLiveGate: DLMM_LIVE flag off blocks it", () => {
+  assert.equal(dlmmLiveGate({ ...gateBase, dlmmLiveFlag: false }), false);
+});
+
+test("dlmmLiveGate: agent not live (observe mode) blocks it", () => {
+  assert.equal(dlmmLiveGate({ ...gateBase, live: false }), false);
+});
+
+test("dlmmLiveGate: circuit breaker open blocks it", () => {
+  assert.equal(dlmmLiveGate({ ...gateBase, circuitOk: false }), false);
+});
+
+test("dlmmLiveGate: fail streak at/over the limit blocks it", () => {
+  assert.equal(dlmmLiveGate({ ...gateBase, dlmmFailStreak: 2, dlmmFailStreakLimit: 2 }), false);
+});
+
+test("dlmmLiveGate: per-run recenter budget exhausted blocks it", () => {
+  assert.equal(dlmmLiveGate({ ...gateBase, dlmmRecenters: 10, maxTrades: 10 }), false);
 });
