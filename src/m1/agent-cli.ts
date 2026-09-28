@@ -29,7 +29,7 @@ import { recenterOnce, resolveToken, stxPriceUsd, ftBalance } from "./dlmm-recen
 import { readUserPosition } from "./dlmm-position.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
-import { getExternalMid, assessSafety, defaultSafetyParams } from "./safety.js";
+import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
 import { checkNonceSafety } from "./nonce-safety.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
@@ -253,6 +253,7 @@ async function act(
   canTrade: boolean,
   sessionStart: number,
   intervalSec: number,
+  safety: SafetyResult,
 ): Promise<boolean> {
   const cfg = activePool();
   const { x, y } = cfg;
@@ -278,17 +279,10 @@ async function act(
     }
   }
 
-  // Oracle-sanity + kill-switch gate.
-  const safety = assessSafety(
-    {
-      poolMid: s.midXinY,
-      externalMid: s.externalMid,
-      poolActive: s.poolActive,
-      portfolioStx: s.portfolioY,
-      sessionStartStx: sessionStart,
-    },
-    defaultSafetyParams(),
-  );
+  // Oracle-sanity + kill-switch gate. Computed by the caller (step(), in main()) and passed
+  // in, not recomputed here — the DLMM path needs the SAME result to gate its own broadcasts
+  // (see the Sep 2026 external-review finding: DLMM used to skip this check entirely and was
+  // gated only by the kill switch and nonce safety, not oracle divergence/drawdown/pool-paused).
   const div = safety.divergenceBps != null ? `${(safety.divergenceBps / 100).toFixed(2)}%` : "n/a";
   console.log(
     `  safety: external ${s.externalMid ? s.externalMid.toLocaleString() : "n/a"} ${y.symbol}/${x.symbol} | divergence ${div} | pool ${s.poolActive ? "active" : "PAUSED"}`,
@@ -651,8 +645,22 @@ async function main() {
       console.log(`  ⛔ CIRCUIT BREAKER — ${failStreak} consecutive cycle failures ≥ ${CIRCUIT_BREAKER_THRESHOLD} — freezing all new trading until one succeeds`);
     }
     const circuitOk = failStreak < CIRCUIT_BREAKER_THRESHOLD;
+    // Oracle-sanity + kill-switch gate. Computed once here (not inside act()) so the DLMM
+    // path below can gate on the SAME result — previously DLMM only checked the kill switch
+    // and nonce safety, not oracle divergence/drawdown/pool-paused, so it could keep trading
+    // through conditions that would have halted the XYK leg. Found by external review, Sep 2026.
+    const safety = assessSafety(
+      {
+        poolMid: snap.midXinY,
+        externalMid: snap.externalMid,
+        poolActive: snap.poolActive,
+        portfolioStx: snap.portfolioY,
+        sessionStartStx: sessionStart,
+      },
+      defaultSafetyParams(),
+    );
     try {
-      if (await act(w, snap, params, live && circuitOk && trades < f.maxTrades, sessionStart, f.interval)) trades++;
+      if (await act(w, snap, params, live && circuitOk && trades < f.maxTrades, sessionStart, f.interval, safety)) trades++;
     } finally {
       appendJournal(tickJournal); // one journal line per tick, whatever happened
       // Cross-pool spread observations (read-only) — the dataset that decides whether
@@ -687,7 +695,10 @@ async function main() {
           if (dlmmFailStreak >= DLMM_FAIL_STREAK_LIMIT) {
             console.log(`  [dlmm ${dlmmPair}] ⛔ ${dlmmFailStreak} consecutive failed adds ≥ ${DLMM_FAIL_STREAK_LIMIT} — DLMM broadcasts stopped until manually reset`);
           }
-          dlmmLive = process.env.DLMM_LIVE === "1" && live && circuitOk && dlmmFailStreak < DLMM_FAIL_STREAK_LIMIT && dlmmRecenters < f.maxTrades;
+          if (process.env.DLMM_LIVE === "1" && live && !safety.safe) {
+            console.log(`  [dlmm ${dlmmPair}] ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no DLMM broadcast this cycle)`);
+          }
+          dlmmLive = process.env.DLMM_LIVE === "1" && live && circuitOk && safety.safe && dlmmFailStreak < DLMM_FAIL_STREAK_LIMIT && dlmmRecenters < f.maxTrades;
           const sigmaDaily = dlmmSigmaDaily();
           const res = await recenterOnce(w, { pair: dlmmPair, halfWidth, targetUsd, sigmaDaily }, dlmmLive, (m) => console.log(m));
           // A real attempt is dlmmLive with a decision that wasn't "hold" and wasn't a
