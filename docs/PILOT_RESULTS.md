@@ -8,11 +8,12 @@ and the Stacks explorer for every transaction cited.*
 
 **Status: FINAL.** The pilot window closed **2026-09-27T20:59 UTC** after 720 hours
 (30 days). All figures below are cut at that exact close time and were independently
-re-verified against the Stacks explorer afterward, on 2026-09-27 — this is the version
-submitted as the milestone deliverable. Both halves of the planned XYK add/withdraw
-pair (see Inventory & rebalance activity) are complete; the re-add executed as three
-smaller transactions rather than one, for a specific, disclosed reason — see below, not
-a partial failure.
+re-verified against the Stacks explorer. This is the version submitted as the milestone
+deliverable. Both halves of the planned XYK add/withdraw pair (see Inventory & rebalance
+activity) are complete; the re-add executed as three smaller transactions rather than
+one, for a specific, disclosed reason — see below, not a partial failure. Updated
+**2026-09-28** with one post-close finding from external review (see Lessons Learned) —
+this doesn't change any pilot-window figures above, which are unaffected.
 
 ## At a glance
 
@@ -141,8 +142,8 @@ before acting on urgency alone.
 
 ## Lessons learned
 
-Three real incidents happened during this pilot. All are disclosed here in full,
-including root cause and fix, because a safety layer is only evidence if it's shown
+Four real incidents happened during and just after this pilot. All are disclosed here in
+full, including root cause and fix, because a safety layer is only evidence if it's shown
 working under a real failure, not just asserted.
 
 **2026-09-15 — third-party API quota exhaustion.** The Hiro API key hit its plan's
@@ -174,11 +175,38 @@ broadcasting, the kill switch now covers every trading path, and DLMM broadcasts
 automatically after 2 consecutive failures until manually cleared. Validated with one
 attended live transaction before resuming autonomous operation.
 
+**2026-09-28 — DLMM broadcasts skipped the oracle/drawdown/pool-paused safety gate,
+found by external review.** For the DLMM leg's entire live-trading history, including
+the full pilot window, `recenterOnce()` checked the manual kill switch and nonce safety
+before broadcasting, but never called the same `assessSafety()` check (oracle-price
+divergence, session drawdown, pool-paused) that has always gated the XYK leg. In
+practice this pilot's actual pool-vs-oracle divergence never came close to the halt
+threshold (max 336.9bps observed vs. a 500bps limit — see Spread / divergence history
+above), so the gap never caused a live consequence here, but it was a real structural
+gap that could have let DLMM keep trading through a genuine oracle problem. Found by
+external reviewer Hillary Kibet's code review, the same day: `DLMM_LIVE` was flipped
+off as an immediate mitigation, then `assessSafety()`'s result was hoisted out to be
+computed once per cycle and shared by both the XYK and DLMM paths instead of only
+being checked (and only consumed) inside the XYK code. Note the scope precisely: this
+gates DLMM on the same portfolio-level signal XYK uses (sBTC-STX divergence, overall
+drawdown, XYK pool-paused status), not a dedicated sBTC-USDCx-specific oracle check,
+since that's the only external price reference the agent tracks. Verified with a unit
+test that isolates the exact gap (an unsafe condition blocks the DLMM broadcast even
+when the kill switch and every other check pass) rather than a live attended cycle,
+because a live-only test would have been confounded by the kill switch already being
+checked independently inside `recenterOnce()` for an unrelated reason. `DLMM_LIVE`
+remains off pending a deliberate decision on when to resume.
+
 **General takeaways:**
 - Fail-closed design paid for itself three times — each incident produced a bad
   *decision* or a malformed transaction at some point, and each time the *execution*
   layer independently refused to carry it out incorrectly. That's not luck; it's why
   the two layers are separate.
+- A safety control that exists for one trading path isn't automatically applied to
+  another just because they share a wallet and a codebase — the 2026-09-28 finding is
+  the clearest example: the DLMM path had its own kill-switch and nonce-safety checks,
+  which looked complete until compared line-by-line against what the XYK path actually
+  gates on.
 - A parameter change that alters what a transaction contains needs to be validated
   against a real broadcast, not just unit-tested in isolation — the 2026-09-21 root
   cause was a width change that had only ever been exercised in pure math tests before
