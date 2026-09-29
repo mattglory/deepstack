@@ -142,10 +142,14 @@
         // etc.) alongside the older plain names — both must be recognised or real add/withdraw
         // activity silently disappears from every card and the activity table (found 2026-09-16:
         // 15 of the last 50 on-chain txs were "-multi" calls the old list didn't match).
+        // "flash-loan" is the FlashStack leg (M2): it isn't an XYK/DLMM pool op, so it was
+        // never in this list and dropped out of every count and the activity table — the
+        // in-window totals read 59 txs / 11.45 STX where the chain says 60 / 11.46.
         actions: [
           "swap-y-for-x", "swap-x-for-y",
           "add-liquidity", "withdraw-liquidity",
           "add-liquidity-multi", "withdraw-liquidity-multi",
+          "flash-loan",
         ],
         // Gist raw URL the pilot agent mirrors metrics.json to (see src/m1/publish.ts).
         // Same-origin metrics.json only updates when the dashboard is redeployed; during
@@ -155,6 +159,12 @@
       const uSTX = (n) => Number(n) / 1e6, baseBTC = (n) => Number(n) / 1e8;
       const fmt = (n, d = 2) => Number(n).toLocaleString("en-US", { maximumFractionDigits: d });
       const ex = (t) => `https://explorer.hiro.so/txid/${t}?chain=mainnet`;
+      // A flash loan borrows and repays inside one transaction, so stx_sent/stx_received
+      // net to ~0 and say nothing useful — the borrowed amount is the first uint argument.
+      const flashLoanDetail = (t) => {
+        const a = t.contract_call?.function_args?.[0]?.repr;
+        return a && a.startsWith("u") ? `borrowed ${fmt(uSTX(a.slice(1)), 3)} STX` : "flash-loan";
+      };
       const tstr = (s) => (s ? new Date(s * 1000).toISOString().slice(0, 16).replace("T", " ") : "—");
       const $ = (id) => document.getElementById(id);
 
@@ -315,7 +325,8 @@
               const detail = fn === "swap-y-for-x" ? `${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 3)} STX → ${fmt(baseBTC(sb), 8)} sBTC`
                 : fn === "swap-x-for-y" ? `${fmt(baseBTC(sb), 8)} sBTC → ${fmt(uSTX(r.stx_received), 3)} STX`
                 : fn.startsWith("add-liquidity") ? `deposited ${fmt(baseBTC(sbtcDir(r, "out")), 8)} sBTC + ${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 2)} STX`
-                : fn.startsWith("withdraw-liquidity") ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX` : fn;
+                : fn.startsWith("withdraw-liquidity") ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX`
+                : fn === "flash-loan" ? flashLoanDetail(t) : fn;
               return `<tr><td class="tnum">${tstr(t.burn_block_time)}</td><td>${fn}</td><td class="tnum">${detail}</td>
                 <td class="tnum">${fmt(uSTX(t.fee_rate), 3)}</td>
                 <td><span class="tag ${s ? "ok" : "bad"}">${s ? "success" : t.tx_status.replace(/_/g, " ")}</span></td>
