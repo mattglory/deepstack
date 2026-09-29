@@ -54,3 +54,56 @@ Failures are reported as prominently as successes. A quiet pilot (few trades) is
 with the model that predicts it (`analysis/rebalance-frequency.mjs`). All numbers are
 independently verifiable: transactions on-chain, telemetry public, analysis scripts
 reproducible.
+
+## Change log — deviations from this document, dated (added 2026-09-29)
+
+This document was never amended during the pilot, so what actually ran is not, on its
+own, formally comparable to what it declares above. Added after external review flagged
+the gap (Hillary Kibet): every mid-window change, and the one thing this document should
+have named from the start and didn't.
+
+**Scope gap, present from before the pilot opened.** "What runs" above names only the
+Bitflow sBTC-STX XYK pool. A DLMM position on Bitflow's sBTC-USDCx pool existed before
+the pilot window opened and traded throughout it (25 `add-liquidity-multi`, 9
+`withdraw-liquidity-multi`, 16 aborted, in-window) — none of that is a violation of
+anything declared here, because this document simply never named the DLMM leg as part
+of "what runs" at all. That omission is on this document, not on the DLMM activity
+itself, which is disclosed in full in `docs/PILOT_RESULTS.md`.
+
+**Pre-anchor, not mid-window (informational):**
+- `589ee59` (2026-08-28T20:37:21Z, **22 minutes before** the 20:59:43Z anchor) — raised
+  the per-swap rebalance cap 5x (10→50 STX). Before the window opened, so not a
+  mid-pilot strategy change under this document's own rule, but close enough to the
+  anchor to disclose precisely rather than let the timing look coincidental.
+
+**Mid-window changes (after the anchor):**
+- `1e97f88` (2026-09-19) — made the DLMM recenter width volatility-adaptive, matching
+  how the XYK band already worked. This is a genuine sizing-methodology change to the
+  DLMM leg, made mid-window. Defensible on the merits (same vol-scaling principle the
+  XYK band was declared with, not a tightening-for-tx-count move — the DLMM leg
+  narrows or widens with realised volatility both directions), but it is a change this
+  document didn't declare in advance for DLMM specifically, because DLMM wasn't named
+  as in-scope to begin with. Same root cause as the scope gap above.
+- `23e7cfb` (2026-09-19) — added nonce-gap safety and a circuit breaker on repeated
+  cycle failures. A safety-layer addition, not a strategy or parameter-clamp change;
+  the "strategy fixed for the whole window" rule is about what the agent *decides*, not
+  whether new ways to fail safely can be added. Judgment call, stated so the reader can
+  disagree.
+- `6b46d42` (2026-09-22) — fixed the per-bin sizing bug behind the 2026-09-21 DLMM
+  add-liquidity failure loop (see `docs/PILOT_RESULTS.md`, Lessons Learned). A bug fix
+  restoring intended behavior (each bin was supposed to size its own minimum, and now
+  does), not a strategy change.
+- `50d9b47`, `1d90fad` (2026-09-22) — cost-basis and HODL-baseline correctness fixes to
+  the *measurement* layer (what gets reported), not the trading strategy itself. Covered
+  under "What is measured," not "What runs" — but noted here for completeness since they
+  changed numbers this document implicitly promised would be measured one fixed way.
+- The DLMM safety-gate fix (`f1ec66c`, 2026-09-28) is a fifth change of this kind, landed
+  after the pilot closed — see `docs/PILOT_RESULTS.md`'s Lessons Learned for the full
+  account; not repeated here since it postdates the window this document governs.
+
+**What this changelog does not claim:** that every one of these was harmless to the
+letter of "strategy fixed for the whole window." `1e97f88` specifically is a real
+judgment call, not a clean pass. The honest position is that the *safety* and
+*measurement* fixes are clearly in bounds, the DLMM scope gap is this document's own
+omission rather than a deviation by the agent, and the one genuine sizing-methodology
+change (`1e97f88`) is disclosed for the reader to weigh rather than argued away.
