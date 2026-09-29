@@ -18,7 +18,8 @@ import { existsSync } from "node:fs";
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
 import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
-import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, type DlmmPool, type DlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, type DlmmPool, type DlmmState } from "./dlmm-read.js";
+import { exceedsPoolShare } from "./agent.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } from "./dlmm-recenter.js";
@@ -230,6 +231,35 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     (err) => ({ safe: false, reason: `nonce check failed: ${(err as Error).message}`, missingNonces: [], mempoolPending: 0 }),
   );
   if (!nonceSafety.safe) return { ...base, reason: nonceSafety.reason ?? "nonce check failed", skipped: true };
+
+  // Exit-liquidity guard, DLMM's turn (found 2026-09-30): the XYK path has always refused to
+  // grow a position past MAX_POOL_SHARE_BPS of the pool (exceedsPoolShare, agent.ts) — DLMM
+  // never had the equivalent, same shape of gap as the safety-gate bug fixed in f1ec66c. Uses
+  // LOCAL depth around the active bin (get-bin-balances across ±halfWidth), not whole-pool TVL:
+  // concentrated liquidity is *supposed* to be a large share of its own narrow range, that's
+  // the point of it, so the comparison that matters is against the liquidity actually competing
+  // in that range, not the pool's total value across every price the pool has ever touched.
+  // Separate default from XYK's 2% (DLMM_MAX_POOL_SHARE_BPS, default 10%) for that reason.
+  {
+    const [depth, activeBinState] = await Promise.all([
+      readLocalDepth(poolDef, st.activeBinId, halfWidth),
+      readBinLiquidityStates(poolDef, st.coreAddress, st.initialPrice, st.binStep, [st.activeBinId]).then(
+        (m) => m.get(st.activeBinId),
+      ),
+    ]);
+    if (!activeBinState) return { ...base, reason: "could not read active-bin price for pool-share check", skipped: true };
+    const priceYPerX = (Number(activeBinState.binPrice) / 1e8) * 10 ** (xTok.decimals - yTok.decimals);
+    const localPoolValueY =
+      (Number(depth.xTotal) / 10 ** xTok.decimals) * priceYPerX + Number(depth.yTotal) / 10 ** yTok.decimals;
+    const capBps = Number(process.env.DLMM_MAX_POOL_SHARE_BPS ?? 1000);
+    if (exceedsPoolShare(0, cfg.targetUsd, localPoolValueY, capBps)) {
+      return {
+        ...base,
+        reason: `skip — local pool-share cap (target $${cfg.targetUsd} vs ~$${localPoolValueY.toFixed(0)} local depth, cap ${capBps / 100}%)`,
+        skipped: true,
+      };
+    }
+  }
 
   if (dec.action === "open") {
     const addTxid = await executeAdd(w, poolDef, st, xTok, yTok, effCfg, log);
