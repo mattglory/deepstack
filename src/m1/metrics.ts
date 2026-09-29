@@ -10,8 +10,36 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { execSync } from "node:child_process";
 
 export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json";
+
+// Which commit produced these numbers — otherwise the only way to know is to ask the
+// operator (found via external review, 2026-09: a status message cited a stale commit
+// hash with nothing published to catch the drift). Computed once per process and cached.
+//
+// The pilot VPS runs from a plain rsync copy (deploy/install.sh excludes .git from the
+// sync on purpose, so an update never has to re-clone), so `git rev-parse` from the
+// process's own cwd fails there — install.sh stamps the source commit into
+// .deployed-commit instead. Falls back to git for local/dev runs (e.g. straight from
+// the cloned repo), where that file won't exist.
+let deployedCommitCache: string | undefined | null = null;
+function deployedCommit(): string | undefined {
+  if (deployedCommitCache === null) {
+    try {
+      deployedCommitCache = readFileSync(".deployed-commit", "utf8").trim() || undefined;
+    } catch {
+      try {
+        deployedCommitCache = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+          .toString()
+          .trim();
+      } catch {
+        deployedCommitCache = undefined;
+      }
+    }
+  }
+  return deployedCommitCache;
+}
 // 2000 holds ~41 days at the pilot's 30-min cadence — the whole run fits with margin.
 // Raise via env only alongside a finer --interval; the two must be decided together
 // (finer sampling improves the realised-vol estimate that sizes the band and LVR).
@@ -87,6 +115,7 @@ export interface MetricsFile {
   };
   samples: MetricsSample[];
   updated: string;
+  deployedCommit?: string; // short git hash running when `updated` was written
 }
 
 function load(): MetricsFile | null {
@@ -164,6 +193,7 @@ export function recordSample(
     m.samples.push(s);
     if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);
     m.updated = s.t;
+    m.deployedCommit = deployedCommit();
     mkdirSync(dirname(METRICS_PATH), { recursive: true });
     writeFileSync(METRICS_PATH, JSON.stringify(m));
   } catch (err) {

@@ -10,6 +10,8 @@
 //   PAIR=stx-aeusdc npm run m1:agent -- --interval 60
 //   TARGET_LP_FRACTION=0.3 npm run m1:agent -- --live --yes-mainnet
 
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { getWallet, getStxBalance, getTokenBalance, getLpBalance, type Wallet } from "./wallet.js";
 import { getPoolState } from "../pool.js";
 import { getWithdrawQuote } from "./quotes.js";
@@ -578,11 +580,34 @@ async function main() {
   // retrying it every cycle — 15 failed broadcasts over ~7 hours before a human noticed and
   // killed it by hand. Root cause is now fixed (see dlmm-recenter-exec.ts's per-bin min-dlp),
   // but this is the backstop: after DLMM_FAIL_STREAK_LIMIT consecutive failed LIVE attempts,
-  // stop trying until the human running this resets it (restart, or a code/config change) —
-  // deliberately NOT auto-clearing on its own like the cycle-failure circuit breaker, since a
-  // repeatedly-aborting DLMM add is a real "something is still wrong" signal, not a transient
-  // API blip.
-  let dlmmFailStreak = 0;
+  // stop trying until a human clears it — deliberately NOT auto-clearing on its own like the
+  // cycle-failure circuit breaker, since a repeatedly-aborting DLMM add is a real "something
+  // is still wrong" signal, not a transient API blip.
+  //
+  // Persisted to disk (found via external review, 2026-09): this used to live only in a
+  // process-local variable, so ANY restart cleared it — attended or not. That silently
+  // re-arms a stop whose whole point is that nobody has actually looked at the problem yet,
+  // and it now also re-enables dlmmLiveGate()'s broadcasts. A human clears it explicitly by
+  // deleting the state file (DLMM_FAILSTREAK_STATE_PATH, default journal/dlmm-failstreak.json)
+  // — an ordinary restart (crash-loop, VPS reboot, a routine code deploy) no longer does.
+  const DLMM_FAILSTREAK_STATE_PATH = process.env.DLMM_FAILSTREAK_STATE_PATH ?? "journal/dlmm-failstreak.json";
+  const loadDlmmFailStreak = (): number => {
+    try {
+      const v = JSON.parse(readFileSync(DLMM_FAILSTREAK_STATE_PATH, "utf8"))?.dlmmFailStreak;
+      return typeof v === "number" && v >= 0 ? v : 0;
+    } catch {
+      return 0;
+    }
+  };
+  const saveDlmmFailStreak = (n: number): void => {
+    try {
+      mkdirSync(dirname(DLMM_FAILSTREAK_STATE_PATH), { recursive: true });
+      writeFileSync(DLMM_FAILSTREAK_STATE_PATH, JSON.stringify({ dlmmFailStreak: n }));
+    } catch {
+      /* best-effort — a write failure here must not take the agent down */
+    }
+  };
+  let dlmmFailStreak = loadDlmmFailStreak();
   const DLMM_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.DLMM_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
   let sessionStart = 0;
@@ -596,6 +621,14 @@ async function main() {
   // supervise.ts already tolerates by design. Resets the moment any cycle succeeds.
   const CIRCUIT_BREAKER_THRESHOLD = Math.max(1, Number(process.env.MAX_CONSECUTIVE_FAILURES ?? 5));
   const step = async () => {
+    // Set when a DLMM broadcast fails this tick — read by the healthcheck ping below.
+    // DLMM's own try/catch deliberately swallows its errors so a bad DLMM cycle never
+    // crashes an otherwise-good XYK tick (and so never trips the cycle-level circuit
+    // breaker, which would wrongly freeze XYK trading too), but that meant a DLMM
+    // failure had NO alerting path at all before this — see the fail-streak comment
+    // below for the incident this class of gap already caused once (found via
+    // external review, 2026-09).
+    let dlmmFailedThisTick = false;
     const snap = await readMarket(w);
     if (sessionStart === 0) sessionStart = snap.portfolioY;
     if (i % f.tuneEvery === 0) {
@@ -714,12 +747,13 @@ async function main() {
           // deliberate pre-broadcast skip (kill switch / nonce gate — see RecenterResult.skipped).
           const attempted = dlmmLive && res.action !== "hold" && !res.skipped;
           if (res.executed) dlmmFailStreak = 0;
-          else if (attempted) dlmmFailStreak++;
+          else if (attempted) { dlmmFailStreak++; dlmmFailedThisTick = true; }
+          if (attempted) saveDlmmFailStreak(dlmmFailStreak);
           if (res.executed) dlmmRecenters++;
           appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, dlmmFailStreak, ...res });
           console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
         } catch (e) {
-          if (dlmmLive) dlmmFailStreak++; // a thrown add (e.g. sizing/network) is still a real failed attempt
+          if (dlmmLive) { dlmmFailStreak++; dlmmFailedThisTick = true; saveDlmmFailStreak(dlmmFailStreak); } // a thrown add (e.g. sizing/network) is still a real failed attempt
           appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message, dlmmFailStreak });
         }
       }
@@ -729,7 +763,14 @@ async function main() {
       // is on the record; never executes until a route is ready (none today).
       const haven = decideHaven(lastRegime, xp.map((o) => ({ pool: o.pool, liqUsd: o.liqUsd })), defaultHavenParams());
       appendJournal({ t: new Date().toISOString(), type: "haven", ...haven });
-      await pingHealthcheck(); // dead-man's switch: silence = alert
+      // Dead-man's switch: silence = alert. Also now the DLMM alerting path (issue found
+      // via external review, 2026-09): a "fail" ping on the FIRST DLMM broadcast failure,
+      // not just after the fail-streak limit stops broadcasting. The 2026-09-21 incident
+      // ran 15 failed transactions over ~7 hours before a human noticed from logs alone;
+      // the 2026-09-11 isolated abort ten days earlier had the same root cause and would
+      // have surfaced here too, had this existed then. A good XYK cycle still pings "ok"
+      // even when DLMM fails — this is a signal to look, not a claim the whole tick failed.
+      await pingHealthcheck(dlmmFailedThisTick ? "fail" : "ok");
       await publishMetrics(); // pilot telemetry → public dashboard (gist mirror)
     }
   };

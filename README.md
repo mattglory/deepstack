@@ -86,10 +86,16 @@ transaction table (each row links to the explorer). No private data, no server.
 
 ## Roadmap (grant milestones)
 
-- **M1 (wk 1–4):** Stacks adapter + testnet PoC (this repo → testnet reads, signing).
-- **M2 (wk 5–8):** live mainnet pilot on one sBTC pool (~$1K self-funded inventory) +
-  public dashboard (volume facilitated, fees, IL-adjusted return, uptime).
-- **M3 (wk 9–12):** publish 30-day results, open-source the adapter, Velar perps spike.
+The grant is two milestones, not three:
+
+- **M1 (40%):** Stacks adapter + mainnet pilot launch. Evidenced on **mainnet**, not
+  testnet — 10 confirmed mainnet transactions from the agent wallet, including swaps and
+  add/remove-liquidity (see `M1_EVIDENCE_RUN.md`). Approved.
+- **M2 (60%):** 30-day mainnet pilot results, open-source release. Live mainnet pilot on
+  Bitflow sBTC-STX (XYK) and sBTC-USDCx (DLMM), public dashboard (volume, fees,
+  IL-adjusted return, uptime, spread history), published results post, FlashStack
+  flash-rebalance evidence, MIT license + integration docs, Velar perps research spike,
+  external review. See `docs/PILOT_RESULTS.md` for the pilot's final numbers.
 
 ## Layout
 

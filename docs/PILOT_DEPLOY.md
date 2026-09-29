@@ -49,6 +49,12 @@ full test suite + typecheck (a red suite aborts the install), and installs — b
 enable — the systemd unit. Re-running it later is the update path: it never touches
 `.env`, `journal/`, or the telemetry file.
 
+**`journal/` won't exist yet.** It's gitignored — local runtime evidence, not something a
+clone ships with. The agent creates it itself on its first tick (`mkdirSync` in
+`journal.ts`), so any command below that reads `journal/...` (verification, `grep`, `tail`)
+only works after the agent has actually run at least once. This is expected, not a broken
+step — see §6 for the order these actually happen in.
+
 ## 4. Secrets
 
 **Never commit `.env`, never paste the key into a chat, never `curl` it anywhere.** Copy it

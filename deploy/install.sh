@@ -26,6 +26,11 @@ rsync -a --delete \
   --exclude .git --exclude node_modules \
   --exclude .env --exclude journal --exclude dashboard/metrics.json \
   "$SRC"/ "$APP"/
+# $APP has no .git (excluded above), so the running process can't `git rev-parse` its own
+# commit — stamp it here instead. Read by src/m1/metrics.ts's deployedCommit(), surfaced
+# in metrics.json and the dashboard footer (found via external review, 2026-09: a status
+# message cited a stale commit with nothing published to catch the drift).
+git -C "$SRC" rev-parse --short HEAD > "$APP/.deployed-commit"
 
 echo "== deps + gates (do not deploy a red suite) =="
 cd "$APP"

@@ -3,6 +3,14 @@
 // The constant-product spot price is the most robust mid we can get: it comes
 // straight from on-chain reserves, so it works even for pools whose ticker
 // last_price is 0 (no recent trades). This mid is what the MM core quotes around.
+//
+// PoC-spike code, superseded by src/m1/ for anything live — src/index.ts (the only
+// caller) picks whichever pool ranks highest by liquidity among "BTC-flavoured" pools
+// with no filter on pool type. Constant-product pricing is only correct for an XYK
+// pool; applied to a stableswap-curve pool it gives a wrong mid. The live agent never
+// hits this path (src/m1/contracts.ts targets one known XYK pool directly), so this
+// has never mispriced anything real, but do not reuse this function generically
+// without adding that filter first (found via external review, 2026-09).
 
 import { callNoArgReadOnly, getDecimals } from "./stacks.js";
 

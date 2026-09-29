@@ -67,7 +67,7 @@
       <header>
         <div class="logo">◆</div>
         <h1>DeepStack</h1>
-        <span class="live"><span class="dot"></span> live · on-chain</span>
+        <span class="live" id="liveBadge"><span class="dot"></span> live · on-chain</span>
       </header>
       <p class="meta">
         Bitcoin-native liquidity agent on Stacks
@@ -126,8 +126,12 @@
       </div>
 
       <p class="foot">
-        Every figure is derived live from the Stacks blockchain (Hiro API) and is independently
-        verifiable on the explorer — no backend, no private data. Auto-refreshes every 30s.<br />
+        The transaction table above is read live from the Stacks blockchain (Hiro API) and
+        independently verifiable on the explorer. Portfolio, P&amp;L, IL-adjusted return, uptime,
+        and the safety tiles are agent-published telemetry (self-reported by the running
+        process), cross-checkable against the journal and the transactions themselves, not
+        recomputed from chain by this page. No backend, no private data. Auto-refreshes every
+        30s.<span id="deployedCommitFoot"></span><br />
         Open source: <a href="https://github.com/mattglory/deepstack" target="_blank" rel="noopener">github.com/mattglory/deepstack</a>
       </p>
     </div>
@@ -137,6 +141,7 @@
         wallet: "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
         api: "https://api.mainnet.hiro.so",
         sbtcAsset: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+        usdcxAsset: "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
         lpAsset: "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1::pool-token",
         // Bitflow's pool now routes LP ops through the "-multi" function variants (recenters
         // etc.) alongside the older plain names — both must be recognised or real add/withdraw
@@ -177,6 +182,16 @@
       const sbtcDir = (t, dir) => Math.max(0, ...(t.ft_transfers || [])
         .filter((x) => x.asset_identifier === CFG.sbtcAsset && (dir === "in" ? x.recipient === CFG.wallet : x.sender === CFG.wallet))
         .map((x) => Number(x.amount)));
+      // A DLMM "-multi" call spans several bins, each with its own transfer — SUM them,
+      // don't take the max (max is right for a single-bin XYK row, where a second, tiny
+      // transfer is fee dust to exclude; here every transfer is a real leg of the same
+      // deposit/withdrawal). Also used for the USDCx leg, which the XYK-only sbtcDir/STX
+      // rendering below never showed at all (found via external review, 2026-09: DLMM
+      // rows rendered "deposited X sBTC + 0 STX" — the pool is sBTC-USDCx, not sBTC-STX).
+      const assetSumDir = (t, assetId, dir) => (t.ft_transfers || [])
+        .filter((x) => x.asset_identifier === assetId && (dir === "in" ? x.recipient === CFG.wallet : x.sender === CFG.wallet))
+        .reduce((sum, x) => sum + Number(x.amount), 0);
+      const uUSDCX = (n) => Number(n) / 1e6;
 
       function card(k, v, sub) { return `<div class="card big"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="sub2">${sub}</div>` : ""}</div>`; }
       function small(k, v) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
@@ -324,8 +339,10 @@
               const t = r.tx, fn = t.contract_call.function_name, sb = sbtcLeg(r), s = t.tx_status === "success";
               const detail = fn === "swap-y-for-x" ? `${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 3)} STX → ${fmt(baseBTC(sb), 8)} sBTC`
                 : fn === "swap-x-for-y" ? `${fmt(baseBTC(sb), 8)} sBTC → ${fmt(uSTX(r.stx_received), 3)} STX`
-                : fn.startsWith("add-liquidity") ? `deposited ${fmt(baseBTC(sbtcDir(r, "out")), 8)} sBTC + ${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 2)} STX`
-                : fn.startsWith("withdraw-liquidity") ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX`
+                : fn === "add-liquidity" ? `deposited ${fmt(baseBTC(sbtcDir(r, "out")), 8)} sBTC + ${fmt(uSTX(Number(r.stx_sent) - Number(t.fee_rate)), 2)} STX`
+                : fn === "withdraw-liquidity" ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX`
+                : fn === "add-liquidity-multi" ? `deposited ${fmt(baseBTC(assetSumDir(r, CFG.sbtcAsset, "out")), 8)} sBTC + ${fmt(uUSDCX(assetSumDir(r, CFG.usdcxAsset, "out")), 2)} USDCx`
+                : fn === "withdraw-liquidity-multi" ? `withdrew ${fmt(baseBTC(assetSumDir(r, CFG.sbtcAsset, "in")), 8)} sBTC + ${fmt(uUSDCX(assetSumDir(r, CFG.usdcxAsset, "in")), 2)} USDCx`
                 : fn === "flash-loan" ? flashLoanDetail(t) : fn;
               return `<tr><td class="tnum">${tstr(t.burn_block_time)}</td><td>${fn}</td><td class="tnum">${detail}</td>
                 <td class="tnum">${fmt(uSTX(t.fee_rate), 3)}</td>
@@ -383,7 +400,7 @@
       // marks breakeven vs holding the starting inventory.
       function renderPerformance(m, ss, pilot) {
         const wrap = $("perfWrap"), note = $("perfNote"), sub = $("perfSub");
-        sub.textContent = "· cumulative return vs HODL, net of IL — since pilot start";
+        sub.textContent = "· cumulative return vs HODL, net of IL";
         if (!pilot || !m.pilotBaseline) {
           wrap.style.display = "none";
           note.innerHTML = "Track record begins at <b>pilot start</b> — a clean, fixed-inception equity curve with no capital top-ups (the honest way to show performance). Current LP&nbsp;P&amp;L net of IL is in Economics above.";
@@ -404,6 +421,14 @@
           note.textContent = "Pilot window open — awaiting clean in-window heartbeats.";
           return;
         }
+        // The sub-header must match the axis, not just say "since pilot start" — hodlNow
+        // can't value a sample without a recorded stxUsd, so the series' real first point
+        // can be well after the pilot's actual anchor (found via external review, 2026-09:
+        // labelled "since pilot start" while starting 2 weeks in, silently dropping the gap).
+        const seriesStartsAtAnchor = Math.abs(new Date(series[0].t) - new Date(m.pilotStartedAt)) < 2 * m.intervalSec * 1000;
+        sub.textContent = seriesStartsAtAnchor
+          ? "· cumulative return vs HODL, net of IL — since pilot start"
+          : "· cumulative return vs HODL, net of IL — from the first sample with complete price data (see date range below), not the pilot's actual start";
         wrap.style.display = "block";
         const svg = $("perfChart"), W = svg.clientWidth || 800, H = 150, P = 8;
         svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
@@ -517,6 +542,18 @@
         // Fixed by backfilling pilotBaseline.usdcxQty (the missing piece — lpBasis and
         // dlmmBasis were already tracked) so hodlNow can value all four books consistently.
         const staleMin = (Date.now() - t1) / 6e4;
+        // The header badge used to be static — always green regardless of heartbeat
+        // staleness (found via external review, 2026-09). Same 90-minute threshold as
+        // the "Last heartbeat" tile below, so the two never disagree.
+        const badge = $("liveBadge");
+        if (staleMin < 90) {
+          badge.innerHTML = `<span class="dot"></span> live · on-chain`;
+        } else {
+          badge.innerHTML = `<span class="dot" style="background:var(--bad);box-shadow:none;animation:none"></span> stale · ${fmt(staleMin, 0)}m since heartbeat`;
+        }
+        if (m.deployedCommit) {
+          $("deployedCommitFoot").textContent = ` Running ${m.deployedCommit}.`;
+        }
         const hodlNowVal = hodlNow(m, last);
         const ilAdj = hodlNowVal !== null && hodlNowVal > 0 ? ((last.portfolioY - hodlNowVal) / hodlNowVal) * 100 : null;
         const ilTile =

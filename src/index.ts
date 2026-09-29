@@ -1,4 +1,9 @@
-// PoC spike entry point.
+// PoC spike entry point — historical, superseded by src/m1/ for anything live.
+// Kept for reference only; nothing under src/m1/ imports from this file. Picks whatever
+// pool ranks highest by liquidity among "BTC-flavoured" Bitflow pools with no filter on
+// pool type, then prices it with pool.ts's constant-product math, which is only correct
+// for an XYK pool (see the caveat in pool.ts). Do not reuse this selection logic without
+// adding that filter first.
 //
 // Demonstrates, end to end, the read-and-decide loop the live agent is built on:
 //   1. Pull LIVE Bitflow pools (real liquidity/price data, no API key).

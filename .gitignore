@@ -9,3 +9,6 @@ journal/
 clarinet/.cache/
 clarinet/history/
 evidence-backup/
+
+# Stamped by deploy/install.sh on the deploy target, not part of the repo itself
+.deployed-commit
