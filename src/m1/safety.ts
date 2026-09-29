@@ -17,14 +17,24 @@ export interface ExternalMid {
   midXinY: number; // implied y per x = xUsd / yUsd
 }
 
-// Independent reference price (CoinGecko, public, no key) for the active pair's
-// two tokens. Returns null on failure. Fail-closed handling lives in assessSafety.
+// Independent reference price (CoinGecko) for the active pair's two tokens. Returns
+// null on failure. Fail-closed handling lives in assessSafety.
+//
+// COINGECKO_API_KEY is optional but strongly recommended: the unauthenticated public
+// endpoint shares one rate-limit pool across every anonymous caller globally, not per
+// IP, and this agent has been hitting sustained HTTP 403s from it (2026-09-29 — 16 of
+// 29 cycles in one day, each correctly fail-closing but costing real uptime). The free
+// Demo plan (no credit card) raises this to a per-key limit. Header, not query param,
+// per CoinGecko's own security recommendation — same reasoning as hiroHeaders() in
+// rpc.ts for the equivalent Hiro rate-limit fix.
 export async function getExternalMid(): Promise<ExternalMid | null> {
   try {
     const p = activePool();
     const ids = [p.x.coingecko, p.y.coingecko];
+    const key = process.env.COINGECKO_API_KEY;
     const r = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd`,
+      key ? { headers: { "x-cg-demo-api-key": key } } : undefined,
     );
     if (!r.ok) {
       console.warn(`(external price unavailable: CoinGecko HTTP ${r.status})`);
