@@ -132,7 +132,14 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
   if (!st) throw new Error(`could not read pool state for ${poolDef.key}`);
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
-  console.log(`withdraw ${pos.bins.length} bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / 1e6).toFixed(3)} STX + ${(Number(pos.totalY) / 1e6).toFixed(3)} USDCx`);
+  // Real decimals and asset names, not a hardcoded /1e6 + "STX" label — wrong on both counts
+  // for any pool where X isn't native STX (e.g. sbtc-usdcx, 8 decimals): a human reviewing
+  // this preview before confirming a broadcast deserves the real amount and the real asset.
+  // Same bug, same fix as dlmm-recenter-exec.ts's RecenterResult.posX (found 2026-09-30).
+  const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
+  const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
+  const xdp = xTok.decimals === 8 ? 6 : 3;
+  console.log(`withdraw ${pos.bins.length} bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}`);
   if (!yes) { console.log("  (preview — not broadcast)"); return false; }
   const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const r = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce });

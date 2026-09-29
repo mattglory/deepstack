@@ -205,7 +205,13 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   const base: RecenterResult = {
     action: dec.action, reason: dec.reason, activeBin: st.activeBinId,
     posLo: pos.lowerSignedBin, posHi: pos.upperSignedBin,
-    posX: +(Number(pos.totalX) / 1e6).toFixed(4), posY: +(Number(pos.totalY) / 1e6).toFixed(4),
+    // Real decimals, not a flat 1e6 — sBTC is 8 decimals, so the old hardcoded /1e6 made
+    // every journalled posX 100x too large for this pool (0.18 logged vs the true 0.0018).
+    // Cosmetic only: nothing reads posX/posY for any reported figure (dlmmValueY, P&L, the
+    // dashboard, and pnl.ts all use their own correctly-decimalled reads), but the raw
+    // journal itself is part of the public evidence trail and should be right on its own
+    // terms. Found 2026-09-30 while reconciling a Bitflow position value.
+    posX: +(Number(pos.totalX) / 10 ** xTok.decimals).toFixed(4), posY: +(Number(pos.totalY) / 10 ** yTok.decimals).toFixed(4),
     halfWidth, executed: false,
   };
   if (dec.action === "hold" || !live) return base;
