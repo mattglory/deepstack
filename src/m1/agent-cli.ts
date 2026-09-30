@@ -38,7 +38,7 @@ import { decideAllocation, defaultAllocationParams, type Regime } from "./alloca
 import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
-import { publishMetrics } from "./publish.js";
+import { publishMetrics, isPublishConfigured } from "./publish.js";
 import { withRpc } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
@@ -763,15 +763,22 @@ async function main() {
       // is on the record; never executes until a route is ready (none today).
       const haven = decideHaven(lastRegime, xp.map((o) => ({ pool: o.pool, liqUsd: o.liqUsd })), defaultHavenParams());
       appendJournal({ t: new Date().toISOString(), type: "haven", ...haven });
-      // Dead-man's switch: silence = alert. Also now the DLMM alerting path (issue found
-      // via external review, 2026-09): a "fail" ping on the FIRST DLMM broadcast failure,
-      // not just after the fail-streak limit stops broadcasting. The 2026-09-21 incident
-      // ran 15 failed transactions over ~7 hours before a human noticed from logs alone;
-      // the 2026-09-11 isolated abort ten days earlier had the same root cause and would
-      // have surfaced here too, had this existed then. A good XYK cycle still pings "ok"
-      // even when DLMM fails — this is a signal to look, not a claim the whole tick failed.
-      await pingHealthcheck(dlmmFailedThisTick ? "fail" : "ok");
-      await publishMetrics(); // pilot telemetry → public dashboard (gist mirror)
+      // Pilot telemetry → public dashboard (gist mirror). Its own result now feeds the
+      // dead-man's switch below (issue #1, external review) — previously a publish failure
+      // was only a console.warn, never reaching alerting even as failStreak climbed. Gated
+      // on isPublishConfigured() so an environment that simply doesn't set gist credentials
+      // (dryrun, dev) isn't treated as "failing" every cycle — only a configured publisher
+      // that actually can't reach GitHub counts.
+      const publishOk = await publishMetrics();
+      const publishFailed = isPublishConfigured() && !publishOk;
+      // Dead-man's switch: silence = alert. Also the DLMM alerting path (issue found via
+      // external review, 2026-09): a "fail" ping on the FIRST DLMM broadcast failure, not
+      // just after the fail-streak limit stops broadcasting. The 2026-09-21 incident ran
+      // 15 failed transactions over ~7 hours before a human noticed from logs alone; the
+      // 2026-09-11 isolated abort ten days earlier had the same root cause and would have
+      // surfaced here too, had this existed then. A good XYK cycle still pings "ok" even
+      // when DLMM or publish fails — this is a signal to look, not a claim the tick failed.
+      await pingHealthcheck(dlmmFailedThisTick || publishFailed ? "fail" : "ok");
     }
   };
 

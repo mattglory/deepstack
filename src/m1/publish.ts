@@ -21,6 +21,12 @@ type Fetch = typeof fetch;
 
 let failStreak = 0;
 
+/** True once both gist credentials are set — distinguishes "off" from "failing" for callers
+ *  that want to alert on a real failure but not on an intentionally-unconfigured publisher. */
+export function isPublishConfigured(): boolean {
+  return Boolean(process.env.METRICS_GIST_ID && process.env.METRICS_GIST_TOKEN);
+}
+
 /**
  * Push the current metrics file to the configured gist. Never throws — telemetry is
  * evidence, not safety-critical, and a GitHub outage must not affect trading. Logs a
@@ -41,6 +47,7 @@ export async function publishMetrics(doFetch: Fetch = fetch): Promise<boolean> {
         "X-GitHub-Api-Version": "2022-11-28",
       },
       body: JSON.stringify({ files: { "metrics.json": { content } } }),
+      signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) throw new Error(`gist update → HTTP ${res.status}`);
     failStreak = 0;

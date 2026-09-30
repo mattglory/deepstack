@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.METRICS_PATH = join(tmpdir(), `deepstack-publish-test-${process.pid}.json`);
-const { publishMetrics } = await import("./publish.js");
+const { publishMetrics, isPublishConfigured } = await import("./publish.js");
 const { METRICS_PATH } = await import("./metrics.js");
 
 beforeEach(() => {
@@ -60,4 +60,14 @@ test("publish: a non-2xx response is a failure, not a success", async () => {
   process.env.METRICS_GIST_TOKEN = "bad-token";
   const denied = (async () => ({ ok: false, status: 401 }) as Response) as typeof fetch;
   assert.equal(await publishMetrics(denied), false);
+});
+
+// isPublishConfigured() exists so a caller (agent-cli.ts's alerting) can tell "off" apart
+// from "failing" — publishMetrics() returns false for both, but only the latter should page.
+test("isPublishConfigured: false unless BOTH gist id and token are set", () => {
+  assert.equal(isPublishConfigured(), false);
+  process.env.METRICS_GIST_ID = "abc123";
+  assert.equal(isPublishConfigured(), false); // id without token
+  process.env.METRICS_GIST_TOKEN = "ghp_test";
+  assert.equal(isPublishConfigured(), true);
 });
