@@ -57,3 +57,31 @@ test("withRpc: only throws when EVERY endpoint fails — and surfaces the last e
   // A later recovery is picked up — the failover never wedges itself.
   assert.equal(await withRpc(async () => "recovered"), "recovered");
 });
+
+// A stuck (not erroring) endpoint previously hung withRpc forever — no fallback ever
+// triggered because the loop just sat on a promise that never settled. These pin down
+// the fix: a hanging attempt is raced against a timeout and treated as a failure like
+// any other, so the loop still moves on.
+test("withRpc: a hanging endpoint is treated as a failure — times out and fails over", async () => {
+  process.env.STACKS_API_FALLBACKS = "https://backup.example";
+  const hits: string[] = [];
+  let first: string | null = null;
+  // Whichever endpoint withRpc tries first (sticky state from earlier tests makes that
+  // not always PRIMARY) hangs forever; the other answers immediately.
+  const hangy = async (b: string) => {
+    hits.push(b);
+    if (first === null) first = b;
+    if (b === first) return new Promise(() => {}); // never resolves
+    return "ok";
+  };
+  assert.equal(await withRpc(hangy, 20), "ok");
+  assert.equal(hits.length, 2);
+  assert.notEqual(hits[0], hits[1]);
+});
+
+test("withRpc: no fallback + a hanging endpoint rejects with a timeout, not forever", async () => {
+  await assert.rejects(
+    withRpc(() => new Promise(() => {}), 20),
+    /timed out after 20ms/,
+  );
+});

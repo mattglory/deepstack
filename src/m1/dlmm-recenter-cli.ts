@@ -22,7 +22,7 @@
 //   npm run m1:dlmm-recenter -- withdraw --yes-mainnet
 
 import { fetchNonce } from "@stacks/transactions";
-import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
@@ -51,8 +51,6 @@ const ADD_MIN_DLP_SLIPPAGE_BPS = 100; // matches dlmm-recenter-exec.ts's live-ag
 const FEE_USTX = 300_000n;
 const DEADLINE_SECS = 600;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const API = "https://api.mainnet.hiro.so";
-
 function parseArgs() {
   const a = process.argv.slice(2);
   const pos = a.filter((x) => !x.startsWith("--"));
@@ -63,13 +61,19 @@ async function waitFor(txid: string): Promise<string> {
   console.log(`  ${txid} — confirming…`);
   for (let i = 0; i < 40; i++) {
     await sleep(6000);
-    const res = await fetch(`${API}/extended/v1/tx/${txid}`, { headers: hiroHeaders(API) });
-    if (res.ok) {
-      const j = (await res.json()) as { tx_status?: string; tx_result?: { repr?: string } };
+    try {
+      const j = await withRpc((baseUrl) =>
+        hiroFetch(baseUrl)(`${baseUrl}/extended/v1/tx/${txid}`).then((res) => {
+          if (!res.ok) throw new Error(`tx status fetch failed: ${res.status}`);
+          return res.json() as Promise<{ tx_status?: string; tx_result?: { repr?: string } }>;
+        }),
+      );
       if (j.tx_status && j.tx_status !== "pending") {
         console.log(`  status: ${j.tx_status}${j.tx_result?.repr ? `  result: ${j.tx_result.repr}` : ""}`);
         return j.tx_status;
       }
+    } catch {
+      // no endpoint answered (or all timed out) this poll — treat as still-pending, retry
     }
     process.stdout.write(".");
   }

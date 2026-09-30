@@ -16,7 +16,7 @@
 
 import { existsSync } from "node:fs";
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
-import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { exceedsPoolShare } from "./agent.js";
@@ -28,7 +28,6 @@ import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
 
-const API = "https://api.mainnet.hiro.so";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
 // Slippage margin for the per-bin min-dlp guard (dlmm-recenter.ts's expectedDlp), matching the
 // codebase's other default slippage (agent.ts's slippageBps: 100). Covers price movement between
@@ -47,7 +46,7 @@ export interface TokenMeta { principal: string; native: boolean; asset: string; 
 export async function resolveToken(principal: string): Promise<TokenMeta> {
   if (isNativeStxToken(principal)) return { principal, native: true, asset: "", decimals: 6 };
   const [addr, name] = principal.split(".");
-  const iface = await (await fetch(`${API}/v2/contracts/interface/${addr}/${name}`, { headers: hiroHeaders(API) })).json();
+  const iface = await withRpc((baseUrl) => hiroFetch(baseUrl)(`${baseUrl}/v2/contracts/interface/${addr}/${name}`).then((r) => r.json()));
   const asset = ((iface.fungible_tokens ?? []).map((f: any) => f.name).find((n: string) => !/locked/.test(n))) ?? name;
   let decimals = 6;
   try {
@@ -58,20 +57,25 @@ export async function resolveToken(principal: string): Promise<TokenMeta> {
 }
 
 export async function ftBalance(addr: string, assetId: string): Promise<bigint> {
-  const j = await (await fetch(`${API}/extended/v1/address/${addr}/balances`, { headers: hiroHeaders(API) })).json();
+  const j = await withRpc((baseUrl) => hiroFetch(baseUrl)(`${baseUrl}/extended/v1/address/${addr}/balances`).then((r) => r.json()));
   const ft = j.fungible_tokens ?? {};
   return ft[assetId] ? BigInt(ft[assetId].balance) : 0n;
 }
 
+// Single-source third-party price feeds — no Stacks RPC failover applies (not a Hiro-shaped
+// API, and there's only one configured source), but still bounded so a hung request can't
+// block a recenter cycle indefinitely.
+const PRICE_FETCH_TIMEOUT_MS = 10_000;
+
 export async function stxPriceUsd(): Promise<number> {
-  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:blockstack")).json();
+  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:blockstack", { signal: AbortSignal.timeout(PRICE_FETCH_TIMEOUT_MS) })).json();
   const p = j?.coins?.["coingecko:blockstack"]?.price;
   if (!(p > 0)) throw new Error("could not read STX price");
   return p;
 }
 
 export async function btcPriceUsd(): Promise<number> {
-  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:bitcoin")).json();
+  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:bitcoin", { signal: AbortSignal.timeout(PRICE_FETCH_TIMEOUT_MS) })).json();
   const p = j?.coins?.["coingecko:bitcoin"]?.price;
   if (!(p > 0)) throw new Error("could not read BTC price");
   return p;
@@ -89,10 +93,16 @@ export async function waitForTx(txid: string, log: (s: string) => void): Promise
   log(`  ${txid} — confirming…`);
   for (let i = 0; i < 40; i++) {
     await sleep(6000);
-    const res = await fetch(`${API}/extended/v1/tx/${txid}`, { headers: hiroHeaders(API) });
-    if (res.ok) {
-      const j = (await res.json()) as { tx_status?: string; tx_result?: { repr?: string } };
+    try {
+      const j = await withRpc((baseUrl) =>
+        hiroFetch(baseUrl)(`${baseUrl}/extended/v1/tx/${txid}`).then((res) => {
+          if (!res.ok) throw new Error(`tx status fetch failed: ${res.status}`);
+          return res.json() as Promise<{ tx_status?: string; tx_result?: { repr?: string } }>;
+        }),
+      );
       if (j.tx_status && j.tx_status !== "pending") { log(`  status: ${j.tx_status}${j.tx_result?.repr ? `  ${j.tx_result.repr}` : ""}`); return j.tx_status; }
+    } catch {
+      // no endpoint answered (or all timed out) this poll — treat as still-pending, retry
     }
   }
   return "timeout";

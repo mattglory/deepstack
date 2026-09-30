@@ -38,7 +38,7 @@ export async function pingHealthcheck(status: "ok" | "fail" = "ok"): Promise<voi
   const url = process.env.HEALTHCHECK_URL;
   if (!url) return; // graceful no-op until configured
   try {
-    await fetch(status === "fail" ? `${url.replace(/\/$/, "")}/fail` : url, { method: "GET" });
+    await fetch(status === "fail" ? `${url.replace(/\/$/, "")}/fail` : url, { method: "GET", signal: AbortSignal.timeout(10_000) });
   } catch {
     // Alerting outage must not affect trading; the missed ping IS the alert.
   }

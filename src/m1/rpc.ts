@@ -48,15 +48,41 @@ export function endpoints(): string[] {
 
 let preferred = 0; // index of the last endpoint that worked (may exceed the list if env changes)
 
-/** Run a read against the first endpoint that answers. Throws only when ALL endpoints fail. */
-export async function withRpc<T>(fn: (baseUrl: string) => Promise<T>): Promise<T> {
+// A hanging (not erroring) endpoint previously blocked withRpc forever — no fallback ever
+// triggered because the loop was waiting on a promise that never settled. Race each attempt
+// against a timeout so a stuck endpoint is treated as a failure like any other and the loop
+// moves on to the next one.
+const DEFAULT_RPC_TIMEOUT_MS = Number(process.env.RPC_TIMEOUT_MS ?? 15_000);
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Run a read against the first endpoint that answers. Throws only when ALL endpoints fail
+ * (including timing out). `timeoutMs` bounds each individual endpoint attempt, not the whole
+ * call — a full pass over N endpoints can take up to N * timeoutMs in the worst case.
+ */
+export async function withRpc<T>(fn: (baseUrl: string) => Promise<T>, timeoutMs = DEFAULT_RPC_TIMEOUT_MS): Promise<T> {
   const eps = endpoints();
   if (preferred >= eps.length) preferred = 0;
   let lastErr: unknown;
   for (let i = 0; i < eps.length; i++) {
     const idx = (preferred + i) % eps.length;
     try {
-      const out = await fn(eps[idx]);
+      const out = await withTimeout(fn(eps[idx]), timeoutMs, `RPC call to ${eps[idx]}`);
       if (idx !== preferred) {
         console.warn(`  [rpc] ${eps[preferred]} failing — switched to ${eps[idx]}`);
         preferred = idx;

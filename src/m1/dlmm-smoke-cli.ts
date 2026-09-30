@@ -20,7 +20,7 @@
 // agent paused (touch /opt/deepstack/KILL) or when it is not about to broadcast.
 
 import { fetchNonce } from "@stacks/transactions";
-import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 import { getWallet, getStxBalance } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
@@ -182,9 +182,18 @@ async function report(txid?: string) {
   console.log("  confirming…");
   for (let i = 0; i < 40; i++) {
     await sleep(6000);
-    const r = await fetch(`https://api.mainnet.hiro.so/extended/v1/tx/${txid}`, { headers: hiroHeaders("https://api.mainnet.hiro.so") });
-    if (r.ok) {
-      const j = (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
+    let j: { tx_status?: string; tx_result?: { repr?: string } } | undefined;
+    try {
+      j = await withRpc((baseUrl) =>
+        hiroFetch(baseUrl)(`${baseUrl}/extended/v1/tx/${txid}`).then((r) => {
+          if (!r.ok) throw new Error(`tx status fetch failed: ${r.status}`);
+          return r.json() as Promise<{ tx_status?: string; tx_result?: { repr?: string } }>;
+        }),
+      );
+    } catch {
+      // no endpoint answered (or all timed out) this poll — treat as still-pending, retry
+    }
+    if (j) {
       if (j.tx_status && j.tx_status !== "pending") {
         console.log(`  status: ${j.tx_status}${j.tx_result?.repr ? `  result: ${j.tx_result.repr}` : ""}`);
         if (j.tx_status === "success") {

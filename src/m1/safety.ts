@@ -34,7 +34,7 @@ export async function getExternalMid(): Promise<ExternalMid | null> {
     const key = process.env.COINGECKO_API_KEY;
     const r = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd`,
-      key ? { headers: { "x-cg-demo-api-key": key } } : undefined,
+      { headers: key ? { "x-cg-demo-api-key": key } : undefined, signal: AbortSignal.timeout(10_000) },
     );
     if (!r.ok) {
       console.warn(`(external price unavailable: CoinGecko HTTP ${r.status})`);
