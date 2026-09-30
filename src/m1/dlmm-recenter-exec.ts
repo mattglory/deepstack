@@ -139,7 +139,11 @@ async function tokenBalance(w: Wallet, tok: TokenMeta): Promise<bigint> {
 // or a SIP-010 like sBTC (sbtc-usdcx): price + decimals come from the resolved token, input caps
 // branch native/FT automatically. Returns txid, or throws.
 async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void): Promise<string> {
-  const cap = cfg.maxTargetUsd ?? 250;
+  // Configurable, not a bare 250 — the live agent never overrides cfg.maxTargetUsd, so this
+  // was also capping every future autonomous recenter of the position at $250, not just a
+  // one-off manual open (found 2026-09-30 sizing a deliberate $600 position — the position
+  // would have shrunk back to $250 the moment it next needed a genuine recenter).
+  const cap = cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
   if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) throw new Error(`target must be >0 and ≤ ${cap}`);
   const xPrice = await priceOfToken(xTok);
   const nativeStx = (await getStxBalance(w.address, w.network)).microStx;

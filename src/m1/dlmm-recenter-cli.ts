@@ -43,7 +43,9 @@ const PAIR = process.env.DLMM_PAIR ?? "stx-usdcx";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
 const HALF_WIDTH = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
 const TARGET_USD = Number(process.env.DLMM_TARGET_USD ?? 40); // recenter re-adds to this size
-const MAX_TARGET_USD = 250;
+// Same cap as dlmm-recenter-exec.ts's executeAdd, same reasoning: configurable, not a bare
+// 250, so a deliberately-larger pilot position doesn't need another code edit each time.
+const MAX_TARGET_USD = Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
 const ADD_MIN_DLP_SLIPPAGE_BPS = 100; // matches dlmm-recenter-exec.ts's live-agent value
 const FEE_USTX = 300_000n;
 const DEADLINE_SECS = 600;
