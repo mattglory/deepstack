@@ -263,3 +263,27 @@ export function adjustLpBasis(
     console.warn(`(lp basis update skipped: ${(err as Error).message})`);
   }
 }
+
+/**
+ * Explicitly set (or clear) the DLMM cost basis right after a confirmed fresh open — called
+ * by the code that just broadcast the transaction and knows the exact deposited legs, instead
+ * of relying on recordSample()'s passive reset-on-reopen (which only fires if some cycle's
+ * sample happens to observe the position at zero in between). A manual withdraw-then-reopen
+ * done faster than one cycle interval never produces that zero sample, so the old basis
+ * silently persists against a completely different position — found 2026-09-30: a $150 basis
+ * left in place after a withdraw-then-$600-reopen, producing a fabricated +14,330% APR. This
+ * does NOT apply to a routine same-capital recenter (withdraw + immediate re-add of the same
+ * position, repositioned to new bins) — that correctly keeps the existing basis, since no new
+ * capital entered; only a genuine fresh open (first-ever, or a deliberate resize) should reset it.
+ */
+export function setDlmmBasis(basis: { xQty: number; yQty: number; t: string } | null): void {
+  try {
+    const m = load();
+    if (!m) return;
+    if (basis) m.dlmmBasis = basis;
+    else delete m.dlmmBasis;
+    writeFileSync(METRICS_PATH, JSON.stringify(m));
+  } catch (err) {
+    console.warn(`(dlmm basis update skipped: ${(err as Error).message})`);
+  }
+}

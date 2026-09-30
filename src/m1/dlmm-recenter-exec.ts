@@ -20,6 +20,7 @@ import { withRpc, hiroFetch, hiroHeaders } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { exceedsPoolShare } from "./agent.js";
+import { setDlmmBasis } from "./metrics.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } from "./dlmm-recenter.js";
@@ -268,6 +269,22 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   if (dec.action === "open") {
     const addTxid = await executeAdd(w, poolDef, st, xTok, yTok, effCfg, log);
     const s = await waitForTx(addTxid, log);
+    if (s === "success") {
+      // Explicit basis reset, not left to recordSample()'s passive detection — see
+      // setDlmmBasis's own doc comment for why. Re-read the confirmed position rather than
+      // reuse the pre-broadcast target: the actual deposited legs can differ slightly from
+      // what was sized (price moved between building and confirming).
+      try {
+        const confirmedPos = await readUserPosition(poolDef, w.address);
+        setDlmmBasis({
+          xQty: Number(confirmedPos.totalX) / 10 ** xTok.decimals,
+          yQty: Number(confirmedPos.totalY) / 10 ** yTok.decimals,
+          t: new Date().toISOString(),
+        });
+      } catch (err) {
+        log(`  (basis reset skipped: ${(err as Error).message})`);
+      }
+    }
     return { ...base, executed: s === "success", addTxid, reason: s === "success" ? "opened" : `open ${s}` };
   }
 

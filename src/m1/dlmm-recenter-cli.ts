@@ -38,6 +38,7 @@ import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } 
 import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.).
 import { resolveToken, ftBalance, priceOfToken, type TokenMeta } from "./dlmm-recenter-exec.js";
+import { setDlmmBasis } from "./metrics.js";
 
 const PAIR = process.env.DLMM_PAIR ?? "stx-usdcx";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
@@ -175,7 +176,29 @@ async function main() {
   if (action === "open") {
     if (pos.bins.length > 0) throw new Error("a position already exists — use `recenter`");
     const txid = await doOpen(w, poolDef, st, xTok, yTok, Number(amount ?? TARGET_USD), yes);
-    if (txid) { const s = await waitFor(txid); if (s === "success") console.log("\n✅ position opened."); else process.exitCode = 1; }
+    if (txid) {
+      const s = await waitFor(txid);
+      if (s === "success") {
+        console.log("\n✅ position opened.");
+        // Explicit basis reset — see metrics.ts's setDlmmBasis doc comment. A manual
+        // withdraw-then-reopen (exactly what this command does for a deliberate resize)
+        // can run faster than one agent cycle, so the passive reset-on-reopen in
+        // recordSample() never observes the empty state and the old basis silently
+        // persists against the new position (found 2026-09-30: a $150 basis valuing a
+        // freshly-opened $600 position, producing a fabricated +14,330% APR).
+        try {
+          const confirmedPos = await readUserPosition(poolDef, w.address);
+          setDlmmBasis({
+            xQty: Number(confirmedPos.totalX) / xUnit,
+            yQty: Number(confirmedPos.totalY) / yUnit,
+            t: new Date().toISOString(),
+          });
+          console.log("   cost basis reset to the confirmed deposited legs.");
+        } catch (err) {
+          console.log(`   (basis reset skipped: ${(err as Error).message})`);
+        }
+      } else process.exitCode = 1;
+    }
     else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first: touch /opt/deepstack/KILL).");
     return;
   }
