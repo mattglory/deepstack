@@ -24,12 +24,10 @@ interface NoncesResponse {
   detected_mempool_nonces?: number[];
 }
 
-export async function checkNonceSafety(address: string): Promise<NonceSafety> {
-  const j = await withRpc(async (baseUrl) => {
-    const r = await fetch(`${baseUrl}/extended/v1/address/${address}/nonces`, { headers: hiroHeaders(baseUrl) });
-    if (!r.ok) throw new Error(`nonce check failed: HTTP ${r.status}`);
-    return (await r.json()) as NoncesResponse;
-  });
+// The decision itself (gap detected / prior tx pending / safe), pure and separate from the
+// network call that produces its input — extracted so this logic is unit-tested without a
+// live chain (external review, issue #7 — "nonce handling ... untested").
+export function nonceSafetyFromResponse(j: NoncesResponse): NonceSafety {
   const missingNonces = j.detected_missing_nonces ?? [];
   const mempoolPending = (j.detected_mempool_nonces ?? []).length;
   if (missingNonces.length > 0) {
@@ -49,4 +47,13 @@ export async function checkNonceSafety(address: string): Promise<NonceSafety> {
     };
   }
   return { safe: true, missingNonces, mempoolPending };
+}
+
+export async function checkNonceSafety(address: string): Promise<NonceSafety> {
+  const j = await withRpc(async (baseUrl) => {
+    const r = await fetch(`${baseUrl}/extended/v1/address/${address}/nonces`, { headers: hiroHeaders(baseUrl) });
+    if (!r.ok) throw new Error(`nonce check failed: HTTP ${r.status}`);
+    return (await r.json()) as NoncesResponse;
+  });
+  return nonceSafetyFromResponse(j);
 }

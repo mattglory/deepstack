@@ -23,7 +23,7 @@ import { exceedsPoolShare } from "./agent.js";
 import { setDlmmBasis } from "./metrics.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
@@ -312,10 +312,17 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce: wnonce });
   if (!wr.txid) throw new Error("withdraw returned no txid");
   const ws = await waitForTx(wr.txid, log);
-  if (ws !== "success") return { ...base, withdrawTxid: wr.txid, reason: `withdraw ${ws} — aborted before re-add (funds safe in wallet)` };
+  // The sequencing rule itself (abort before re-add on anything but a successful withdraw)
+  // lives in recenterSequenceOutcome (dlmm-recenter.ts) — pure, unit-tested — not inlined
+  // here. This function only supplies the real tx ids the decision doesn't need.
+  if (ws !== "success") {
+    const outcome = recenterSequenceOutcome(ws, null);
+    return { ...base, executed: outcome.executed, withdrawTxid: wr.txid, reason: outcome.reason };
+  }
   const st2 = (await readDlmmState(poolDef)) ?? st;
   log(`  recenter 2/2 — re-add centered on active ${st2.activeBinId}`);
   const addTxid = await executeAdd(w, poolDef, st2, xTok, yTok, effCfg, log);
   const as = await waitForTx(addTxid, log);
-  return { ...base, executed: as === "success", withdrawTxid: wr.txid, addTxid, reason: as === "success" ? "recentered" : `re-add ${as}` };
+  const outcome = recenterSequenceOutcome(ws, as);
+  return { ...base, executed: outcome.executed, withdrawTxid: wr.txid, addTxid, reason: outcome.reason };
 }

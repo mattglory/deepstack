@@ -162,3 +162,33 @@ export function sizeTwoSidedDeposit(
   const valueUsd = (Number(xBase) / xUnit) * xPriceUsd + Number(yBase) / yUnit;
   return { xBase, yBase, valueUsd };
 }
+
+export interface RecenterSequenceOutcome {
+  executed: boolean;
+  reason: string;
+  attemptedReAdd: boolean;
+}
+
+/**
+ * Pure interpretation of a recenter's two-step broadcast sequence (withdraw ALL bins, then
+ * conditionally re-add centered on the new active bin). The sequencing RULE itself, not the
+ * broadcasting mechanics around it: a withdraw that doesn't confirm successfully must abort
+ * before ever attempting the re-add — funds stay as loose tokens in the wallet (no half-built
+ * position) rather than retrying or partially proceeding. Extracted from
+ * dlmm-recenter-exec.ts's recenterOnce() so this property is unit-tested without a live
+ * chain, a wallet, or a broadcast (external review, issue #7 — "broadcast sequencing and
+ * nonce handling ... untested").
+ *
+ * `addStatus` is null when no re-add was attempted (i.e. the withdraw itself already failed);
+ * the caller never calls this with a null addStatus after a successful withdraw in practice,
+ * but the null case still fails closed rather than claim an executed recenter with no evidence.
+ */
+export function recenterSequenceOutcome(withdrawStatus: string, addStatus: string | null): RecenterSequenceOutcome {
+  if (withdrawStatus !== "success") {
+    return { executed: false, reason: `withdraw ${withdrawStatus} — aborted before re-add (funds safe in wallet)`, attemptedReAdd: false };
+  }
+  if (addStatus === null) {
+    return { executed: false, reason: "withdraw succeeded but no re-add was attempted", attemptedReAdd: false };
+  }
+  return { executed: addStatus === "success", reason: addStatus === "success" ? "recentered" : `re-add ${addStatus}`, attemptedReAdd: true };
+}

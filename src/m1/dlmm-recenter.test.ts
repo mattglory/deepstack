@@ -119,3 +119,44 @@ test("sizeTwoSidedDeposit: 8-decimal X respects an sBTC balance cap", () => {
   const s = sizeTwoSidedDeposit(200, 65000, 100_000n, 10n ** 12n, 8, 6);
   assert.equal(s.xBase, 100_000n);
 });
+
+// recenterSequenceOutcome: the withdraw-then-re-add sequencing rule (external review, issue
+// #7 — "broadcast sequencing ... untested"). The property that matters: a withdraw that
+// doesn't confirm must abort before the re-add is ever attempted, not retry or partially
+// proceed — this is what keeps a failed recenter leaving funds as loose tokens in the wallet
+// rather than a half-built position.
+import { recenterSequenceOutcome } from "./dlmm-recenter.js";
+
+test("recenterSequenceOutcome: successful withdraw + successful re-add → recentered", () => {
+  assert.deepEqual(recenterSequenceOutcome("success", "success"), {
+    executed: true,
+    reason: "recentered",
+    attemptedReAdd: true,
+  });
+});
+
+test("recenterSequenceOutcome: failed withdraw aborts before re-add is ever attempted", () => {
+  const outcome = recenterSequenceOutcome("abort_by_response", null);
+  assert.equal(outcome.executed, false);
+  assert.equal(outcome.attemptedReAdd, false);
+  assert.match(outcome.reason, /withdraw abort_by_response.*aborted before re-add/);
+});
+
+test("recenterSequenceOutcome: a withdraw that times out also aborts before re-add", () => {
+  const outcome = recenterSequenceOutcome("timeout", null);
+  assert.equal(outcome.executed, false);
+  assert.equal(outcome.attemptedReAdd, false);
+});
+
+test("recenterSequenceOutcome: withdraw succeeds but the re-add itself fails → not executed, but withdraw already happened", () => {
+  const outcome = recenterSequenceOutcome("success", "abort_by_response");
+  assert.equal(outcome.executed, false);
+  assert.equal(outcome.attemptedReAdd, true);
+  assert.match(outcome.reason, /re-add abort_by_response/);
+});
+
+test("recenterSequenceOutcome: a successful withdraw with no re-add attempted fails closed, doesn't claim success", () => {
+  const outcome = recenterSequenceOutcome("success", null);
+  assert.equal(outcome.executed, false);
+  assert.equal(outcome.attemptedReAdd, false);
+});
