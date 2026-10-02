@@ -575,7 +575,6 @@ async function main() {
     console.log(`LP enabled: target ${(params.targetLpFraction * 100).toFixed(0)}% of portfolio`);
 
   let trades = 0;
-  let dlmmRecenters = 0; // per-run DLMM recenter budget (shares --max-trades ceiling)
   // Sep 21 2026: a bad min-dlp guard made every DLMM add abort, and nothing stopped the agent
   // retrying it every cycle — 15 failed broadcasts over ~7 hours before a human noticed and
   // killed it by hand. Root cause is now fixed (see dlmm-recenter-exec.ts's per-bin min-dlp),
@@ -584,30 +583,36 @@ async function main() {
   // cycle-failure circuit breaker, since a repeatedly-aborting DLMM add is a real "something
   // is still wrong" signal, not a transient API blip.
   //
-  // Persisted to disk (found via external review, 2026-09): this used to live only in a
-  // process-local variable, so ANY restart cleared it — attended or not. That silently
-  // re-arms a stop whose whole point is that nobody has actually looked at the problem yet,
-  // and it now also re-enables dlmmLiveGate()'s broadcasts. A human clears it explicitly by
-  // deleting the state file (DLMM_FAILSTREAK_STATE_PATH, default journal/dlmm-failstreak.json)
-  // — an ordinary restart (crash-loop, VPS reboot, a routine code deploy) no longer does.
+  // Both counters below are persisted to disk (found via external review, 2026-09): they
+  // used to live only in process-local variables, so ANY restart cleared them — attended or
+  // not. For dlmmFailStreak that silently re-arms a stop whose whole point is that nobody
+  // has actually looked at the problem yet (and re-enables dlmmLiveGate()'s broadcasts); for
+  // dlmmRecenters it let the lifetime --max-trades ceiling be exceeded just by restarting. A
+  // human clears dlmmFailStreak explicitly by deleting the state file
+  // (DLMM_FAILSTREAK_STATE_PATH, default journal/dlmm-failstreak.json) — an ordinary restart
+  // (crash-loop, VPS reboot, a routine code deploy) no longer clears either counter.
   const DLMM_FAILSTREAK_STATE_PATH = process.env.DLMM_FAILSTREAK_STATE_PATH ?? "journal/dlmm-failstreak.json";
-  const loadDlmmFailStreak = (): number => {
+  const loadDlmmState = (): { failStreak: number; recenters: number } => {
     try {
-      const v = JSON.parse(readFileSync(DLMM_FAILSTREAK_STATE_PATH, "utf8"))?.dlmmFailStreak;
-      return typeof v === "number" && v >= 0 ? v : 0;
+      const j = JSON.parse(readFileSync(DLMM_FAILSTREAK_STATE_PATH, "utf8"));
+      const fs = j?.dlmmFailStreak;
+      const rc = j?.dlmmRecenters;
+      return { failStreak: typeof fs === "number" && fs >= 0 ? fs : 0, recenters: typeof rc === "number" && rc >= 0 ? rc : 0 };
     } catch {
-      return 0;
+      return { failStreak: 0, recenters: 0 };
     }
   };
-  const saveDlmmFailStreak = (n: number): void => {
+  const saveDlmmState = (failStreak: number, recenters: number): void => {
     try {
       mkdirSync(dirname(DLMM_FAILSTREAK_STATE_PATH), { recursive: true });
-      writeFileSync(DLMM_FAILSTREAK_STATE_PATH, JSON.stringify({ dlmmFailStreak: n }));
+      writeFileSync(DLMM_FAILSTREAK_STATE_PATH, JSON.stringify({ dlmmFailStreak: failStreak, dlmmRecenters: recenters }));
     } catch {
       /* best-effort — a write failure here must not take the agent down */
     }
   };
-  let dlmmFailStreak = loadDlmmFailStreak();
+  const dlmmState0 = loadDlmmState();
+  let dlmmFailStreak = dlmmState0.failStreak;
+  let dlmmRecenters = dlmmState0.recenters; // lifetime DLMM recenter count, shares --max-trades ceiling
   const DLMM_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.DLMM_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
   let sessionStart = 0;
@@ -748,12 +753,12 @@ async function main() {
           const attempted = dlmmLive && res.action !== "hold" && !res.skipped;
           if (res.executed) dlmmFailStreak = 0;
           else if (attempted) { dlmmFailStreak++; dlmmFailedThisTick = true; }
-          if (attempted) saveDlmmFailStreak(dlmmFailStreak);
           if (res.executed) dlmmRecenters++;
+          if (attempted) saveDlmmState(dlmmFailStreak, dlmmRecenters);
           appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, dlmmFailStreak, ...res });
           console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
         } catch (e) {
-          if (dlmmLive) { dlmmFailStreak++; dlmmFailedThisTick = true; saveDlmmFailStreak(dlmmFailStreak); } // a thrown add (e.g. sizing/network) is still a real failed attempt
+          if (dlmmLive) { dlmmFailStreak++; dlmmFailedThisTick = true; saveDlmmState(dlmmFailStreak, dlmmRecenters); } // a thrown add (e.g. sizing/network) is still a real failed attempt
           appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message, dlmmFailStreak });
         }
       }
