@@ -280,3 +280,31 @@ export function dlmmLiveGate(opts: {
     opts.dlmmRecenters < opts.maxTrades
   );
 }
+
+// XYK's analogue of dlmmLiveGate() above — the composed condition that must hold before
+// the rebalance/LP leg is allowed to broadcast this tick (agent-cli.ts used to inline this
+// as `live && circuitOk && trades < f.maxTrades`). Extracted and tested for the same reason:
+// an inline composed boolean is easy to get subtly wrong (wrong operator, a dropped term) in
+// a way a passing live cycle under normal conditions would never surface (external review,
+// issue #7 — "safety-critical orchestration paths ... untested").
+export function xykLiveGate(opts: { live: boolean; circuitOk: boolean; trades: number; maxTrades: number }): boolean {
+  return opts.live && opts.circuitOk && opts.trades < opts.maxTrades;
+}
+
+export interface DlmmCounters {
+  failStreak: number;
+  recenters: number;
+}
+
+// How dlmmFailStreak/dlmmRecenters evolve after one DLMM cycle — the state machine behind
+// the restart-survival fix (external review, issue #6). Both of agent-cli.ts's call sites
+// (a normal cycle's outcome, and the catch block's "a thrown add is still a real failed
+// attempt" case) reduce to this one transition. Pure so the exact rules — reset-on-success,
+// increment only on a real attempt, recenters only climbs on success — are unit-tested
+// without a live chain, a wallet, or the filesystem (external review, issue #7).
+export function nextDlmmCounters(current: DlmmCounters, outcome: { executed: boolean; attempted: boolean }): DlmmCounters {
+  return {
+    failStreak: outcome.executed ? 0 : outcome.attempted ? current.failStreak + 1 : current.failStreak,
+    recenters: outcome.executed ? current.recenters + 1 : current.recenters,
+  };
+}

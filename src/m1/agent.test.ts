@@ -18,7 +18,7 @@ test("pool-share cap: bounds our share AFTER the add; refuses on unreadable pool
   // unreadable pool value → refuse to grow (fail closed)
   assert.equal(exceedsPoolShare(1000, 100, 0, 200), true);
 });
-import { decide, decideLp, defaultParams, bandBpsFromVol, dlmmLiveGate, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, dlmmLiveGate, xykLiveGate, nextDlmmCounters, type AgentParams } from "./agent.js";
 import { minusSlippage, plusSlippage } from "./quotes.js";
 import { assessSafety, defaultSafetyParams } from "./safety.js";
 
@@ -228,4 +228,57 @@ test("dlmmLiveGate: fail streak at/over the limit blocks it", () => {
 
 test("dlmmLiveGate: per-run recenter budget exhausted blocks it", () => {
   assert.equal(dlmmLiveGate({ ...gateBase, dlmmRecenters: 10, maxTrades: 10 }), false);
+});
+
+// xykLiveGate: the XYK analogue, extracted from an inline `live && circuitOk && trades <
+// f.maxTrades` in agent-cli.ts (external review, issue #7 — orchestration gating untested).
+const xykGateBase = { live: true, circuitOk: true, trades: 0, maxTrades: 1 };
+
+test("xykLiveGate: all conditions met → live", () => {
+  assert.equal(xykLiveGate(xykGateBase), true);
+});
+
+test("xykLiveGate: observe mode (not live) blocks it", () => {
+  assert.equal(xykLiveGate({ ...xykGateBase, live: false }), false);
+});
+
+test("xykLiveGate: circuit breaker open blocks it", () => {
+  assert.equal(xykLiveGate({ ...xykGateBase, circuitOk: false }), false);
+});
+
+test("xykLiveGate: lifetime trade ceiling reached blocks it", () => {
+  assert.equal(xykLiveGate({ ...xykGateBase, trades: 1, maxTrades: 1 }), false);
+});
+
+// nextDlmmCounters: the state machine behind dlmmFailStreak/dlmmRecenters persistence
+// (external review, issue #6 — restart behaviour; issue #7 — this was an untested inline
+// transition split across two call sites in agent-cli.ts before being unified here).
+test("nextDlmmCounters: a successful execute resets the fail streak AND bumps recenters", () => {
+  assert.deepEqual(
+    nextDlmmCounters({ failStreak: 1, recenters: 4 }, { executed: true, attempted: true }),
+    { failStreak: 0, recenters: 5 },
+  );
+});
+
+test("nextDlmmCounters: a real failed attempt bumps the fail streak, leaves recenters alone", () => {
+  assert.deepEqual(
+    nextDlmmCounters({ failStreak: 0, recenters: 4 }, { executed: false, attempted: true }),
+    { failStreak: 1, recenters: 4 },
+  );
+});
+
+test("nextDlmmCounters: not attempted (hold, or a deliberate skip) changes nothing", () => {
+  assert.deepEqual(
+    nextDlmmCounters({ failStreak: 1, recenters: 4 }, { executed: false, attempted: false }),
+    { failStreak: 1, recenters: 4 },
+  );
+});
+
+test("nextDlmmCounters: a thrown add counts as attempted even though recenterOnce never returned a result", () => {
+  // agent-cli.ts's catch block: dlmmLive was true and it threw — treated as executed: false,
+  // attempted: true, same as a normal cycle's failed-but-didn't-throw outcome.
+  assert.deepEqual(
+    nextDlmmCounters({ failStreak: 1, recenters: 4 }, { executed: false, attempted: true }),
+    { failStreak: 2, recenters: 4 },
+  );
 });
