@@ -12,19 +12,11 @@
 // operator can send: the repayment (amount + FlashStack fee) and nothing more.
 
 import { readFileSync } from "node:fs";
-import {
-  makeContractCall,
-  makeContractDeploy,
-  broadcastTransaction,
-  fetchCallReadOnlyFunction,
-  cvToJSON,
-  Cl,
-  Pc,
-  PostConditionMode,
-} from "@stacks/transactions";
+import { makeContractDeploy, broadcastTransaction, fetchCallReadOnlyFunction, cvToJSON, PostConditionMode } from "@stacks/transactions";
 import { getWallet } from "../m1/wallet.js";
-import { getSwapYForXQuote, minusSlippage } from "../m1/quotes.js";
-import { withRpc } from "../m1/rpc.js";
+import { withRpc, hiroFetch } from "../m1/rpc.js";
+import { readFlashStackStatus, armRebalance, executeFlashLoanRebalance, waitForTx as sharedWaitForTx } from "./flash-rebalance-exec.js";
+import { flashFee } from "./flash-rebalance.js";
 
 const FLASHSTACK_CORE = {
   address: "SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5",
@@ -32,47 +24,15 @@ const FLASHSTACK_CORE = {
 } as const;
 const RECEIVER_NAME = "deepstack-rebalance-receiver";
 const CONTRACT_PATH = "contracts/deepstack-rebalance-receiver.clar";
-const CALL_FEE = 50_000n; // µSTX, same as the agent's contract calls
 const DEPLOY_FEE = 150_000n; // µSTX — deploys are size-priced; ~7KB needs headroom
-const SLIP_BPS = 80; // min-dx slippage budget on the armed quote
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function waitForTx(txid: string) {
+// Thin wrapper over the shared waitForTx (flash-rebalance-exec.ts) — same polling/failover
+// behavior, this CLI's own console formatting (a dot per poll, a boolean return).
+async function waitForTx(txid: string): Promise<boolean> {
   process.stdout.write("  confirming");
-  for (let i = 0; i < 36; i++) {
-    await sleep(5000);
-    process.stdout.write(".");
-    try {
-      const j = await withRpc(async (base) => {
-        const r = await fetch(`${base}/extended/v1/tx/${txid}`);
-        if (!r.ok) throw new Error(`tx fetch → ${r.status}`);
-        return (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
-      });
-      if (j.tx_status && j.tx_status !== "pending") {
-        console.log(`\n  status: ${j.tx_status} ${j.tx_result?.repr ?? ""}`);
-        return j.tx_status === "success";
-      }
-    } catch { /* transient — next poll */ }
-  }
-  console.log("\n  status: still pending after 3 minutes — check the explorer");
-  return false;
-}
-
-async function readOnly(addr: string, name: string, fn: string, args: any[] = []) {
-  return cvToJSON(
-    await withRpc((baseUrl) =>
-      fetchCallReadOnlyFunction({
-        contractAddress: addr,
-        contractName: name,
-        functionName: fn,
-        functionArgs: args,
-        network: "mainnet",
-        client: { baseUrl },
-        senderAddress: addr,
-      }),
-    ),
-  ) as any;
+  const status = await sharedWaitForTx(txid, () => process.stdout.write("."));
+  console.log(`\n  status: ${status}`);
+  return status === "success";
 }
 
 function requireLive(argv: string[]): void {
@@ -81,11 +41,6 @@ function requireLive(argv: string[]): void {
     process.exit(1);
   }
 }
-
-const flashFee = (amount: bigint) => {
-  const raw = (amount * 5n) / 10_000n; // live core: 5bps, floor 1 µSTX
-  return raw > 0n ? raw : 1n;
-};
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -96,17 +51,23 @@ async function main() {
   console.log(`operator: ${w.address}\nreceiver: ${receiverId}\n`);
 
   if (cmd === "status") {
-    const [fee, maxLoan, reserve, approved] = await Promise.all([
-      readOnly(FLASHSTACK_CORE.address, FLASHSTACK_CORE.name, "get-fee-basis-points"),
-      readOnly(FLASHSTACK_CORE.address, FLASHSTACK_CORE.name, "get-max-single-loan"),
-      readOnly(FLASHSTACK_CORE.address, FLASHSTACK_CORE.name, "get-reserve-balance"),
-      readOnly(FLASHSTACK_CORE.address, FLASHSTACK_CORE.name, "is-approved-receiver",
-        [Cl.contractPrincipal(w.address, RECEIVER_NAME)]),
-    ]);
-    console.log(`core fee: ${fee?.value?.value}bps | max loan: ${Number(maxLoan?.value?.value) / 1e6} STX | reserve: ${Number(reserve?.value ?? 0) / 1e6} STX`);
-    console.log(`receiver whitelisted: ${approved?.value}`);
+    const status = await readFlashStackStatus(w);
+    console.log(`core fee: ${status.feeBps}bps | max loan: ${Number(status.maxSingleLoan) / 1e6} STX | reserve: ${Number(status.reserveBalance) / 1e6} STX`);
+    console.log(`receiver whitelisted: ${status.whitelisted}`);
     try {
-      const pending = await readOnly(w.address, RECEIVER_NAME, "get-pending");
+      const pending = cvToJSON(
+        await withRpc((baseUrl) =>
+          fetchCallReadOnlyFunction({
+            contractAddress: w.address,
+            contractName: RECEIVER_NAME,
+            functionName: "get-pending",
+            functionArgs: [],
+            network: "mainnet",
+            client: { baseUrl, fetch: hiroFetch(baseUrl) },
+            senderAddress: w.address,
+          }),
+        ),
+      ) as any;
       console.log(`armed: ${JSON.stringify(pending?.value?.value ?? null)}`);
     } catch {
       console.log("armed: (receiver not deployed yet)");
@@ -144,50 +105,23 @@ async function main() {
     const amount = BigInt(Math.round(stx * 1e6));
 
     if (cmd === "arm") {
-      const dx = await getSwapYForXQuote(amount); // sBTC out for the borrowed STX
-      const minDx = minusSlippage(dx, SLIP_BPS);
-      console.log(`arm: borrow ${stx} STX → quote ${Number(dx) / 1e8} sBTC, ` +
-        `min-dx ${Number(minDx) / 1e8} (${SLIP_BPS}bps slip, expires in 10 blocks)`);
-      const tx = await makeContractCall({
-        contractAddress: w.address,
-        contractName: RECEIVER_NAME,
-        functionName: "arm",
-        functionArgs: [Cl.uint(amount), Cl.uint(minDx)],
-        senderKey: w.key,
-        network: "mainnet",
-        fee: CALL_FEE,
-        postConditionMode: PostConditionMode.Deny, // arming moves no assets
-      });
-      const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-      if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
-      console.log(`  txid: ${res.txid}`);
-      if (await waitForTx(res.txid)) console.log(`\nNEXT (within ~10 blocks): npm run m2:receiver -- flash ${stx} --yes-mainnet`);
+      const armed = await armRebalance(w, amount, { broadcast: true });
+      console.log(`arm: borrow ${stx} STX → quote ${Number(armed.quotedDx) / 1e8} sBTC, ` +
+        `min-dx ${Number(armed.minDx) / 1e8} (expires in 10 blocks)`);
+      console.log(`  txid: ${armed.txid}`);
+      if (await waitForTx(armed.txid!)) console.log(`\nNEXT (within ~10 blocks): npm run m2:receiver -- flash ${stx} --yes-mainnet`);
       return;
     }
 
-    // flash: the real thing. Operator pays back amount + fee; PC caps exactly that.
+    // flash: the real thing. Operator pays back amount + fee; the post-condition (built
+    // inside executeFlashLoanRebalance) caps exactly that.
     const repay = amount + flashFee(amount);
     console.log(`flash-loan: ${stx} STX via ${FLASHSTACK_CORE.name} → ${RECEIVER_NAME}`);
     console.log(`  repay cap (post-condition): ${Number(repay) / 1e6} STX from operator`);
-    const tx = await makeContractCall({
-      contractAddress: FLASHSTACK_CORE.address,
-      contractName: FLASHSTACK_CORE.name,
-      functionName: "flash-loan",
-      functionArgs: [Cl.uint(amount), Cl.contractPrincipal(w.address, RECEIVER_NAME)],
-      senderKey: w.key,
-      network: "mainnet",
-      fee: CALL_FEE,
-      // Allow mode: the core and receiver contracts move STX/sBTC internally (borrowed
-      // leg, swap, forwarding) — same rationale as the agent's swaps. The operator's own
-      // outflow is strictly capped at the repayment.
-      postConditionMode: PostConditionMode.Allow,
-      postConditions: [Pc.principal(w.address).willSendLte(repay).ustx()],
-    });
-    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
-    console.log(`  txid: ${res.txid}`);
-    if (await waitForTx(res.txid))
-      console.log("\n🎉 first DeepStack→FlashStack flash-rebalance — save this txid for the M2 submission");
+    const flashed = await executeFlashLoanRebalance(w, amount, { broadcast: true });
+    console.log(`  txid: ${flashed.txid}`);
+    if (await waitForTx(flashed.txid!))
+      console.log("\n🎉 flash-rebalance confirmed — save this txid for the record");
     return;
   }
 

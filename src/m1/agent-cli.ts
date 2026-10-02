@@ -21,8 +21,10 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, nextDlmmCounters, type Inventory, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
+import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
+import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
 import { scanStstxGap } from "./ststx-gap.js";
@@ -255,6 +257,7 @@ async function act(
   sessionStart: number,
   intervalSec: number,
   safety: SafetyResult,
+  flashCtx: { live: boolean; circuitOk: boolean; failStreak: number; failStreakLimit: number; attempts: number; maxTrades: number },
 ): Promise<boolean> {
   const cfg = activePool();
   const { x, y } = cfg;
@@ -469,8 +472,52 @@ async function act(
   if (!canTrade) { console.log("  observe mode — not executing"); return false; }
   if (!nonceSafety.safe) return refuse(nonceSafety.reason ?? "nonce check failed");
   if (w.network !== "mainnet") return refuse("not mainnet");
-  if (d.action === "swap-y-for-x" && d.amountBase > params.maxSwapYBase) return refuse("y over cap");
-  if (d.action === "swap-x-for-y" && d.amountBase > params.maxSwapXBase) return refuse("x over cap");
+
+  // decide() already clamps d.amountBase to the direct-swap cap before it ever reaches here
+  // (found 2026-10-02 while designing autonomous flash-rebalance: this means d.amountBase can
+  // NEVER exceed the cap, so a refuse("over cap") check on it could never fire — the real
+  // prior behavior on a large drift wasn't "refuse", it was "silently execute an undersized
+  // correction every cycle"). d.uncappedAmountBase is the real pre-clamp deficit, and is what
+  // decides whether a flash-rebalance — a mechanism with its own audited slippage protection,
+  // sized and gated independently of the direct-swap cap — should cover the rest instead.
+  const directCap = d.action === "swap-y-for-x" ? params.maxSwapYBase : params.maxSwapXBase;
+  const overCap = d.uncappedAmountBase > directCap;
+  if (overCap && d.action === "swap-y-for-x") {
+    // FlashStack's receiver only borrows STX to buy sBTC (swap-y-for-x) — there is no
+    // sBTC-borrowing equivalent, so the opposite direction always falls through to the
+    // capped direct swap below, same as before this feature existed.
+    const flashLive = flashLiveGate({
+      flashLiveFlag: process.env.FLASH_LIVE === "1",
+      live: flashCtx.live,
+      circuitOk: flashCtx.circuitOk,
+      safe: safety.safe,
+      flashFailStreak: flashCtx.failStreak,
+      flashFailStreakLimit: flashCtx.failStreakLimit,
+      flashAttempts: flashCtx.attempts,
+      maxTrades: flashCtx.maxTrades,
+    });
+    if (flashLive) {
+      try {
+        const res = await flashRebalanceOnce(w, { amountStxBase: d.uncappedAmountBase, directCapStxBase: directCap }, true, (m) => console.log(m));
+        tickJournal.flash = {
+          attempted: !res.skipped,
+          executed: res.executed,
+          reason: res.reason,
+          requestedStx: Number(res.requestedAmountStxBase) / 1e6,
+          armedStx: Number(res.armedAmountStxBase) / 1e6,
+          armTxid: res.armTxid,
+          flashTxid: res.flashTxid,
+        };
+        return res.executed;
+      } catch (err) {
+        tickJournal.flash = { attempted: true, executed: false, reason: `threw: ${(err as Error).message}` };
+        return false;
+      }
+    }
+    console.log("  flash-rebalance not armed this cycle — falling back to capped direct swap");
+  } else if (overCap) {
+    console.log("  over cap, but no sBTC flash-loan receiver exists for this direction — capped direct swap only");
+  }
   // native STX fee headroom (+ input if the input leg is native STX)
   const inputNative = d.action === "swap-y-for-x" ? y.native : x.native;
   const nativeNeed = FEE_USTX + (inputNative ? d.amountBase : 0n);
@@ -592,6 +639,11 @@ async function main() {
   // transition rules themselves (nextDlmmCounters, agent.ts) are unit-tested separately.
   let { failStreak: dlmmFailStreak, recenters: dlmmRecenters } = loadDlmmCounters();
   const DLMM_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.DLMM_FAIL_STREAK_LIMIT ?? 2));
+  // Same restart-survival discipline for the autonomous flash-rebalance path (OFF by default
+  // via FLASH_LIVE) — a drift correction too large for the direct-swap cap uses FlashStack's
+  // flash loan instead of a plain swap, gated by flashLiveGate() exactly like DLMM's gate.
+  let { failStreak: flashFailStreak, attempts: flashAttempts } = loadFlashCounters();
+  const FLASH_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.FLASH_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
   let sessionStart = 0;
   // Forward reference: the supervisor is created after step() below (it wraps step itself),
@@ -612,6 +664,8 @@ async function main() {
     // below for the incident this class of gap already caused once (found via
     // external review, 2026-09).
     let dlmmFailedThisTick = false;
+    // Same role as dlmmFailedThisTick, for the autonomous flash-rebalance path below.
+    let flashFailedThisTick = false;
     const snap = await readMarket(w);
     if (sessionStart === 0) sessionStart = snap.portfolioY;
     if (i % f.tuneEvery === 0) {
@@ -676,7 +730,17 @@ async function main() {
       defaultSafetyParams(),
     );
     try {
-      if (await act(w, snap, params, xykLiveGate({ live, circuitOk, trades, maxTrades: f.maxTrades }), sessionStart, f.interval, safety)) trades++;
+      const flashCtx = { live, circuitOk, failStreak: flashFailStreak, failStreakLimit: FLASH_FAIL_STREAK_LIMIT, attempts: flashAttempts, maxTrades: f.maxTrades };
+      if (await act(w, snap, params, xykLiveGate({ live, circuitOk, trades, maxTrades: f.maxTrades }), sessionStart, f.interval, safety, flashCtx)) trades++;
+      const flash = tickJournal.flash as { attempted?: boolean; executed?: boolean } | undefined;
+      if (flash?.attempted) {
+        ({ failStreak: flashFailStreak, attempts: flashAttempts } = nextFlashCounters(
+          { failStreak: flashFailStreak, attempts: flashAttempts },
+          { executed: !!flash.executed, attempted: true },
+        ));
+        saveFlashCounters({ failStreak: flashFailStreak, attempts: flashAttempts });
+        if (!flash.executed) flashFailedThisTick = true;
+      }
     } finally {
       appendJournal(tickJournal); // one journal line per tick, whatever happened
       // Cross-pool spread observations (read-only) — the dataset that decides whether
@@ -764,14 +828,16 @@ async function main() {
       // that actually can't reach GitHub counts.
       const publishOk = await publishMetrics();
       const publishFailed = isPublishConfigured() && !publishOk;
-      // Dead-man's switch: silence = alert. Also the DLMM alerting path (issue found via
-      // external review, 2026-09): a "fail" ping on the FIRST DLMM broadcast failure, not
-      // just after the fail-streak limit stops broadcasting. The 2026-09-21 incident ran
-      // 15 failed transactions over ~7 hours before a human noticed from logs alone; the
-      // 2026-09-11 isolated abort ten days earlier had the same root cause and would have
-      // surfaced here too, had this existed then. A good XYK cycle still pings "ok" even
-      // when DLMM or publish fails — this is a signal to look, not a claim the tick failed.
-      await pingHealthcheck(dlmmFailedThisTick || publishFailed ? "fail" : "ok");
+      // Dead-man's switch: silence = alert. Also the DLMM and flash-rebalance alerting paths
+      // (issue found via external review, 2026-09, for DLMM — the flash-rebalance path
+      // reuses the exact same mechanism rather than inventing a second one): a "fail" ping on
+      // the FIRST broadcast failure, not just after the fail-streak limit stops broadcasting.
+      // The 2026-09-21 incident ran 15 failed transactions over ~7 hours before a human
+      // noticed from logs alone; the 2026-09-11 isolated abort ten days earlier had the same
+      // root cause and would have surfaced here too, had this existed then. A good XYK cycle
+      // still pings "ok" even when DLMM, flash, or publish fails — a signal to look, not a
+      // claim the whole tick failed.
+      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed ? "fail" : "ok");
     }
   };
 

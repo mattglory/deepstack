@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "clarity-audit": {
+      "source": "aibtcdev/skills",
+      "sourceType": "github",
+      "skillPath": "clarity-audit/SKILL.md",
+      "computedHash": "46fe07c6271ee6426e15473bdb31638e048fbc4665c7484b5574d505d1d5c095"
+    }
+  }
+}

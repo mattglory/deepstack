@@ -33,7 +33,17 @@ export interface Inventory {
 
 export interface Decision {
   action: "none" | "swap-y-for-x" | "swap-x-for-y";
-  amountBase: bigint; // y base for swap-y-for-x; x base for swap-x-for-y
+  amountBase: bigint; // y base for swap-y-for-x; x base for swap-x-for-y — clamped to the per-swap cap
+  // The true size needed to close the drift, BEFORE the per-swap cap clamps it. Equal to
+  // amountBase whenever the uncapped need is already under the cap. Exists so a caller can
+  // tell "drift needed X, capped to Y" apart from "drift only ever needed Y" — the direct-swap
+  // path alone can't act on the difference (its cap is a real safety limit), but it's the
+  // trigger for a larger mechanism with its own protections (flash-rebalance) to pick up
+  // the rest instead of the cap silently truncating every cycle (found 2026-10-02: the
+  // amountBase > cap refusal check in agent-cli.ts's act() could never fire, since amountBase
+  // was always already clamped before reaching it — the real prior behavior was a silently
+  // undersized correction, not a refusal).
+  uncappedAmountBase: bigint;
   reason: string;
   metrics: { xValueY: number; yValueY: number; totalY: number; yFraction: number; drift: number };
 }
@@ -163,13 +173,14 @@ export function decide(
   const drift = yFraction - params.targetYFraction;
   const metrics = { xValueY, yValueY, totalY, yFraction, drift };
 
-  if (totalY <= 0) return { action: "none", amountBase: 0n, reason: "no inventory", metrics };
+  if (totalY <= 0) return { action: "none", amountBase: 0n, uncappedAmountBase: 0n, reason: "no inventory", metrics };
 
   const band = params.rebalanceBandBps / 10_000;
   if (Math.abs(drift) <= band) {
     return {
       action: "none",
       amountBase: 0n,
+      uncappedAmountBase: 0n,
       reason: `within band (|drift| ${(Math.abs(drift) * 100).toFixed(2)}% ≤ ${(band * 100).toFixed(2)}%)`,
       metrics,
     };
@@ -177,22 +188,24 @@ export function decide(
 
   if (drift > 0) {
     // too much y -> buy x: swap (drift*total) of y
-    let amt = BigInt(Math.round(drift * totalY * 10 ** yDecimals));
-    if (amt > params.maxSwapYBase) amt = params.maxSwapYBase;
+    const uncapped = BigInt(Math.round(drift * totalY * 10 ** yDecimals));
+    const amt = uncapped > params.maxSwapYBase ? params.maxSwapYBase : uncapped;
     return {
       action: "swap-y-for-x",
       amountBase: amt,
+      uncappedAmountBase: uncapped,
       reason: `y share ${(yFraction * 100).toFixed(1)}% > target ${(params.targetYFraction * 100).toFixed(0)}% → buy x`,
       metrics,
     };
   }
   // too much x -> sell x for y
   const xToSwap = (-drift * totalY) / midXinY;
-  let amt = BigInt(Math.round(xToSwap * 10 ** xDecimals));
-  if (amt > params.maxSwapXBase) amt = params.maxSwapXBase;
+  const uncapped = BigInt(Math.round(xToSwap * 10 ** xDecimals));
+  const amt = uncapped > params.maxSwapXBase ? params.maxSwapXBase : uncapped;
   return {
     action: "swap-x-for-y",
     amountBase: amt,
+    uncappedAmountBase: uncapped,
     reason: `x share ${((1 - yFraction) * 100).toFixed(1)}% > target → sell x`,
     metrics,
   };
@@ -306,5 +319,46 @@ export function nextDlmmCounters(current: DlmmCounters, outcome: { executed: boo
   return {
     failStreak: outcome.executed ? 0 : outcome.attempted ? current.failStreak + 1 : current.failStreak,
     recenters: outcome.executed ? current.recenters + 1 : current.recenters,
+  };
+}
+
+// The autonomous flash-rebalance gate — same family as dlmmLiveGate/xykLiveGate above, same
+// shape of risk (a dropped term in a composed boolean that a normal passing cycle would never
+// surface). Gates the "drift exceeds the direct-swap cap, use FlashStack to cover the rest"
+// path in agent-cli.ts's act(). `safe` is the SAME oracle-divergence/drawdown/pool-paused
+// check the XYK and DLMM paths already share — a flash-rebalance is a real broadcast, it does
+// not get a lighter safety bar than a plain swap just because it uses a different mechanism.
+export function flashLiveGate(opts: {
+  flashLiveFlag: boolean;
+  live: boolean;
+  circuitOk: boolean;
+  safe: boolean;
+  flashFailStreak: number;
+  flashFailStreakLimit: number;
+  flashAttempts: number;
+  maxTrades: number;
+}): boolean {
+  return (
+    opts.flashLiveFlag &&
+    opts.live &&
+    opts.circuitOk &&
+    opts.safe &&
+    opts.flashFailStreak < opts.flashFailStreakLimit &&
+    opts.flashAttempts < opts.maxTrades
+  );
+}
+
+export interface FlashCounters {
+  failStreak: number;
+  attempts: number;
+}
+
+// Same transition rules as nextDlmmCounters, same reason: a flash-rebalance attempt and a
+// DLMM recenter attempt are structurally the same kind of event (a gated broadcast that
+// either lands, fails, or never gets tried this cycle), so the state machine is identical.
+export function nextFlashCounters(current: FlashCounters, outcome: { executed: boolean; attempted: boolean }): FlashCounters {
+  return {
+    failStreak: outcome.executed ? 0 : outcome.attempted ? current.failStreak + 1 : current.failStreak,
+    attempts: outcome.executed ? current.attempts + 1 : current.attempts,
   };
 }

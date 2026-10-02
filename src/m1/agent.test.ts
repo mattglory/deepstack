@@ -18,7 +18,7 @@ test("pool-share cap: bounds our share AFTER the add; refuses on unreadable pool
   // unreadable pool value → refuse to grow (fail closed)
   assert.equal(exceedsPoolShare(1000, 100, 0, 200), true);
 });
-import { decide, decideLp, defaultParams, bandBpsFromVol, dlmmLiveGate, xykLiveGate, nextDlmmCounters, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, dlmmLiveGate, xykLiveGate, flashLiveGate, nextDlmmCounters, nextFlashCounters, type AgentParams } from "./agent.js";
 import { minusSlippage, plusSlippage } from "./quotes.js";
 import { assessSafety, defaultSafetyParams } from "./safety.js";
 
@@ -57,12 +57,29 @@ test("decide: excess x (too much sBTC) → swap-x-for-y (sell sBTC)", () => {
   assert.ok(d.amountBase > 0n);
 });
 
-test("decide: swap size is clamped to the hard cap", () => {
+test("decide: swap size is clamped to the hard cap, but uncappedAmountBase keeps the real deficit", () => {
   const params = { ...P(), maxSwapYBase: 1_000_000n }; // cap 1 STX
   // hugely y-heavy inventory would want to move far more than 1 STX
   const d = decide({ xBase: xBaseForValueY(1), yBase: yBaseForValueY(999) }, MID, XD, YD, params);
   assert.equal(d.action, "swap-y-for-x");
   assert.equal(d.amountBase, 1_000_000n); // clamped exactly to the cap
+  // Regression test for a dead-code bug found 2026-10-02: agent-cli.ts's act() had a
+  // `d.amountBase > params.maxSwapYBase` refusal check that could never fire, because
+  // amountBase was always already clamped before act() ever saw it. uncappedAmountBase is
+  // what exposes the real pre-clamp need, which the autonomous flash-rebalance path uses.
+  assert.ok(d.uncappedAmountBase > d.amountBase, "uncappedAmountBase must exceed the clamped amountBase when the cap actually bound");
+});
+
+test("decide: under the cap, uncappedAmountBase equals the (unclamped) amountBase exactly", () => {
+  const d = decide({ xBase: xBaseForValueY(20), yBase: yBaseForValueY(80) }, MID, XD, YD, P());
+  assert.equal(d.action, "swap-y-for-x");
+  assert.equal(d.uncappedAmountBase, d.amountBase);
+});
+
+test("decide: within band, both amountBase and uncappedAmountBase are 0", () => {
+  const d = decide({ xBase: xBaseForValueY(50), yBase: yBaseForValueY(50) }, MID, XD, YD, P());
+  assert.equal(d.amountBase, 0n);
+  assert.equal(d.uncappedAmountBase, 0n);
 });
 
 test("decide: empty inventory → HOLD (no divide-by-zero)", () => {
@@ -280,5 +297,80 @@ test("nextDlmmCounters: a thrown add counts as attempted even though recenterOnc
   assert.deepEqual(
     nextDlmmCounters({ failStreak: 1, recenters: 4 }, { executed: false, attempted: true }),
     { failStreak: 2, recenters: 4 },
+  );
+});
+
+// flashLiveGate: the autonomous flash-rebalance gate, same family and same reasoning as
+// dlmmLiveGate/xykLiveGate above — a composed boolean inline is easy to get subtly wrong, and
+// a passing live cycle under normal conditions would not catch a dropped term (in particular,
+// safe: false MUST block it exactly like it does for DLMM; this is a real-money broadcast,
+// not a lesser one just because it uses a different mechanism than a plain swap).
+const flashGateBase = {
+  flashLiveFlag: true,
+  live: true,
+  circuitOk: true,
+  safe: true,
+  flashFailStreak: 0,
+  flashFailStreakLimit: 2,
+  flashAttempts: 0,
+  maxTrades: 10,
+};
+
+test("flashLiveGate: all conditions met → live", () => {
+  assert.equal(flashLiveGate(flashGateBase), true);
+});
+
+test("flashLiveGate: FLASH_LIVE flag off blocks it", () => {
+  assert.equal(flashLiveGate({ ...flashGateBase, flashLiveFlag: false }), false);
+});
+
+test("flashLiveGate: agent not live (observe mode) blocks it", () => {
+  assert.equal(flashLiveGate({ ...flashGateBase, live: false }), false);
+});
+
+test("flashLiveGate: circuit breaker open blocks it", () => {
+  assert.equal(flashLiveGate({ ...flashGateBase, circuitOk: false }), false);
+});
+
+test("flashLiveGate: unsafe (oracle divergence / drawdown / pool-paused) blocks it — same gate DLMM's fix proved, applied here from the start", () => {
+  assert.equal(flashLiveGate({ ...flashGateBase, safe: false }), false);
+});
+
+test("flashLiveGate: fail streak at/over the limit blocks it", () => {
+  assert.equal(flashLiveGate({ ...flashGateBase, flashFailStreak: 2, flashFailStreakLimit: 2 }), false);
+});
+
+test("flashLiveGate: lifetime attempt budget exhausted blocks it", () => {
+  assert.equal(flashLiveGate({ ...flashGateBase, flashAttempts: 10, maxTrades: 10 }), false);
+});
+
+// nextFlashCounters: identical transition rules to nextDlmmCounters, same reason — a
+// flash-rebalance attempt and a DLMM recenter attempt are the same shape of gated-broadcast
+// event (lands, fails, or is never tried this cycle).
+test("nextFlashCounters: a successful execute resets the fail streak AND bumps attempts", () => {
+  assert.deepEqual(
+    nextFlashCounters({ failStreak: 1, attempts: 4 }, { executed: true, attempted: true }),
+    { failStreak: 0, attempts: 5 },
+  );
+});
+
+test("nextFlashCounters: a real failed attempt bumps the fail streak, leaves attempts alone", () => {
+  assert.deepEqual(
+    nextFlashCounters({ failStreak: 0, attempts: 4 }, { executed: false, attempted: true }),
+    { failStreak: 1, attempts: 4 },
+  );
+});
+
+test("nextFlashCounters: not attempted (skipped, not worthwhile) changes nothing", () => {
+  assert.deepEqual(
+    nextFlashCounters({ failStreak: 1, attempts: 4 }, { executed: false, attempted: false }),
+    { failStreak: 1, attempts: 4 },
+  );
+});
+
+test("nextFlashCounters: a thrown attempt still counts as attempted", () => {
+  assert.deepEqual(
+    nextFlashCounters({ failStreak: 1, attempts: 4 }, { executed: false, attempted: true }),
+    { failStreak: 2, attempts: 4 },
   );
 });
