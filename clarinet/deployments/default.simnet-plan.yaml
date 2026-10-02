@@ -1,0 +1,80 @@
+id: 0
+name: Simulated deployment, used as a default for `clarinet console`, `clarinet test` and `clarinet check`
+network: simnet
+genesis:
+  wallets:
+  - name: deployer
+    address: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+    balance: '100000000000000'
+    sbtc-balance: '1000000000'
+  - name: wallet_1
+    address: ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5
+    balance: '100000000000000'
+    sbtc-balance: '1000000000'
+  contracts:
+  - genesis
+  - lockup
+  - bns
+  - cost-voting
+  - costs
+  - pox
+  - costs-2
+  - pox-2
+  - costs-3
+  - pox-3
+  - pox-4
+  - signers
+  - signers-voting
+  - costs-4
+  - pox-5
+plan:
+  batches:
+  - id: 0
+    transactions:
+    - transaction-type: emulated-contract-publish
+      contract-name: sip-010-trait-ft-standard-v-1-1
+      emulated-sender: SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR
+      path: .cache/requirements/SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.sip-010-trait-ft-standard-v-1-1.clar
+      clarity-version: 2
+    - transaction-type: emulated-contract-publish
+      contract-name: token-stx-v-1-2
+      emulated-sender: SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR
+      path: .cache/requirements/SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2.clar
+      clarity-version: 2
+    - transaction-type: emulated-contract-publish
+      contract-name: xyk-pool-trait-v-1-2
+      emulated-sender: SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR
+      path: .cache/requirements/SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-trait-v-1-2.clar
+      clarity-version: 2
+    - transaction-type: emulated-contract-publish
+      contract-name: xyk-core-v-1-2
+      emulated-sender: SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR
+      path: .cache/requirements/SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2.clar
+      clarity-version: 2
+    epoch: '2.5'
+  - id: 1
+    transactions:
+    - transaction-type: emulated-contract-publish
+      contract-name: xyk-pool-sbtc-stx-v-1-1
+      emulated-sender: SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR
+      path: .cache/requirements/SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1.clar
+      clarity-version: 2
+    epoch: '3.1'
+  - id: 2
+    transactions:
+    - transaction-type: emulated-contract-publish
+      contract-name: stx-flash-receiver-trait
+      emulated-sender: SP3TGRVG7DKGFVRTTVGGS60S59R916FWB4DAB9STZ
+      path: .cache/requirements/SP3TGRVG7DKGFVRTTVGGS60S59R916FWB4DAB9STZ.stx-flash-receiver-trait.clar
+      clarity-version: 4
+    - transaction-type: emulated-contract-publish
+      contract-name: flashstack-stx-core
+      emulated-sender: SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5
+      path: .cache/requirements/SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5.flashstack-stx-core.clar
+      clarity-version: 3
+    - transaction-type: emulated-contract-publish
+      contract-name: deepstack-rebalance-receiver
+      emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+      path: ../contracts/deepstack-rebalance-receiver.clar
+      clarity-version: 3
+    epoch: '3.4'

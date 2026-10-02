@@ -6,3 +6,10 @@ name = "devnet"
 [accounts.deployer]
 mnemonic = "twice kind fence tip hidden tilt action fragile skin nothing glory cousin green tomorrow spring wrist shed math olympic multiply hip blue scout claw"
 balance = 100000000000000
+
+# Standard Clarinet-generated throwaway, same status as deployer's above — a second
+# identity for auth-boundary tests (issue #7: the contract's own owner/non-owner guards
+# were previously untested). Added for tests/, not used by clarinet check itself.
+[accounts.wallet_1]
+mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
+balance = 100000000000000
