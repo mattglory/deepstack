@@ -14,11 +14,31 @@ host, not a dev box.
 The agent signs with a key in `.env`. Anyone with root on this machine can take the funds.
 
 - **Use a dedicated wallet holding only pilot inventory.** Never the wallet grant funds
-  are paid to, and never a personal wallet. (Currently ~740 STX — that is the blast
-  radius, and it should stay that way.)
+  are paid to, and never a personal wallet. The balance moves with pilot capital — check
+  the dashboard or the wallet address directly for the live figure, not a number pinned
+  here.
 - The seed derives **every account**. A raw hex key for account 0 (`STACKS_PRIVATE_KEY`)
   limits exposure to that one account; a seed phrase does not.
 - Do not reuse this box for anything else.
+
+### Key rotation (external review, 2026-09)
+
+This is a single hot key on an internet-facing host, controlling real funds — a host
+compromise exposes this one account, not an HD tree (see the point above), but it's
+still worth a plan rather than assuming it'll never need to move.
+
+- **Routine:** no fixed rotation schedule during the pilot — the cost of rotating
+  (deriving a new wallet, unwinding and rebuilding every LP/DLMM position, re-pointing
+  the agent) outweighs the benefit for a key already scoped to pilot inventory only.
+  Revisit if this moves from a fixed-term pilot to a standing deployment.
+- **Triggered:** rotate immediately on any suspected VPS compromise, any operator
+  access change you can't fully account for, or any sign the key material left this box.
+- **Procedure:** (1) generate a new wallet offline; (2) `touch KILL` on the VPS to pause
+  the agent; (3) withdraw every LP/DLMM position back to loose tokens in the old wallet
+  (`m1:dlmm-recenter -- withdraw --yes-mainnet`, and the XYK equivalent); (4) transfer
+  everything to the new address; (5) update `STACKS_PRIVATE_KEY` in `.env` on the VPS;
+  (6) confirm the old address reads zero balance on-chain; (7) remove the kill file and
+  restart.
 
 ## 2. Provision
 

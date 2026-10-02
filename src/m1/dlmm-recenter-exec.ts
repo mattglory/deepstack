@@ -299,6 +299,12 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   }
 
   // recenter: withdraw all, then re-add centered on the (re-read) active bin
+  // minX/minY = 1 is deliberately nominal, not real slippage protection (external review,
+  // 2026-09, security summary issue #9): this is the one place the agent accepts an
+  // arbitrarily bad fill on exit. Accepted as-is — bounded in practice by position size,
+  // and a tighter min-out here risks the withdraw itself reverting mid-recenter, which is
+  // worse (see the file header: a failed withdraw aborts before the re-add, but only if it
+  // fails outright, not if it succeeds at a bad price).
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   log(`  recenter 1/2 — withdraw ${pos.bins.length} bins`);
