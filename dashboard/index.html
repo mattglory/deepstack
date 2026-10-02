@@ -136,7 +136,8 @@
       </p>
     </div>
 
-    <script>
+    <script type="module">
+      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl } from "./pnl-math.js";
       const CFG = {
         wallet: "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
         api: "https://api.mainnet.hiro.so",
@@ -364,34 +365,10 @@
       let agentStxUsd = 0; // USD per STX, as used to value the DLMM position's USDCx leg
       let agentPilotStart = null; // ISO time the official pilot window opened (scopes Net)
       let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
-      // Full portfolio HODL-if-untouched value, marked to a given sample's own mid/stxUsd —
-      // spans every book portfolioY does: free x/y, LP legs, DLMM legs, free USDCx (via
-      // pilotBaseline.usdcxQty, added 2026-09-13 once the tile below was found comparing
-      // the full portfolio against a baseline that only ever captured free xBase/yBase).
-      // Returns null when a required piece isn't available for THIS sample — a sample's
-      // own stxUsd (needed to value the USDCx-denominated legs) only exists from when that
-      // tracking started, so earlier samples correctly fall out of the series rather than
-      // being charted with an incomplete, silently-wrong comparison.
-      function hodlNow(m, s) {
-        const b = m.pilotBaseline;
-        if (!b || !(s.mid > 0)) return null;
-        // FIXED snapshots taken once at pilot start (b.lpBasis/b.dlmmBasis) — NOT the
-        // top-level m.lpBasis/m.dlmmBasis, which are meant to evolve with real capital
-        // events (an add/withdraw, or a DLMM position going empty and later reopening).
-        // Using the mutable ones here is exactly the 2026-09-22 bug: fixing the DLMM P&L
-        // card's basis (correctly, on a real reopen) silently moved this pilot-wide "hold
-        // your original basket" comparison too. Falls back to the mutable fields only for
-        // metrics files from before this snapshot existed.
-        const lpBasis = b.lpBasis ?? m.lpBasis;
-        const dlmmBasis = b.dlmmBasis ?? m.dlmmBasis;
-        const usdcxQty = (b.usdcxQty ?? 0) + (dlmmBasis?.yQty ?? 0);
-        if (usdcxQty > 0 && !(s.stxUsd > 0)) return null;
-        let v = (Number(b.xBase) / 1e8) * s.mid + Number(b.yBase) / 1e6;
-        if (lpBasis) v += lpBasis.xQty * s.mid + lpBasis.yQty;
-        if (dlmmBasis) v += dlmmBasis.xQty * s.mid;
-        if (usdcxQty > 0) v += usdcxQty / s.stxUsd;
-        return v;
-      }
+      // hodlNow/ilAdjustedReturn/isPlausibleAgainstHodl now live in pnl-math.js (imported
+      // above) so they're unit-tested without a DOM — see that file's comments for the
+      // 2026-09-22 fixed-basis bug and the 2026-09-13 free-USDCx gap this logic guards
+      // against.
 
       // Performance curve — the institutional headline: cumulative return vs HODL (net of IL)
       // from a clean, fixed-inception baseline. Gated behind pilot start ON PURPOSE — a track
@@ -409,13 +386,13 @@
         const series = ss
           .map((s) => {
             const hodl = hodlNow(m, s);
-            return { t: s.t, hodl, port: s.portfolioY, v: hodl > 0 ? ((s.portfolioY - hodl) / hodl) * 100 : 0 };
+            return { t: s.t, hodl, port: s.portfolioY, v: ilAdjustedReturn(m, s) ?? 0 };
           })
           // Drop samples hodlNow can't value yet (no stxUsd recorded that tick — only
           // samples from 2026-09-11 onward have it), plus the existing glitch filter: a
-          // failed LP/DLMM-value read shows as an implausible portfolio spike/drop, so drop
-          // samples where |portfolio − HODL| exceeds 20% of HODL, beyond realistic IL here.
-          .filter((d) => d.hodl !== null && d.hodl > 0 && Math.abs(d.port - d.hodl) < 0.2 * d.hodl);
+          // failed LP/DLMM-value read shows as an implausible portfolio spike/drop. Both the
+          // filter rule and the 20% threshold live in pnl-math.js's isPlausibleAgainstHodl.
+          .filter((d) => isPlausibleAgainstHodl(d.port, d.hodl));
         if (series.length < 2) {
           wrap.style.display = "none";
           note.textContent = "Pilot window open — awaiting clean in-window heartbeats.";
@@ -555,7 +532,7 @@
           $("deployedCommitFoot").textContent = ` Running ${m.deployedCommit}.`;
         }
         const hodlNowVal = hodlNow(m, last);
-        const ilAdj = hodlNowVal !== null && hodlNowVal > 0 ? ((last.portfolioY - hodlNowVal) / hodlNowVal) * 100 : null;
+        const ilAdj = ilAdjustedReturn(m, last);
         const ilTile =
           ilAdj === null
             ? small("IL-adjusted return", `n/a<div class="sub2">measuring — see Economics for LP/DLMM P&L net of IL</div>`)
