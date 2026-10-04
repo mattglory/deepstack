@@ -12,3 +12,10 @@ evidence-backup/
 
 # Stamped by deploy/install.sh on the deploy target, not part of the repo itself
 .deployed-commit
+.claude/settings.local.json
+
+# Deep-research scratch output (Artifact "deep-research" skill) -- may contain grant $
+# figures and other financial/strategy details CLAUDE.md marks as not-for-the-public-repo.
+# Keep locally, never commit.
+reports/
+research_notes/

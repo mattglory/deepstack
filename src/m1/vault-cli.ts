@@ -1,0 +1,245 @@
+// AUM vault operations (Phase 1) — deploy and drive deepstack-vault.clar /
+// deepstack-vault-token.clar.
+//
+//   npm run m1:vault -- status                              # read everything, broadcast nothing
+//   npm run m1:vault -- deploy-token --yes-mainnet          # one-time, FIRST: deploy the share token
+//   npm run m1:vault -- deploy-vault --yes-mainnet          # one-time, SECOND: deploy the vault
+//   npm run m1:vault -- link --yes-mainnet                  # one-time, THIRD: the token<->vault link
+//   npm run m1:vault -- deposit 10 --yes-mainnet             # deposit 10 STX, get vault shares
+//   npm run m1:vault -- sweep-to-strategy 10 --yes-mainnet  # admin only: move capital to the strategy wallet
+//   npm run m1:vault -- return-from-strategy 11 --yes-mainnet  # admin only: bring it back + realize P&L
+//
+// Deliberately a separate, manual CLI, not a step folded into agent-cli.ts's unattended loop:
+// sweep-to-strategy/return-from-strategy are the first functions in this project that can move
+// someone else's custodied capital, not just the operator's own self-funded wallet — that earns
+// a deliberate, manual, explicitly-logged action every time, not a cron-loop step, regardless of
+// how small Phase 1's amounts are. See docs/VAULT_DISCLOSURE.md and
+// contracts/deepstack-vault.clar's own header for the full design reasoning.
+//
+// Every broadcast is mainnet-only and requires --yes-mainnet.
+
+import { readFileSync } from "node:fs";
+import { makeContractDeploy, makeContractCall, broadcastTransaction, fetchCallReadOnlyFunction, fetchNonce, cvToJSON, Cl, PostConditionMode } from "@stacks/transactions";
+import { getWallet } from "./wallet.js";
+import { withRpc, hiroFetch } from "./rpc.js";
+
+const VAULT_NAME = "deepstack-vault";
+const TOKEN_NAME = "deepstack-vault-token";
+const VAULT_PATH = "contracts/deepstack-vault.clar";
+const TOKEN_PATH = "contracts/deepstack-vault-token.clar";
+const CALL_FEE = 50_000n; // µSTX, same as the rest of this project's contract calls
+const DEPLOY_FEE = 150_000n; // µSTX — deploys are size-priced; ~7-8KB needs headroom
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function waitForTx(txid: string): Promise<boolean> {
+  process.stdout.write("  confirming");
+  for (let i = 0; i < 40; i++) {
+    await sleep(6000);
+    process.stdout.write(".");
+    try {
+      const j = await withRpc((baseUrl) =>
+        hiroFetch(baseUrl)(`${baseUrl}/extended/v1/tx/${txid}`).then((r) => {
+          if (!r.ok) throw new Error(`tx status fetch failed: ${r.status}`);
+          return r.json() as Promise<{ tx_status?: string; tx_result?: { repr?: string } }>;
+        }),
+      );
+      if (j.tx_status && j.tx_status !== "pending") {
+        console.log(`\n  status: ${j.tx_status}${j.tx_result?.repr ? `  ${j.tx_result.repr}` : ""}`);
+        return j.tx_status === "success";
+      }
+    } catch {
+      // no endpoint answered (or all timed out) this poll — treat as still-pending, retry
+    }
+  }
+  console.log("\n  status: still pending — check the explorer");
+  return false;
+}
+
+async function readOnly(addr: string, name: string, fn: string, args: any[] = []): Promise<any> {
+  return cvToJSON(
+    await withRpc((baseUrl) =>
+      fetchCallReadOnlyFunction({
+        contractAddress: addr,
+        contractName: name,
+        functionName: fn,
+        functionArgs: args,
+        network: "mainnet",
+        client: { baseUrl, fetch: hiroFetch(baseUrl) },
+        senderAddress: addr,
+      }),
+    ),
+  );
+}
+
+function requireLive(argv: string[]): void {
+  if (!argv.includes("--yes-mainnet")) {
+    console.log("  refusing: this broadcasts a REAL mainnet transaction. Add --yes-mainnet.");
+    process.exit(1);
+  }
+}
+
+const ustx = (stx: number) => BigInt(Math.round(stx * 1e6));
+const stxFmt = (u: bigint | number) => (Number(u) / 1e6).toLocaleString();
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const cmd = argv[0];
+  const w = await getWallet();
+  if (w.network !== "mainnet") throw new Error("mainnet only — set STACKS_NETWORK=mainnet");
+  const vaultId = `${w.address}.${VAULT_NAME}`;
+  const tokenId = `${w.address}.${TOKEN_NAME}`;
+  console.log(`operator: ${w.address}\nvault: ${vaultId}\ntoken: ${tokenId}\n`);
+
+  if (cmd === "status") {
+    try {
+      const [admin, maxTvl, feeBps, feeRecipient, depositsPaused, strategyPaused, totalBal, atStrategy, pendingWd, pnl, hwm] = await Promise.all([
+        readOnly(w.address, VAULT_NAME, "get-admin"),
+        readOnly(w.address, VAULT_NAME, "get-max-tvl"),
+        readOnly(w.address, VAULT_NAME, "get-performance-fee-bps"),
+        readOnly(w.address, VAULT_NAME, "get-fee-recipient"),
+        readOnly(w.address, VAULT_NAME, "get-deposits-paused"),
+        readOnly(w.address, VAULT_NAME, "get-strategy-paused"),
+        readOnly(w.address, VAULT_NAME, "get-total-stx-balance"),
+        readOnly(w.address, VAULT_NAME, "get-capital-at-strategy"),
+        readOnly(w.address, VAULT_NAME, "get-total-pending-withdrawals"),
+        readOnly(w.address, VAULT_NAME, "get-cumulative-realized-pnl"),
+        readOnly(w.address, VAULT_NAME, "get-high-water-mark"),
+      ]);
+      console.log(`admin: ${admin?.value?.value}`);
+      console.log(`max TVL: ${stxFmt(maxTvl?.value?.value ?? 0)} STX | performance fee: ${Number(feeBps?.value?.value ?? 0) / 100}% | fee recipient: ${feeRecipient?.value?.value}`);
+      console.log(`deposits paused: ${depositsPaused?.value} | strategy paused: ${strategyPaused?.value}`);
+      console.log(`vault balance: ${stxFmt(totalBal?.value?.value ?? 0)} STX | at strategy: ${stxFmt(atStrategy?.value?.value ?? 0)} STX | pending withdrawals: ${stxFmt(pendingWd?.value?.value ?? 0)} STX`);
+      console.log(`cumulative realized P&L: ${stxFmt(pnl?.value?.value ?? 0)} STX | high-water mark: ${stxFmt(hwm?.value?.value ?? 0)} STX`);
+      const supply = await readOnly(w.address, TOKEN_NAME, "get-total-supply");
+      console.log(`vault shares outstanding: ${supply?.value}`);
+    } catch (err) {
+      console.log(`(status read failed — contracts may not be deployed yet: ${(err as Error).message})`);
+    }
+    return;
+  }
+
+  if (cmd === "deploy-token") {
+    requireLive(argv);
+    const codeBody = readFileSync(TOKEN_PATH, "utf8");
+    console.log(`deploying ${TOKEN_NAME} (${codeBody.length} bytes, fee ${stxFmt(DEPLOY_FEE)} STX)`);
+    const tx = await makeContractDeploy({
+      contractName: TOKEN_NAME,
+      codeBody,
+      clarityVersion: 3,
+      senderKey: w.key,
+      network: "mainnet",
+      fee: DEPLOY_FEE,
+      postConditionMode: PostConditionMode.Deny, // a deploy moves nothing; Deny proves it
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    await waitForTx(res.txid);
+    console.log("\nNEXT: npm run m1:vault -- deploy-vault --yes-mainnet  (deploy this SECOND, after the token)");
+    return;
+  }
+
+  if (cmd === "deploy-vault") {
+    requireLive(argv);
+    const codeBody = readFileSync(VAULT_PATH, "utf8");
+    console.log(`deploying ${VAULT_NAME} (${codeBody.length} bytes, fee ${stxFmt(DEPLOY_FEE)} STX)`);
+    const tx = await makeContractDeploy({
+      contractName: VAULT_NAME,
+      codeBody,
+      clarityVersion: 3,
+      senderKey: w.key,
+      network: "mainnet",
+      fee: DEPLOY_FEE,
+      postConditionMode: PostConditionMode.Deny,
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    await waitForTx(res.txid);
+    console.log("\nNEXT: npm run m1:vault -- link --yes-mainnet  (one-time: point the token at this vault)");
+    return;
+  }
+
+  if (cmd === "link") {
+    requireLive(argv);
+    console.log(`linking ${TOKEN_NAME} -> ${vaultId} (one-time, cannot be changed again — see token contract header)`);
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const tx = await makeContractCall({
+      contractAddress: w.address,
+      contractName: TOKEN_NAME,
+      functionName: "set-vault-contract",
+      functionArgs: [Cl.contractPrincipal(w.address, VAULT_NAME)],
+      senderKey: w.key,
+      network: "mainnet",
+      fee: CALL_FEE,
+      nonce,
+      postConditionMode: PostConditionMode.Deny,
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    if (await waitForTx(res.txid)) console.log("\n✅ vault is live — npm run m1:vault -- status to confirm, then deposit/sweep as needed");
+    return;
+  }
+
+  if (cmd === "deposit") {
+    const stx = Number(argv[1]);
+    if (!(stx > 0)) throw new Error("usage: deposit <stx-amount> --yes-mainnet");
+    requireLive(argv);
+    const amount = ustx(stx);
+    console.log(`deposit: ${stx} STX`);
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const tx = await makeContractCall({
+      contractAddress: w.address,
+      contractName: VAULT_NAME,
+      functionName: "deposit",
+      functionArgs: [Cl.uint(amount)],
+      senderKey: w.key,
+      network: "mainnet",
+      fee: CALL_FEE,
+      nonce,
+      postConditionMode: PostConditionMode.Allow, // the vault mints shares back; Allow, same rationale as other project contract calls
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    await waitForTx(res.txid);
+    return;
+  }
+
+  if (cmd === "sweep-to-strategy" || cmd === "return-from-strategy") {
+    const stx = Number(argv[1]);
+    if (!(stx > 0)) throw new Error(`usage: ${cmd} <stx-amount> --yes-mainnet`);
+    requireLive(argv);
+    const amount = ustx(stx);
+    const fn = cmd === "sweep-to-strategy" ? "sweep-to-strategy" : "return-from-strategy";
+    console.log(`${cmd}: ${stx} STX`);
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const tx = await makeContractCall({
+      contractAddress: w.address,
+      contractName: VAULT_NAME,
+      functionName: fn,
+      functionArgs: [Cl.uint(amount)],
+      senderKey: w.key,
+      network: "mainnet",
+      fee: CALL_FEE,
+      nonce,
+      postConditionMode: PostConditionMode.Allow,
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    await waitForTx(res.txid);
+    return;
+  }
+
+  console.log(
+    "usage: m1:vault -- status | deploy-token | deploy-vault | link | deposit <stx> | sweep-to-strategy <stx> | return-from-strategy <stx>   (broadcasts need --yes-mainnet)",
+  );
+}
+
+main().catch((err) => {
+  console.error("vault-cli failed:", err.message);
+  process.exit(1);
+});

@@ -7,9 +7,20 @@ requirements = [
   { contract_id = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1" },
   { contract_id = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token" },
   { contract_id = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2" },
+  { contract_id = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.sip-010-trait-ft-standard-v-1-1" },
 ]
 
 [contracts.deepstack-rebalance-receiver]
 path = "../contracts/deepstack-rebalance-receiver.clar"
+clarity_version = 3
+epoch = "3.4"
+
+[contracts.deepstack-vault-token]
+path = "../contracts/deepstack-vault-token.clar"
+clarity_version = 3
+epoch = "3.4"
+
+[contracts.deepstack-vault]
+path = "../contracts/deepstack-vault.clar"
 clarity_version = 3
 epoch = "3.4"

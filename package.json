@@ -24,7 +24,8 @@
     "m2:pilot-start": "tsx src/m2/pilot-start-cli.ts",
     "m1:verify-write": "tsx src/m1/verify-write-cli.ts",
     "m1:dlmm-smoke": "tsx src/m1/dlmm-smoke-cli.ts",
-    "m1:dlmm-recenter": "tsx src/m1/dlmm-recenter-cli.ts"
+    "m1:dlmm-recenter": "tsx src/m1/dlmm-recenter-cli.ts",
+    "m1:vault": "tsx src/m1/vault-cli.ts"
   },
   "dependencies": {
     "@stacks/transactions": "^7.5.0",

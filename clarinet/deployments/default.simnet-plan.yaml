@@ -11,6 +11,14 @@ genesis:
     address: ST1SJ3DTE5DN7X54YDH5D64R3BCB6A2AG2ZQ8YPD5
     balance: '100000000000000'
     sbtc-balance: '1000000000'
+  - name: wallet_2
+    address: ST2CY5V39NHDPWSXMW9QDT3HC3GD6Q6XX4CFRK9AG
+    balance: '100000000000000'
+    sbtc-balance: '1000000000'
+  - name: wallet_3
+    address: ST2JHG361ZXG51QTKY2NQCVBPPRRE2KZB1HR05NNC
+    balance: '100000000000000'
+    sbtc-balance: '1000000000'
   contracts:
   - genesis
   - lockup
@@ -76,5 +84,15 @@ plan:
       contract-name: deepstack-rebalance-receiver
       emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
       path: ../contracts/deepstack-rebalance-receiver.clar
+      clarity-version: 3
+    - transaction-type: emulated-contract-publish
+      contract-name: deepstack-vault-token
+      emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+      path: ../contracts/deepstack-vault-token.clar
+      clarity-version: 3
+    - transaction-type: emulated-contract-publish
+      contract-name: deepstack-vault
+      emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+      path: ../contracts/deepstack-vault.clar
       clarity-version: 3
     epoch: '3.4'

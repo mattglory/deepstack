@@ -13,3 +13,14 @@ balance = 100000000000000
 [accounts.wallet_1]
 mnemonic = "sell invite acquire kitten bamboo drastic jelly vivid peace spawn twice guilt pave pen trash pretty park cube fragile unaware remain midnight betray rebuild"
 balance = 100000000000000
+
+# wallet_2/wallet_3: same public, never-mainnet-funded status as above -- the vault tests
+# need more than two identities (a second depositor for multi-depositor share-math cases, a
+# proposed-new-admin principal for the two-step succession test).
+[accounts.wallet_2]
+mnemonic = "hold excess usual excess ring elephant install account glad dry fragile donkey gaze humble truck breeze nation gasp vacuum limb head keep delay hospital"
+balance = 100000000000000
+
+[accounts.wallet_3]
+mnemonic = "cycle puppy glare enroll cost improve round trend wrist mushroom scorpion tower claim oppose clever elephant dinosaur eight problem before frozen dune wagon high"
+balance = 100000000000000
