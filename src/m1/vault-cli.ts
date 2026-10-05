@@ -116,11 +116,11 @@ async function main() {
       ]);
       console.log(`admin: ${admin?.value?.value}`);
       console.log(`max TVL: ${stxFmt(maxTvl?.value?.value ?? 0)} STX | performance fee: ${Number(feeBps?.value?.value ?? 0) / 100}% | fee recipient: ${feeRecipient?.value?.value}`);
-      console.log(`deposits paused: ${depositsPaused?.value} | strategy paused: ${strategyPaused?.value}`);
+      console.log(`deposits paused: ${depositsPaused?.value?.value} | strategy paused: ${strategyPaused?.value?.value}`);
       console.log(`vault balance: ${stxFmt(totalBal?.value?.value ?? 0)} STX | at strategy: ${stxFmt(atStrategy?.value?.value ?? 0)} STX | pending withdrawals: ${stxFmt(pendingWd?.value?.value ?? 0)} STX`);
       console.log(`cumulative realized P&L: ${stxFmt(pnl?.value?.value ?? 0)} STX | high-water mark: ${stxFmt(hwm?.value?.value ?? 0)} STX`);
       const supply = await readOnly(w.address, TOKEN_NAME, "get-total-supply");
-      console.log(`vault shares outstanding: ${supply?.value}`);
+      console.log(`vault shares outstanding: ${stxFmt(supply?.value?.value ?? 0)}`);
     } catch (err) {
       console.log(`(status read failed — contracts may not be deployed yet: ${(err as Error).message})`);
     }
