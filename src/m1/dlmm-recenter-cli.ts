@@ -4,6 +4,13 @@
 // two-sided position sized ~50/50 by value from wallet balances, centered on the active bin:
 // X (STX) at/above active, Y (USDCx) at/below (dlmm-write.distributeAcrossRange).
 //
+// Half-width sizing is shared with the live agent (dlmmSigmaDaily/resolveHalfWidth in
+// dlmm-recenter-exec.ts), not a value this file picks on its own — DLMM_HALF_WIDTH (env) is
+// only the floor used until there's enough telemetry history to compute a real vol-scaled
+// width. Before 2026-10-05 this CLI had its own disconnected flat ±3-bin default, which let a
+// manual recenter open a position narrow enough to drift out of range in hours while the
+// agent's own (vol-scaled, much wider) trigger judged the drift insignificant and never acted.
+//
 // Actions:
 //   status      read-only: active bin, resolved tokens, current position, decideRecenter output
 //   open <usd>  open a two-sided position (must be flat)
@@ -39,14 +46,21 @@ import {
 } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } from "./dlmm-recenter.js";
 import { executeDescriptor } from "./dlmm-execute.js";
-// Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.).
-import { resolveToken, ftBalance, priceOfToken, type TokenMeta } from "./dlmm-recenter-exec.js";
+// Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.) AND
+// for half-width sizing (dlmmSigmaDaily/resolveHalfWidth) — see their doc comments there for
+// why this CLI no longer has its own, disconnected fixed-width default.
+import { resolveToken, ftBalance, priceOfToken, dlmmSigmaDaily, resolveHalfWidth, type TokenMeta } from "./dlmm-recenter-exec.js";
 import { setDlmmBasis } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 
 const PAIR = process.env.DLMM_PAIR ?? "stx-usdcx";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
-const HALF_WIDTH = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
+// Floor/fallback ONLY — used when there isn't yet enough telemetry history to compute a real
+// vol-scaled width (dlmmSigmaDaily() returns null). Once history exists, resolveHalfWidth()
+// below overrides this with the SAME vol-scaled width the live agent uses, so a manual
+// open/recenter through this CLI can never again size a position the automated agent's own
+// drift trigger disagrees with.
+const FALLBACK_HALF_WIDTH = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
 const TARGET_USD = Number(process.env.DLMM_TARGET_USD ?? 40); // recenter re-adds to this size
 // Same cap as dlmm-recenter-exec.ts's executeAdd, same reasoning: configurable, not a bare
 // 250, so a deliberately-larger pilot position doesn't need another code edit each time.
@@ -86,7 +100,7 @@ async function waitFor(txid: string): Promise<string> {
 
 // Build + (optionally) broadcast a two-sided open centered on the active bin. Handles X = native
 // STX (stx-usdcx) or a SIP-010 like sBTC (sbtc-usdcx). Returns txid or null (preview).
-async function doOpen(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, target: number, yes: boolean): Promise<string | null> {
+async function doOpen(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, target: number, yes: boolean, halfWidth: number): Promise<string | null> {
   if (target <= 0 || target > MAX_TARGET_USD) throw new Error(`target must be >0 and ≤ ${MAX_TARGET_USD}`);
   const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
   const xSym = xTok.asset || "STX";
@@ -101,7 +115,7 @@ async function doOpen(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMe
   if (size.xBase <= 0n || size.yBase <= 0n)
     throw new Error(`cannot size two-sided: ${xSym} avail ${Number(availX) / xUnit}, ${yTok.asset} avail ${Number(availY) / yUnit}`);
 
-  const deposits = distributeAcrossRange(st.activeBinId, HALF_WIDTH, size.xBase, size.yBase);
+  const deposits = distributeAcrossRange(st.activeBinId, halfWidth, size.xBase, size.yBase);
   // Same per-bin min-dlp sizing as the live agent (dlmm-recenter-exec.ts) — this CLI used to
   // have its OWN flat MIN_DLP=10000, a second copy of the bug that caused the 2026-09-21
   // incident. An attended run through this CLI is meant to validate the same logic the
@@ -172,9 +186,13 @@ async function main() {
   if (!st) throw new Error(`could not read pool state for ${PAIR}`);
   const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
   const pos = await readUserPosition(poolDef, w.address);
-  const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, HALF_WIDTH);
+  // Same vol-scaled width the live agent uses (resolveHalfWidth, shared in dlmm-recenter-exec.ts)
+  // — falls back to FALLBACK_HALF_WIDTH only when there isn't yet enough telemetry history.
+  const sigmaDaily = dlmmSigmaDaily();
+  const halfWidth = resolveHalfWidth(sigmaDaily, st.binStep, FALLBACK_HALF_WIDTH);
+  const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
 
-  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | x=${xTok.asset || "STX"} y=${yTok.asset}`);
+  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | half-width ${halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback — no vol history yet)"} | x=${xTok.asset || "STX"} y=${yTok.asset}`);
   const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
   const xdp = xTok.decimals === 8 ? 6 : 3;
   console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}` : "none"}`);
@@ -199,7 +217,7 @@ async function main() {
 
   if (action === "open") {
     if (pos.bins.length > 0) throw new Error("a position already exists — use `recenter`");
-    const txid = await doOpen(w, poolDef, st, xTok, yTok, Number(amount ?? TARGET_USD), yes);
+    const txid = await doOpen(w, poolDef, st, xTok, yTok, Number(amount ?? TARGET_USD), yes, halfWidth);
     if (txid) {
       const s = await waitFor(txid);
       if (s === "success") {
@@ -247,7 +265,7 @@ async function main() {
   // 2) re-add two-sided centered on the CURRENT active bin (re-read — it moves)
   const st2 = (await readDlmmState(poolDef)) ?? st;
   console.log(`recenter step 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const txid = await doOpen(w, poolDef, st2, xTok, yTok, TARGET_USD, yes);
+  const txid = await doOpen(w, poolDef, st2, xTok, yTok, TARGET_USD, yes, halfWidth);
   if (txid) {
     const s = await waitFor(txid);
     if (s === "success") {

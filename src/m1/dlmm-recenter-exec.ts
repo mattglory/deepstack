@@ -20,13 +20,44 @@ import { withRpc, hiroFetch } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { exceedsPoolShare } from "./agent.js";
-import { setDlmmBasis } from "./metrics.js";
+import { setDlmmBasis, loadHistory } from "./metrics.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
+import { realizedVolDaily } from "./lvr.js";
+
+// Realised daily vol of the DLMM pair's OWN underlying price — deliberately NOT the sBTC-STX
+// series applyVolBand() (agent-cli.ts) uses for the XYK band: that series is the wrong pair
+// for sizing a sBTC-USDCx range. Derives an implied USD-per-sBTC ("BTC/USD") series from the
+// recorded telemetry (mid = STX per sBTC, stxUsd = USD per STX; their product is USD per
+// sBTC) — no new data collection needed, both are already recorded every cycle once DLMM is
+// live. Returns null (-> resolveHalfWidth falls back to the fixed halfWidth) until stxUsd has
+// enough history, same honesty rule as applyVolBand's null case.
+//
+// Single source of truth for BOTH the autonomous agent (agent-cli.ts) and the manual CLI
+// (dlmm-recenter-cli.ts) — previously a private copy lived only in agent-cli.ts, and the CLI
+// had no equivalent at all, just a flat ±3-bin fallback. That mismatch (a vol-scaled ±50-bin
+// agent trigger against a manually-opened ±3-bin position) is what let a manual recenter on
+// 2026-10-05 open a position narrow enough to drift out of range in hours while the agent's
+// own trigger judged the drift insignificant and never acted.
+export function dlmmSigmaDaily(): number | null {
+  const history = loadHistory()
+    .filter((s) => s.mid > 0 && (s.stxUsd ?? 0) > 0)
+    .map((s) => ({ t: s.t, mid: s.mid * (s.stxUsd as number), lpValueY: 0 }));
+  return realizedVolDaily(history);
+}
+
+// The ONE place that decides vol-scaled vs. fixed-fallback half-width — used by recenterOnce()
+// below AND by the manual CLI directly, so the two can never again size positions differently
+// for the same live conditions.
+export function resolveHalfWidth(sigmaDaily: number | null | undefined, binStepBps: number, fallbackHalfWidth: number, rangeOpts: RangeOpts = {}): number {
+  return sigmaDaily != null && sigmaDaily > 0
+    ? binRangeFromVol(sigmaDaily, binStepBps, { maxHalfWidthBins: 50, ...rangeOpts }).halfWidthBins
+    : fallbackHalfWidth;
+}
 
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
 // Slippage margin for the per-bin min-dlp guard (dlmm-recenter.ts's expectedDlp), matching the
@@ -210,10 +241,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   if (!poolDef) throw new Error(`unknown DLMM pair '${cfg.pair}'`);
   const st = await readDlmmState(poolDef);
   if (!st) throw new Error(`could not read pool state for ${cfg.pair}`);
-  const halfWidth =
-    cfg.sigmaDaily != null && cfg.sigmaDaily > 0
-      ? binRangeFromVol(cfg.sigmaDaily, st.binStep, { maxHalfWidthBins: 50, ...cfg.rangeOpts }).halfWidthBins
-      : cfg.halfWidth;
+  const halfWidth = resolveHalfWidth(cfg.sigmaDaily, st.binStep, cfg.halfWidth, cfg.rangeOpts);
   const effCfg: RecenterConfig = { ...cfg, halfWidth };
   const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
   const pos = await readUserPosition(poolDef, w.address);

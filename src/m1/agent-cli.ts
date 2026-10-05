@@ -28,7 +28,7 @@ import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
 import { scanStstxGap } from "./ststx-gap.js";
-import { recenterOnce, resolveToken, stxPriceUsd, ftBalance } from "./dlmm-recenter-exec.js";
+import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmSigmaDaily } from "./dlmm-recenter-exec.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
@@ -568,21 +568,9 @@ function applyVolBand(params: AgentParams): { params: AgentParams; sigmaDaily: n
   return { params: { ...params, rebalanceBandBps: bandBps }, sigmaDaily, bandBps };
 }
 
-/**
- * Realised daily vol of the DLMM pair's OWN underlying price — deliberately NOT the sBTC-STX
- * series applyVolBand() uses above (see the DLMM section's comment: that series is the wrong
- * pair for sizing a sBTC-USDCx range). Derives an implied USD-per-sBTC ("BTC/USD") series from
- * the recorded telemetry (mid = STX per sBTC, stxUsd = USD per STX; their product is USD per
- * sBTC) — no new data collection needed, both are already recorded every cycle once DLMM is
- * live. Returns null (→ recenterOnce falls back to the fixed halfWidth) until stxUsd has enough
- * history, same honesty rule as applyVolBand's null case.
- */
-function dlmmSigmaDaily(): number | null {
-  const history = loadHistory()
-    .filter((s) => s.mid > 0 && (s.stxUsd ?? 0) > 0)
-    .map((s) => ({ t: s.t, mid: s.mid * (s.stxUsd as number), lpValueY: 0 }));
-  return realizedVolDaily(history);
-}
+// dlmmSigmaDaily() now lives in dlmm-recenter-exec.ts, shared with the manual CLI — see its
+// doc comment there for why (2026-10-05: the CLI's lack of an equivalent is what let a manual
+// recenter open a position too narrow for the agent's own vol-scaled trigger to act on).
 
 // Regime-aware defensive allocation (allocation.ts). Gated OFF by default — the pilot runs
 // the declared static 50/50 — so this only alters targetY/targetLp when ALLOCATION_MODE=
