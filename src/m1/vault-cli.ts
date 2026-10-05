@@ -28,7 +28,15 @@ const TOKEN_NAME = "deepstack-vault-token";
 const VAULT_PATH = "contracts/deepstack-vault.clar";
 const TOKEN_PATH = "contracts/deepstack-vault-token.clar";
 const CALL_FEE = 50_000n; // µSTX, same as the rest of this project's contract calls
-const DEPLOY_FEE = 150_000n; // µSTX — deploys are size-priced; ~7-8KB needs headroom
+// µSTX. Deploys are size-priced. The project's only prior deploy (the 7.8KB receiver
+// contract) paid 150_000 and succeeded, but deepstack-vault.clar is ~22KB (~2.8x larger) --
+// scaling that precedent plus the current mainnet transfer fee market (~13 µSTX/byte as of
+// 2026-10-05, extrapolated: ~0.29 STX for a tx this size) both land meaningfully above
+// 150_000. Sized with real margin above both estimates since this is a one-time cost on a
+// wallet holding ~190 STX free -- not worth risking a stuck deploy to save a fraction of a
+// STX. The smaller token contract (5.4KB, under the receiver's own precedent) is safe at
+// this same fee too.
+const DEPLOY_FEE = 500_000n;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
