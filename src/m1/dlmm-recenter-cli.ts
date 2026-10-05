@@ -10,6 +10,9 @@
 //   recenter    if the active bin has drifted out of the band: withdraw all bins, then re-add
 //               two-sided centered on the new active bin (two sequential broadcasts)
 //   withdraw    withdraw all bins and stop — no re-add (winding a position down)
+//   reset-basis no broadcast: reset the dashboard's dlmmBasis to the currently confirmed
+//               position and push it to the gist immediately (recovery for the stale-basis
+//               bug the `open`/`recenter` fixes above now prevent going forward)
 //
 // SAFETY: mainnet-only; PREVIEW by default; broadcasts only with --yes-mainnet; Allow mode +
 // INPUT-CAP post-conditions on the adds (asset names/decimals RESOLVED from source at runtime);
@@ -39,6 +42,7 @@ import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.).
 import { resolveToken, ftBalance, priceOfToken, type TokenMeta } from "./dlmm-recenter-exec.js";
 import { setDlmmBasis } from "./metrics.js";
+import { publishMetrics, isPublishConfigured } from "./publish.js";
 
 const PAIR = process.env.DLMM_PAIR ?? "stx-usdcx";
 const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
@@ -158,7 +162,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
 async function main() {
   console.log("=== DeepStack — DLMM recenter (two-sided concentrated position) ===\n");
   const { action, amount, yes } = parseArgs();
-  if (!["status", "open", "recenter", "withdraw"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw> [--yes-mainnet]");
+  if (!["status", "open", "recenter", "withdraw", "reset-basis"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | reset-basis> [--yes-mainnet]");
 
   const w = await getWallet();
   if (w.network !== "mainnet") throw new Error(`refusing: STACKS_NETWORK is ${w.network}; DLMM is mainnet-only.`);
@@ -176,6 +180,22 @@ async function main() {
   console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}` : "none"}`);
   console.log(`decision: ${decision.action} — ${decision.reason}\n`);
   if (action === "status") return;
+
+  if (action === "reset-basis") {
+    // No broadcast -- pure recovery for the stale-basis bug (see the `recenter` branch's
+    // comment). Resets dlmmBasis to the CURRENTLY confirmed position and pushes straight to
+    // the gist, rather than waiting up to one agent cycle for the dashboard to catch up.
+    if (pos.bins.length === 0) throw new Error("no open DLMM position to reset the basis to");
+    setDlmmBasis({ xQty: Number(pos.totalX) / xUnit, yQty: Number(pos.totalY) / yUnit, t: new Date().toISOString() });
+    console.log("cost basis reset to the confirmed deposited legs.");
+    if (isPublishConfigured()) {
+      const ok = await publishMetrics();
+      console.log(ok ? "published to the gist mirror." : "gist publish failed — dashboard will pick this up on the agent's next cycle instead.");
+    } else {
+      console.log("gist publish not configured here — dashboard will pick this up on the agent's next cycle.");
+    }
+    return;
+  }
 
   if (action === "open") {
     if (pos.bins.length > 0) throw new Error("a position already exists — use `recenter`");
@@ -228,8 +248,29 @@ async function main() {
   const st2 = (await readDlmmState(poolDef)) ?? st;
   console.log(`recenter step 2/2 — re-add centered on active ${st2.activeBinId}`);
   const txid = await doOpen(w, poolDef, st2, xTok, yTok, TARGET_USD, yes);
-  if (txid) { const s = await waitFor(txid); if (s === "success") console.log("\n✅ recenter complete."); else process.exitCode = 1; }
-  else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first).");
+  if (txid) {
+    const s = await waitFor(txid);
+    if (s === "success") {
+      console.log("\n✅ recenter complete.");
+      // Same explicit basis reset `open` already does, and for the same reason (see its
+      // comment above) -- `recenter` withdraws then re-adds too, and missing this here
+      // produced exactly the stale-basis bug on 2026-10-05: a manual recenter via this
+      // command left dlmmBasis pointing at the OLD (much larger) position, so the
+      // dashboard compared the new, small position's value against it and reported a
+      // fabricated ~-1,487 STX DLMM P&L / -6,313% APR.
+      try {
+        const confirmedPos = await readUserPosition(poolDef, w.address);
+        setDlmmBasis({
+          xQty: Number(confirmedPos.totalX) / xUnit,
+          yQty: Number(confirmedPos.totalY) / yUnit,
+          t: new Date().toISOString(),
+        });
+        console.log("   cost basis reset to the confirmed deposited legs.");
+      } catch (err) {
+        console.log(`   (basis reset skipped: ${(err as Error).message})`);
+      }
+    } else process.exitCode = 1;
+  } else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first).");
 }
 
 main().catch((err) => { console.error("dlmm-recenter failed:", err.message); process.exit(1); });
