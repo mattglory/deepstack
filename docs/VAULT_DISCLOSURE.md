@@ -40,10 +40,11 @@ track record are Phase 2/3 milestones, not something this version has.
   reserved and cannot later become unfundable.
 - **Fee changes, cap changes, and a change of admin all require advance public notice.** Any
   such change must be queued on-chain and wait out a fixed delay (currently targeted at roughly
-  3 days, computed from observed mainnet block timing — exact value fixed in the contract
-  before deploy) before it can take effect, and once queued, DeepStack cannot cancel or skip
-  that wait. Changing your mind after is only possible by queuing the old value back, which
-  waits out the same delay again.
+  7 days, computed from observed mainnet block timing — exact value fixed in the contract
+  before deploy, chosen so it meaningfully outlasts the withdrawal delay below, giving you a
+  real window to exit before a change takes effect) before it can take effect, and once
+  queued, DeepStack cannot cancel or skip that wait. Changing your mind after is only possible
+  by queuing the old value back, which waits out the same delay again.
 - **The performance fee has a hard ceiling** that no queued, delayed change can ever exceed,
   regardless of what's confirmed.
 
@@ -56,8 +57,8 @@ also readable live at any time via `npm run m1:vault -- status`)
 | Performance fee | 10% | Charged only on realized gains that exceed the vault's prior high point (see below) — never on deposits, never on unrealized/paper gains, never on losses. |
 | Fee ceiling (`MAX-PERFORMANCE-FEE-BPS`) | 20% | The fee can never be raised above this, no matter what's queued and confirmed. |
 | Minimum first deposit | 1 STX | Required only while the vault has zero depositors — part of what prevents a pricing-manipulation attack on the very first deposit. |
-| Withdrawal delay | ~3 days (block-computed) | Time between requesting a withdrawal and being able to claim it. Fixed in Phase 1 — not adjustable at all, by anyone, without a new contract. |
-| Timelock delay | ~3 days (block-computed) | Minimum notice before any parameter change (cap, fee, fee recipient, admin) takes effect. |
+| Withdrawal delay | ~2 days (block-computed) | Time between requesting a withdrawal and being able to claim it. Fixed in Phase 1 — not adjustable at all, by anyone, without a new contract. |
+| Timelock delay | ~7 days (block-computed) | Minimum notice before any parameter change (cap, fee, fee recipient, admin) takes effect. Deliberately longer than the withdrawal delay above, with real margin — so you have time to notice a queued change and withdraw before it lands, not just to notice it. |
 
 ## How the fee actually works
 

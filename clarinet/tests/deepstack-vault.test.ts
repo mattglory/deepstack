@@ -311,7 +311,7 @@ describe("timelock", () => {
 
   it("confirm after maturity succeeds and is callable by a NON-admin account", () => {
     simnet.callPublicFn(VAULT, "queue-max-tvl", [Cl.uint(999_000_000)], deployer);
-    simnet.mineEmptyBlocks(30_000);
+    simnet.mineEmptyBlocks(40_000);
     const r = simnet.callPublicFn(VAULT, "confirm-max-tvl", [], wallet3); // not the admin
     expect(r.result).toBeOk(Cl.bool(true));
     expect(simnet.callReadOnlyFn(VAULT, "get-max-tvl", [], deployer).result).toBeOk(Cl.uint(999_000_000));
@@ -325,7 +325,7 @@ describe("timelock", () => {
   it("re-queuing before confirmation overwrites the pending value", () => {
     simnet.callPublicFn(VAULT, "queue-max-tvl", [Cl.uint(111)], deployer);
     simnet.callPublicFn(VAULT, "queue-max-tvl", [Cl.uint(222)], deployer);
-    simnet.mineEmptyBlocks(30_000);
+    simnet.mineEmptyBlocks(40_000);
     simnet.callPublicFn(VAULT, "confirm-max-tvl", [], deployer);
     expect(simnet.callReadOnlyFn(VAULT, "get-max-tvl", [], deployer).result).toBeOk(Cl.uint(222));
   });
@@ -357,7 +357,7 @@ describe("admin succession", () => {
     const tooEarly = simnet.callPublicFn(VAULT, "accept-admin-change", [], wallet2);
     expect(tooEarly.result).toBeErr(Cl.uint(ERR.NOT_YET_EXECUTABLE));
 
-    simnet.mineEmptyBlocks(30_000);
+    simnet.mineEmptyBlocks(40_000);
     const wrongCaller = simnet.callPublicFn(VAULT, "accept-admin-change", [], wallet3);
     expect(wrongCaller.result).toBeErr(Cl.uint(ERR.NOT_PENDING_ADMIN));
 
@@ -367,7 +367,7 @@ describe("admin succession", () => {
 
   it("the proposed principal accepting after maturity completes the succession", () => {
     simnet.callPublicFn(VAULT, "queue-admin-change", [Cl.principal(wallet2)], deployer);
-    simnet.mineEmptyBlocks(30_000);
+    simnet.mineEmptyBlocks(40_000);
     const r = simnet.callPublicFn(VAULT, "accept-admin-change", [], wallet2);
     expect(r.result).toBeOk(Cl.bool(true));
     expect(simnet.callReadOnlyFn(VAULT, "get-admin", [], deployer).result).toBeOk(Cl.principal(wallet2));

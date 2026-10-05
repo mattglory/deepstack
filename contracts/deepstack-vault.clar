@@ -47,10 +47,13 @@
 ;;   3. Call deepstack-vault-token's set-vault-contract with THIS contract's address (the
 ;;      one-time link -- see that file's header).
 ;;   4. Verify WITHDRAWAL-DELAY-BLOCKS / TIMELOCK-DELAY-BLOCKS below against mainnet's actual
-;;      block cadence at deploy time (computed here from observed Nakamoto-era blocks on
-;;      2026-10-04: ~10-12 seconds/block; using a conservative 10s/block assumption so the
-;;      real delay is never SHORTER than intended if blocks speed up further) -- re-verify
-;;      before relying on this number for a real deploy.
+;;      block cadence at deploy time (computed here from observed cadence on 2026-10-05:
+;;      ~15.25 seconds/block, targeting 2 days withdrawal / 7 days timelock -- see
+;;      reports/DeepStack vault timelock duration.md for why these are deliberately unequal
+;;      and sized to the admin-succession risk tier, not tiered per-parameter) -- re-verify
+;;      before relying on these numbers for a real deploy, since cadence drift silently
+;;      changes the real-world day-equivalent of a fixed block count for the life of the
+;;      contract.
 
 ;; =============================================
 ;; Constants -- verify before deploy
@@ -66,8 +69,18 @@
 
 ;; ~3 days at a conservative 10s/block (see header) -- fixed constants in Phase 1, not even
 ;; timelock-adjustable: one admin, one strategy, no proven need yet to ever change these.
-(define-constant WITHDRAWAL-DELAY-BLOCKS u26000)
-(define-constant TIMELOCK-DELAY-BLOCKS u26000)
+;; Deliberately unequal: a parameter-change timelock only protects a depositor who can
+;; actually exit before a queued change lands, which requires it to outlast the withdrawal
+;; delay by a real margin, not match it. Sized per
+;; reports/DeepStack vault timelock duration.md (comparable-protocol + pilot-vs-future-stakes
+;; research): 7 days for the timelock (admin-succession risk, the worst of the four gated
+;; parameters, applied flat rather than tiered), 2 days for withdrawal (leaves ~5 days of
+;; exit margin). Both are block counts computed from mainnet's *current* observed ~15.25
+;; sec/block cadence, not wall-clock time -- cadence drift (in either direction) will shift
+;; the real-world day-equivalent for the life of this contract, with no way to correct it
+;; short of a full redeploy and fund migration (Clarity has no in-place upgrade).
+(define-constant WITHDRAWAL-DELAY-BLOCKS u11330)
+(define-constant TIMELOCK-DELAY-BLOCKS u39660)
 
 (define-constant ERR-NOT-ADMIN                 (err u100))
 (define-constant ERR-DEPOSITS-PAUSED           (err u101))
