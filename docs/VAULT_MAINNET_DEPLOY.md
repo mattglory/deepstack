@@ -85,22 +85,18 @@ any deposit.
 
 ## 5. Seed deposit — DeepStack's own capital, not yet open to anyone else
 
-**Recommendation: 20 STX.** Reasoning, not a guess:
-
-- Small enough that a Phase 1 mistake (a bug this audit and 60 tests missed, or a fee-market
-  surprise) costs little in absolute terms.
-- Large enough to be a *real* test of the full lifecycle — deposit, a genuine
-  `sweep-to-strategy` / `return-from-strategy` round-trip through the existing DLMM
-  strategy, a real withdrawal request and claim after the new 2-day delay actually
-  elapses — not a dust amount that risks hitting an off-by-one at the `MIN-FIRST-DEPOSIT`
-  floor (1 STX) or rounding in the virtual-share-offset math.
-- Leaves ~170 STX of the wallet's free balance untouched for the pilot agent's own
-  existing trading and gas, and well under the 500 STX `max-tvl` cap (raisable later via
-  the 7-day timelock once Phase 1 proves out).
+**Set to 100 STX per explicit confirmation (2026-10-05)** — above this runbook's original
+20 STX recommendation. Re-verified live right before writing this: the operator wallet
+still holds ~192.7 STX free, 0 locked (unchanged since the first check). 100 STX commits
+roughly **half** the wallet's current free balance to a contract with no third-party
+audit yet — flagging that explicitly, not re-arguing it, since the number was a direct
+instruction. What's unchanged from the original reasoning: still well under the 500 STX
+`max-tvl` cap, and still clear of the `MIN-FIRST-DEPOSIT` floor (1 STX) with no rounding
+risk in the virtual-share-offset math at this size.
 
 ```bash
-npm run m1:vault -- deposit 20 --yes-mainnet
-npm run m1:vault -- status            # confirm vault balance: 20 STX, shares outstanding: 20,000,000 (1:1 first deposit)
+npm run m1:vault -- deposit 100 --yes-mainnet
+npm run m1:vault -- status            # confirm vault balance: 100 STX, shares outstanding: 100,000,000 (1:1 first deposit)
 ```
 
 **This step moves real capital into a new, unaudited-by-a-third-party contract. Confirm
@@ -113,7 +109,7 @@ The disclosure doc and the architecture report both treat an unexercised code pa
 unproven. Before this vault is mentioned anywhere public:
 
 ```bash
-npm run m1:vault -- sweep-to-strategy 15 --yes-mainnet     # moves 15 of the 20 STX to the operator wallet for the DLMM strategy
+npm run m1:vault -- sweep-to-strategy 70 --yes-mainnet     # moves 70 of the 100 STX to the operator wallet for the DLMM strategy
 # ... run the existing strategy for real (e.g. one real DLMM recenter cycle) ...
 npm run m1:vault -- return-from-strategy <actual-result> --yes-mainnet   # whatever actually comes back, honestly
 npm run m1:vault -- status            # confirm cumulative-realized-pnl and high-water-mark moved as expected
@@ -138,8 +134,9 @@ and the shares burn.
 
 ## Open issues to settle before step 5
 
-- **Seed amount is a recommendation, not yet confirmed.** 20 STX is reasoned above; say so
-  explicitly if a different number is wanted before step 5 runs.
+- **Seed amount confirmed at 100 STX** (2026-10-05) — roughly half the operator wallet's
+  current free STX, see §5. If the live balance has moved materially by the time step 5
+  actually runs, reverify before broadcasting.
 - **No third party has reviewed this contract.** `docs/CLARITY_AUDIT_VAULT.md` is a
   manual, structured self-review (same format as the already-live receiver contract's
   audit), not a paid third-party audit — Phase 1 is explicitly scoped to proceed without
