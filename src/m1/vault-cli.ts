@@ -8,6 +8,8 @@
 //   npm run m1:vault -- deposit 10 --yes-mainnet             # deposit 10 STX, get vault shares
 //   npm run m1:vault -- sweep-to-strategy 10 --yes-mainnet  # admin only: move capital to the strategy wallet
 //   npm run m1:vault -- return-from-strategy 11 --yes-mainnet  # admin only: bring it back + realize P&L
+//   npm run m1:vault -- request-withdrawal 10 --yes-mainnet  # queue a withdrawal of 10 vault shares
+//   npm run m1:vault -- claim-withdrawal 0 --yes-mainnet      # claim withdrawal id 0 once its delay has passed
 //
 // Deliberately a separate, manual CLI, not a step folded into agent-cli.ts's unattended loop:
 // sweep-to-strategy/return-from-strategy are the first functions in this project that can move
@@ -242,8 +244,57 @@ async function main() {
     return;
   }
 
+  if (cmd === "request-withdrawal") {
+    const shares = Number(argv[1]);
+    if (!(shares > 0)) throw new Error("usage: request-withdrawal <shares> --yes-mainnet");
+    requireLive(argv);
+    const amount = ustx(shares); // shares use the same 6-decimal base as STX
+    console.log(`request-withdrawal: ${shares} shares`);
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const tx = await makeContractCall({
+      contractAddress: w.address,
+      contractName: VAULT_NAME,
+      functionName: "request-withdrawal",
+      functionArgs: [Cl.uint(amount)],
+      senderKey: w.key,
+      network: "mainnet",
+      fee: CALL_FEE,
+      nonce,
+      postConditionMode: PostConditionMode.Allow, // shares move into vault custody, no STX moves yet
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    await waitForTx(res.txid);
+    return;
+  }
+
+  if (cmd === "claim-withdrawal") {
+    const id = Number(argv[1]);
+    if (!(id >= 0)) throw new Error("usage: claim-withdrawal <id> --yes-mainnet");
+    requireLive(argv);
+    console.log(`claim-withdrawal: id ${id}`);
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const tx = await makeContractCall({
+      contractAddress: w.address,
+      contractName: VAULT_NAME,
+      functionName: "claim-withdrawal",
+      functionArgs: [Cl.uint(id)],
+      senderKey: w.key,
+      network: "mainnet",
+      fee: CALL_FEE,
+      nonce,
+      postConditionMode: PostConditionMode.Allow, // the vault pays out STX; Allow, same rationale as deposit
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    await waitForTx(res.txid);
+    return;
+  }
+
   console.log(
-    "usage: m1:vault -- status | deploy-token | deploy-vault | link | deposit <stx> | sweep-to-strategy <stx> | return-from-strategy <stx>   (broadcasts need --yes-mainnet)",
+    "usage: m1:vault -- status | deploy-token | deploy-vault | link | deposit <stx> | sweep-to-strategy <stx> | return-from-strategy <stx> | request-withdrawal <shares> | claim-withdrawal <id>   (broadcasts need --yes-mainnet)",
   );
 }
 
