@@ -46,3 +46,31 @@ export function ilAdjustedReturn(m, s) {
 export function isPlausibleAgainstHodl(portfolioY, hodl, maxFrac = 0.2) {
   return hodl !== null && hodl > 0 && Math.abs(portfolioY - hodl) < maxFrac * hodl;
 }
+
+// Per-venue organic (fees-only, IL-netted) P&L and annualised APR — a venue's current value
+// vs. HOLDING its own deposited legs at today's price. Extracted from index.html's inline
+// lpApr/dlmmApr calculations (previously two separate, hand-duplicated copies of this exact
+// formula) so the dashboard and any other consumer (e.g. the capital allocator) share one
+// implementation, not a second copy to silently drift out of sync -- see hodlNow's own
+// comment above for the real incident this pattern has already caused once (2026-09-22).
+//
+// yLegUsdRate: omit for a venue whose y-leg is already native STX (e.g. XYK sBTC/STX); pass
+// the STX/USD rate the venue's OWN value was computed with for a venue whose y-leg is a
+// USD-pegged token (e.g. DLMM sBTC/USDCx) -- must be the same rate used to compute
+// currentValueY in the first place, not a fresh client-side fetch, or net/APR silently
+// stops meaning what it says.
+//
+// Returns { netY, apr, days } with apr === null before minDays of history exists (default 3
+// -- annualising a shorter window is how LP marketing lies) or if hodlLegs isn't positive.
+export function organicApr({ currentValueY, basisXQty, basisYQty, basisT, mid, yLegUsdRate, minDays = 3 }) {
+  if (!(mid > 0) || !(currentValueY > 0) || basisXQty == null || basisYQty == null || !basisT) {
+    return { netY: null, apr: null, days: 0 };
+  }
+  const yLegY = yLegUsdRate ? basisYQty / yLegUsdRate : basisYQty;
+  if (yLegUsdRate != null && !(yLegUsdRate > 0)) return { netY: null, apr: null, days: 0 };
+  const hodlLegs = basisXQty * mid + yLegY;
+  const netY = currentValueY - hodlLegs;
+  const days = (Date.now() - new Date(basisT).getTime()) / 864e5;
+  const apr = hodlLegs > 0 && days >= minDays ? (netY / hodlLegs) * (365 / days) * 100 : null;
+  return { netY, apr, days };
+}

@@ -137,6 +137,18 @@ export function loadHistory(): MetricsSample[] {
 }
 
 /**
+ * The current (mutable, evolves on real capital events) LP/DLMM cost bases — the deposited
+ * leg quantities each venue's organic-APR figure is measured against. Used by anything that
+ * needs the SAME basis the dashboard's own LP/DLMM P&L cards use (e.g. the capital
+ * allocator), rather than re-deriving or guessing it — see pnl-math.js's organicApr() for
+ * the formula these bases feed.
+ */
+export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?: MetricsFile["dlmmBasis"] } {
+  const m = load();
+  return { lpBasis: m?.lpBasis, dlmmBasis: m?.dlmmBasis };
+}
+
+/**
  * Current drawdown of the portfolio (in y) from its high-water mark over the recorded
  * history, as a fraction in [0,1). 0 when at/above the peak or with no history. This is
  * the risk-off signal for defensive allocation — "how far below your best are you now".

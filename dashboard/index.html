@@ -137,7 +137,7 @@
     </div>
 
     <script type="module">
-      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl } from "./pnl-math.js";
+      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr } from "./pnl-math.js";
       const CFG = {
         wallet: "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
         api: "https://api.mainnet.hiro.so",
@@ -287,27 +287,24 @@
           `<span><i style="background:var(--btc)"></i>sBTC ${fmt(100 - stxPct, 1)}% · ${fmt(sbtc, 8)}</span>` +
           `<span style="color:var(--faint)">target 50 / 50 · mid ${vmid ? fmt(vmid, 0) + " STX/sBTC" : "—"}</span>`;
 
-        // economics — honest. Fees net of IL = LP value vs HOLDING the deposited legs
-        // at today's mid (the definition of impermanent loss; a scalar STX basis would
-        // smuggle sBTC price moves into "income"). APR annualises that only once the
-        // observation window is ≥3 days — annualised noise is how LP marketing lies.
+        // economics — honest. Fees net of IL = venue value vs HOLDING the deposited legs at
+        // today's mid (the definition of impermanent loss; a scalar STX basis would smuggle
+        // sBTC price moves into "income"). APR annualises that only once the observation
+        // window is ≥3 days — annualised noise is how LP marketing lies. Shared formula
+        // (organicApr, pnl-math.js) — this used to be two hand-duplicated inline copies.
         let lpNet = null, lpApr = null, lpDays = 0;
         if (lp > 0 && agentLpBasis && agentMid > 0) {
-          const hodlLegs = agentLpBasis.xQty * agentMid + agentLpBasis.yQty;
-          lpNet = agentLpValueY - hodlLegs;
-          lpDays = (Date.now() - new Date(agentLpBasis.t).getTime()) / 864e5;
-          if (hodlLegs > 0 && lpDays >= 3) lpApr = (lpNet / hodlLegs) * (365 / lpDays) * 100;
+          const r = organicApr({ currentValueY: agentLpValueY, basisXQty: agentLpBasis.xQty, basisYQty: agentLpBasis.yQty, basisT: agentLpBasis.t, mid: agentMid });
+          lpNet = r.netY; lpApr = r.apr; lpDays = r.days;
         }
         // Same idea for the DLMM position — its y-leg is USDCx, not native STX, so the
-        // HODL-the-legs comparison needs the USD/STX rate the agent itself used that
-        // cycle (agentStxUsd), not a fresh client-side fetch, to stay methodologically
-        // consistent with how dlmmValueY was computed in the first place.
+        // HODL-the-legs comparison needs the USD/STX rate the agent itself used that cycle
+        // (agentStxUsd), not a fresh client-side fetch, to stay methodologically consistent
+        // with how dlmmValueY was computed in the first place.
         let dlmmNet = null, dlmmApr = null, dlmmDays = 0;
         if (agentDlmmValueY > 0 && agentDlmmBasis && agentMid > 0 && agentStxUsd > 0) {
-          const hodlLegs = agentDlmmBasis.xQty * agentMid + agentDlmmBasis.yQty / agentStxUsd;
-          dlmmNet = agentDlmmValueY - hodlLegs;
-          dlmmDays = (Date.now() - new Date(agentDlmmBasis.t).getTime()) / 864e5;
-          if (hodlLegs > 0 && dlmmDays >= 3) dlmmApr = (dlmmNet / hodlLegs) * (365 / dlmmDays) * 100;
+          const r = organicApr({ currentValueY: agentDlmmValueY, basisXQty: agentDlmmBasis.xQty, basisYQty: agentDlmmBasis.yQty, basisT: agentDlmmBasis.t, mid: agentMid, yLegUsdRate: agentStxUsd });
+          dlmmNet = r.netY; dlmmApr = r.apr; dlmmDays = r.days;
         }
         // Net = LP fees earned − gas paid. hero.fees is the same pilot-scoped total the
         // hero row uses once the pilot has started (plain window total before then) — one

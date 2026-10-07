@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl } from "./pnl-math.js";
+import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr } from "./pnl-math.js";
 
 const baseline = { xBase: "10000000000", yBase: "0" }; // 100 sBTC-equivalent units at 8dp, 0 STX
 const sample = (over = {}) => ({ mid: 200000, stxUsd: 0.5, portfolioY: 100, ...over });
@@ -94,4 +94,48 @@ test("isPlausibleAgainstHodl: a null or non-positive hodl is never plausible (no
 test("isPlausibleAgainstHodl: the threshold is configurable (used with pnl-math's own default of 0.2 by callers that don't override it)", () => {
   assert.equal(isPlausibleAgainstHodl(130, 100, 0.5), true);
   assert.equal(isPlausibleAgainstHodl(130, 100, 0.2), false);
+});
+
+// organicApr: extracted from index.html's two formerly-duplicated lpApr/dlmmApr blocks —
+// these tests pin the exact formula so a future edit can't silently diverge the two call
+// sites (XYK, native-STX y-leg) and (DLMM, USDCx y-leg needing yLegUsdRate) again.
+const tenDaysAgo = new Date(Date.now() - 10 * 864e5).toISOString();
+
+test("organicApr: native-STX y-leg (XYK-style), no gain → net 0, apr 0 once past minDays", () => {
+  const r = organicApr({ currentValueY: 100, basisXQty: 0, basisYQty: 100, basisT: tenDaysAgo, mid: 1 });
+  assert.equal(r.netY, 0);
+  assert.equal(r.apr, 0);
+});
+
+test("organicApr: native-STX y-leg with a real gain → annualised correctly", () => {
+  // hodlLegs = 0*1 + 100 = 100; net = 110-100 = 10; apr = (10/100)*(365/10)*100 = 365%
+  const r = organicApr({ currentValueY: 110, basisXQty: 0, basisYQty: 100, basisT: tenDaysAgo, mid: 1 });
+  assert.equal(r.netY, 10);
+  assert.equal(Math.round(r.apr), 365);
+});
+
+test("organicApr: USDCx y-leg (DLMM-style) converts via yLegUsdRate, not used raw", () => {
+  // basisYQty=50 USDCx, stxUsd rate 0.5 → yLegY = 50/0.5 = 100 STX-equivalent; hodlLegs = 0+100
+  const r = organicApr({ currentValueY: 110, basisXQty: 0, basisYQty: 50, basisT: tenDaysAgo, mid: 1, yLegUsdRate: 0.5 });
+  assert.equal(r.netY, 10);
+  assert.equal(Math.round(r.apr), 365);
+});
+
+test("organicApr: net is computed even before minDays, but apr stays null (annualising a short window is how LP marketing lies)", () => {
+  const twoDaysAgo = new Date(Date.now() - 2 * 864e5).toISOString();
+  const r = organicApr({ currentValueY: 110, basisXQty: 0, basisYQty: 100, basisT: twoDaysAgo, mid: 1 });
+  assert.equal(r.netY, 10);
+  assert.equal(r.apr, null);
+});
+
+test("organicApr: missing mid, currentValueY, basis quantities, or basisT → all null, never a fabricated number", () => {
+  assert.deepEqual(organicApr({ currentValueY: 110, basisXQty: 0, basisYQty: 100, basisT: tenDaysAgo, mid: 0 }), { netY: null, apr: null, days: 0 });
+  assert.deepEqual(organicApr({ currentValueY: 0, basisXQty: 0, basisYQty: 100, basisT: tenDaysAgo, mid: 1 }), { netY: null, apr: null, days: 0 });
+  assert.deepEqual(organicApr({ currentValueY: 110, basisXQty: null, basisYQty: 100, basisT: tenDaysAgo, mid: 1 }), { netY: null, apr: null, days: 0 });
+  assert.deepEqual(organicApr({ currentValueY: 110, basisXQty: 0, basisYQty: 100, basisT: null, mid: 1 }), { netY: null, apr: null, days: 0 });
+});
+
+test("organicApr: a non-positive yLegUsdRate is a guard failure, not a divide-by-zero/negative", () => {
+  const r = organicApr({ currentValueY: 110, basisXQty: 0, basisYQty: 100, basisT: tenDaysAgo, mid: 1, yLegUsdRate: 0 });
+  assert.deepEqual(r, { netY: null, apr: null, days: 0 });
 });
