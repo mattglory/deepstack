@@ -16,6 +16,9 @@
 //   open <usd>  open a two-sided position (must be flat)
 //   recenter    if the active bin has drifted out of the band: withdraw all bins, then re-add
 //               two-sided centered on the new active bin (two sequential broadcasts)
+//   --half-width=N   choose the width deliberately (1-50 bins). Without it, open/recenter with
+//                    --yes-mainnet REFUSES when there's no vol history (the old silent ±3
+//                    fallback stranded a position on 2026-10-07); run on the server instead.
 //   withdraw    withdraw all bins and stop — no re-add (winding a position down)
 //   reset-basis no broadcast: reset the dashboard's dlmmBasis to the currently confirmed
 //               position and push it to the gist immediately (recovery for the stale-basis
@@ -72,7 +75,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function parseArgs() {
   const a = process.argv.slice(2);
   const pos = a.filter((x) => !x.startsWith("--"));
-  return { action: pos[0], amount: pos[1], yes: a.includes("--yes-mainnet") };
+  const hwFlag = a.find((x) => x.startsWith("--half-width="));
+  const explicitHalfWidth = hwFlag ? Number(hwFlag.split("=")[1]) : null;
+  if (explicitHalfWidth !== null && !(Number.isInteger(explicitHalfWidth) && explicitHalfWidth >= 1 && explicitHalfWidth <= 50)) {
+    throw new Error("--half-width must be a whole number of bins from 1 to 50");
+  }
+  return { action: pos[0], amount: pos[1], yes: a.includes("--yes-mainnet"), explicitHalfWidth };
 }
 
 async function waitFor(txid: string): Promise<string> {
@@ -175,7 +183,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
 
 async function main() {
   console.log("=== DeepStack — DLMM recenter (two-sided concentrated position) ===\n");
-  const { action, amount, yes } = parseArgs();
+  const { action, amount, yes, explicitHalfWidth } = parseArgs();
   if (!["status", "open", "recenter", "withdraw", "reset-basis"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | reset-basis> [--yes-mainnet]");
 
   const w = await getWallet();
@@ -189,10 +197,16 @@ async function main() {
   // Same vol-scaled width the live agent uses (resolveHalfWidth, shared in dlmm-recenter-exec.ts)
   // — falls back to FALLBACK_HALF_WIDTH only when there isn't yet enough telemetry history.
   const sigmaDaily = dlmmSigmaDaily();
-  const halfWidth = resolveHalfWidth(sigmaDaily, st.binStep, FALLBACK_HALF_WIDTH);
+  // An explicit --half-width=N is a deliberate human choice and wins. Otherwise use the live
+  // agent's vol-scaled width. The silent ±3 fallback is no longer allowed to OPEN anything:
+  // on 2026-10-07 a manual recenter run from a laptop (no vol history there) opened a 7-bin
+  // position that went out of range within hours. Broadcasting open/recenter without vol data
+  // or an explicit width now refuses below; previews and status still work.
+  const halfWidth = explicitHalfWidth ?? resolveHalfWidth(sigmaDaily, st.binStep, FALLBACK_HALF_WIDTH);
+  const widthIsFallback = explicitHalfWidth === null && !(sigmaDaily != null && sigmaDaily > 0);
   const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
 
-  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | half-width ${halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback — no vol history yet)"} | x=${xTok.asset || "STX"} y=${yTok.asset}`);
+  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | half-width ${halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback — no vol history yet)"}${explicitHalfWidth !== null ? " [set by --half-width]" : ""} | x=${xTok.asset || "STX"} y=${yTok.asset}`);
   const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
   const xdp = xTok.decimals === 8 ? 6 : 3;
   console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}` : "none"}`);
@@ -215,7 +229,18 @@ async function main() {
     return;
   }
 
+  // Refuse to broadcast a position at the silent fallback width (see the halfWidth comment).
+  const refuseFallbackWidth = () => {
+    if (yes && widthIsFallback) {
+      throw new Error(
+        `no volatility history here, so the width would fall back to ±${halfWidth} bins, which strands positions out of range (2026-10-07). ` +
+          "Run this on the server, where the agent's history lives, or choose a width deliberately with --half-width=N.",
+      );
+    }
+  };
+
   if (action === "open") {
+    refuseFallbackWidth();
     if (pos.bins.length > 0) throw new Error("a position already exists — use `recenter`");
     const txid = await doOpen(w, poolDef, st, xTok, yTok, Number(amount ?? TARGET_USD), yes, halfWidth);
     if (txid) {
@@ -256,6 +281,7 @@ async function main() {
   // recenter
   if (pos.bins.length === 0) throw new Error("no position — use `open` first");
   if (decision.action === "hold") { console.log("in band — no recenter needed."); return; }
+  refuseFallbackWidth();
 
   // 1) withdraw all bins — nominal min-out on the value side (min-sum>0 rule)
   console.log("recenter step 1/2 —");
