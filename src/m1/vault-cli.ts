@@ -278,6 +278,21 @@ async function main() {
     if (!(id >= 0)) throw new Error("usage: claim-withdrawal <id> --yes-mainnet");
     requireLive(argv);
     console.log(`claim-withdrawal: id ${id}`);
+    // Pre-flight, read-only: refuse to pay a fee for a claim the contract is certain to reject.
+    // Added 2026-10-08 after an early claim of #1 aborted with (err u111), NOT-YET-CLAIMABLE.
+    const req = await readOnly(w.address, VAULT_NAME, "get-withdrawal-request", [Cl.uint(id)]);
+    const t = req?.value?.value?.value;
+    if (!t) throw new Error(`withdrawal #${id} not found`);
+    if (t.claimed?.value === true) throw new Error(`withdrawal #${id} is already claimed`);
+    if (t.owner?.value !== w.address) throw new Error(`withdrawal #${id} belongs to ${t.owner?.value}, not this wallet`);
+    const claimableAt = Number(t["claimable-at"].value);
+    const info = await withRpc((baseUrl) => hiroFetch(baseUrl)(`${baseUrl}/v2/info`).then((r) => r.json() as Promise<{ stacks_tip_height: number }>));
+    const remaining = claimableAt - Number(info.stacks_tip_height);
+    if (remaining > 0) {
+      throw new Error(
+        `withdrawal #${id} is not claimable yet: ${remaining} blocks to go (claimable at block ${claimableAt}, about ${(remaining * 13.3 / 3600).toFixed(1)} hours at the recent pace). Nothing was sent.`,
+      );
+    }
     const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
     const tx = await makeContractCall({
       contractAddress: w.address,
