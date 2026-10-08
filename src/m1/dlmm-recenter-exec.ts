@@ -42,7 +42,9 @@ import { realizedVolDaily } from "./lvr.js";
 // had no equivalent at all, just a flat ±3-bin fallback. That mismatch (a vol-scaled ±50-bin
 // agent trigger against a manually-opened ±3-bin position) is what let a manual recenter on
 // 2026-10-05 open a position narrow enough to drift out of range in hours while the agent's
-// own trigger judged the drift insignificant and never acted.
+// own trigger judged the drift insignificant and never acted. Unifying the width alone could not
+// prevent that (it recurred 2026-10-07 from a manual run with no vol history); the real fix was
+// decideRecenter judging the position's own edges instead of the current band.
 export function dlmmSigmaDaily(): number | null {
   const history = loadHistory()
     .filter((s) => s.mid > 0 && (s.stxUsd ?? 0) > 0)
@@ -146,9 +148,10 @@ export interface RecenterConfig {
   maxTargetUsd?: number;
   // Vol-adaptive width (opt-in): when set and usable, the DLMM pair's OWN realised vol (not the
   // XYK pair's — see agent-cli.ts) replaces halfWidth via binRangeFromVol, using the pool's real
-  // on-chain bin step. Widens the deployed range — and so the recenter trigger, since decideRecenter
-  // treats halfWidth as both — during vol spikes, instead of thrashing a fixed-width band against a
-  // trending price (the DLMM analogue of bandBpsFromVol for the XYK rebalance band).
+  // on-chain bin step. Widens the NEXT deployed range during vol spikes, instead of thrashing a
+  // fixed-width band against a trending price (the DLMM analogue of bandBpsFromVol for the XYK
+  // rebalance band). It no longer moves the recenter trigger: decideRecenter judges the live
+  // position's real edges, so a position opened at any width recenters once price leaves it.
   sigmaDaily?: number | null;
   rangeOpts?: RangeOpts;
 }

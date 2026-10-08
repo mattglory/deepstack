@@ -33,6 +33,35 @@ test("decideRecenter: hysteresis prevents thrashing right at the edge", () => {
   assert.equal(decideRecenter(-229, { lo: -241, hi: -231 }, 5, 1).action, "recenter"); // drift 7
 });
 
+test("decideRecenter: judges the position's REAL edges, not the vol band (2026-10-07 regression)", () => {
+  // Live mainnet state: a 7-bin position [236..242], opened at the manual ±3 fallback, while the
+  // agent's vol-scaled band was ±50. The old drift-from-center rule held (drift 6-8 <= 51) with the
+  // active bin already 3-5 bins below the position, so it earned nothing for 10+ hours.
+  assert.equal(decideRecenter(233, { lo: 236, hi: 242 }, 50).action, "recenter");
+  const d = decideRecenter(231, { lo: 236, hi: 242 }, 50);
+  assert.equal(d.action, "recenter");
+  assert.equal(d.targetLo, 181); // the NEXT position is still sized by the vol band
+  assert.equal(d.targetHi, 281);
+  assert.equal(decideRecenter(239, { lo: 236, hi: 242 }, 50).action, "hold"); // inside: hold
+});
+
+test("decideRecenter: hysteresis is measured from the real edge, on both sides", () => {
+  const pos = { lo: 236, hi: 242 };
+  assert.equal(decideRecenter(236, pos, 50, 1).action, "hold"); // lowest held bin
+  assert.equal(decideRecenter(235, pos, 50, 1).action, "hold"); // 1 below: within hysteresis
+  assert.equal(decideRecenter(234, pos, 50, 1).action, "recenter"); // 2 below
+  assert.equal(decideRecenter(243, pos, 50, 1).action, "hold"); // 1 above
+  assert.equal(decideRecenter(244, pos, 50, 1).action, "recenter"); // 2 above
+  assert.equal(decideRecenter(235, pos, 50, 0).action, "recenter"); // no hysteresis: any exit
+});
+
+test("decideRecenter: a wide position still in range is not churned when the vol band narrows", () => {
+  // Opened ±50 in a volatile week ([189..289]); volatility then fell so the band is ±3. The old
+  // rule saw drift 39 from center 239 > 3+1 and would withdraw/re-add a position still in range.
+  assert.equal(decideRecenter(200, { lo: 189, hi: 289 }, 3).action, "hold");
+  assert.equal(decideRecenter(187, { lo: 189, hi: 289 }, 3).action, "recenter");
+});
+
 test("decideRecenter: halfWidth floored to at least 1 bin", () => {
   const d = decideRecenter(0, { lo: null, hi: null }, 0);
   assert.equal(d.targetLo, -1);

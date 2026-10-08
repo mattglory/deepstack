@@ -751,9 +751,10 @@ async function main() {
       // current pilot behaviour untouched). Own try/catch: a DLMM failure must never turn a good
       // XYK tick into a logged failure/alert. Shares one execution path with the CLI
       // (dlmm-recenter-exec). DLMM_HALF_WIDTH is now only the fallback/floor: dlmmSigmaDaily()
-      // gives recenterOnce the DLMM pair's own vol series, so the range (and so the recenter
-      // trigger, since they're the same number) widens automatically in a trending/volatile
-      // market instead of thrashing a fixed ±N band — see dlmm-recenter-exec.ts's RecenterConfig.
+      // gives recenterOnce the DLMM pair's own vol series, so each NEW range widens
+      // automatically in a trending/volatile market instead of thrashing a fixed ±N band (see
+      // dlmm-recenter-exec.ts's RecenterConfig). The recenter TRIGGER is not that number: it is
+      // the live position's own edges (decideRecenter, fixed 2026-10-07).
       const dlmmPair = process.env.DLMM_OBSERVE_PAIR;
       if (dlmmPair) {
         let dlmmLive = false; // hoisted so the catch block below can still count a thrown add

@@ -39,14 +39,22 @@ export interface RecenterDecision {
 /**
  * Decide whether a concentrated position should be (re)centered on the active bin.
  *
- *  - no position            → OPEN a band of ±halfWidth around the active bin
- *  - active within the band  → HOLD (still earning across the current bins)
- *  - active drifted past the band edge (+ hysteresis) → RECENTER on the active bin
+ *  - no position                                    → OPEN ±halfWidth around the active bin
+ *  - active inside the bins the position really holds → HOLD (still earning)
+ *  - active beyond the position's edge (+ hysteresis)  → RECENTER ±halfWidth on the active bin
+ *
+ * The trigger is the position's REAL edges (position.lo / position.hi as held on-chain), never
+ * halfWidth. halfWidth only sizes the NEXT position. They used to be the same number: drift
+ * from the position's center was compared against the current halfWidth, which silently assumed
+ * every position is exactly ±halfWidth wide. It isn't. halfWidth is recomputed every cycle from
+ * live volatility, and positions get opened at other widths (the manual CLI's ±3 fallback). On
+ * 2026-10-07 that stranded a 7-bin position [236..242] out of range for 10+ hours: active bin
+ * 233, then 231, sat 6-8 bins from center 239 and was judged "within band" of a ±50 vol band.
+ * The mirror failure existed too: a wide position opened in a volatile week would be withdrawn
+ * and re-added while still in range once volatility, and so halfWidth, fell.
  *
  * `hysteresisBins` requires the active bin to move a little BEYOND the edge before recentering,
  * so price oscillating on the boundary doesn't thrash (each recenter costs fees + realizes IL).
- * Symmetric band: a position centered at C spans [C-halfWidth, C+halfWidth], so drifting more
- * than halfWidth from the current center means the active bin has left the band.
  */
 export function decideRecenter(
   activeBin: number,
@@ -62,18 +70,23 @@ export function decideRecenter(
   if (position.lo === null || position.hi === null) {
     return { action: "open", reason: `no position — open ±${hw} bins around active ${activeBin}`, ...base };
   }
-  const center = Math.round((position.lo + position.hi) / 2);
-  const drift = Math.abs(activeBin - center);
-  if (drift > hw + Math.max(0, Math.floor(hysteresisBins))) {
+  const h = Math.max(0, Math.floor(hysteresisBins));
+  const range = `[${position.lo}..${position.hi}]`;
+  // How many bins the active bin sits beyond the nearest edge of what's actually held
+  // (<= 0 means it's inside the position).
+  const below = position.lo - activeBin;
+  const above = activeBin - position.hi;
+  const outside = Math.max(below, above);
+  if (outside > h) {
     return {
       action: "recenter",
-      reason: `active ${activeBin} drifted ${drift} bins from center ${center} (band ±${hw}) — recenter`,
+      reason: `active ${activeBin} is ${outside} bins ${below > 0 ? "below" : "above"} the position ${range} (hysteresis ${h}) — recenter ±${hw}`,
       ...base,
     };
   }
   return {
     action: "hold",
-    reason: `active ${activeBin} within band of center ${center} (drift ${drift} ≤ ${hw}+${hysteresisBins})`,
+    reason: outside > 0 ? `active ${activeBin} is ${outside} bin(s) outside the position ${range}, within hysteresis ${h}` : `active ${activeBin} inside the position ${range}`,
     ...base,
   };
 }
