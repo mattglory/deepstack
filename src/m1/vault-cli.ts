@@ -10,6 +10,10 @@
 //   npm run m1:vault -- return-from-strategy 11 --yes-mainnet  # admin only: bring it back + realize P&L
 //   npm run m1:vault -- request-withdrawal 10 --yes-mainnet  # queue a withdrawal of 10 vault shares
 //   npm run m1:vault -- claim-withdrawal 0 --yes-mainnet      # claim withdrawal id 0 once its delay has passed
+//   npm run m1:vault -- pause-deposits --yes-mainnet          # admin only, instant: block new deposits
+//   npm run m1:vault -- unpause-deposits --yes-mainnet        # admin only, instant: allow deposits again
+//   npm run m1:vault -- pause-strategy --yes-mainnet          # admin only, instant: block new sweeps
+//   npm run m1:vault -- unpause-strategy --yes-mainnet        # admin only, instant: allow sweeps again
 //
 // Deliberately a separate, manual CLI, not a step folded into agent-cli.ts's unattended loop:
 // sweep-to-strategy/return-from-strategy are the first functions in this project that can move
@@ -293,8 +297,35 @@ async function main() {
     return;
   }
 
+  // Pause switches. Instant and admin-only in the contract; they never touch withdrawal
+  // requests or claims (claim-withdrawal reads no pause flag). Added 2026-10-08 so the
+  // independent review's ask to pause deposits (pricing finding H3) can be honored without
+  // hand-building a transaction. A pause moves no assets, so Deny mode with zero
+  // post-conditions doubles as proof that nothing moved.
+  if (["pause-deposits", "unpause-deposits", "pause-strategy", "unpause-strategy"].includes(cmd)) {
+    requireLive(argv);
+    console.log(`${cmd}`);
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const tx = await makeContractCall({
+      contractAddress: w.address,
+      contractName: VAULT_NAME,
+      functionName: cmd,
+      functionArgs: [],
+      senderKey: w.key,
+      network: "mainnet",
+      fee: CALL_FEE,
+      nonce,
+      postConditionMode: PostConditionMode.Deny,
+    });
+    const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
+    if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+    console.log(`  txid: ${res.txid}`);
+    await waitForTx(res.txid);
+    return;
+  }
+
   console.log(
-    "usage: m1:vault -- status | deploy-token | deploy-vault | link | deposit <stx> | sweep-to-strategy <stx> | return-from-strategy <stx> | request-withdrawal <shares> | claim-withdrawal <id>   (broadcasts need --yes-mainnet)",
+    "usage: m1:vault -- status | deploy-token | deploy-vault | link | deposit <stx> | sweep-to-strategy <stx> | return-from-strategy <stx> | request-withdrawal <shares> | claim-withdrawal <id> | pause-deposits | unpause-deposits | pause-strategy | unpause-strategy   (broadcasts need --yes-mainnet)",
   );
 }
 
