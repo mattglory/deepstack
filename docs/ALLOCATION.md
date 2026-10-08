@@ -99,5 +99,5 @@ DRAWDOWN_DEFENSIVE=0.08         # drawdown fraction that forces defensive regard
 Depositors don't fear missing upside — they fear losing capital in a crash. A manager that
 provides liquidity for yield in calm markets *and* pulls back to preserve capital when
 risk spikes is offering something almost nothing else in DeFi does. This is the reflex that
-makes DeepStack's future non-custodial vault worth depositing into: safe by construction,
+makes DeepStack's future trust-minimised vault worth depositing into: safe by construction,
 defensive by design, and every decision auditable on-chain.

@@ -2,7 +2,7 @@
 
 > **Autonomous liquidity infrastructure for Bitcoin DeFi.**
 > An AI-tuned, safety-first market-making agent providing active liquidity across venues,
-> uniquely composable with FlashStack's atomic flash-loans, and built toward a non-custodial
+> uniquely composable with FlashStack's atomic flash-loans, and built toward a trust-minimised
 > vault — with reach extending from AMM liquidity today to concentrated liquidity,
 > order-book/perps quoting, and multichain as those venues mature.
 > Stacks now has first-party keepers (Bitflow) and independent AI market-making agents
@@ -20,7 +20,7 @@ concentrated-LP, live Mar 2026) and independent AI agents on the aibtcdev networ
 et al.) market-making HODLMM with public receipts. What none of them combine is what Bitcoin
 DeFi still lacks: an operator that pairs **atomic flash-composable rebalancing (FlashStack)**
 with a **fail-closed safety architecture** and genuine **cross-venue/multichain independence**,
-built toward a **non-custodial vault** — and that extends into order-book/perps quoting
+built toward a **trust-minimised vault** — and that extends into order-book/perps quoting
 (gated today on venue security — the Velar exploit) as safe venues mature. Depth is the
 bottleneck; DeepStack's job is to supply it safely, composably, and where no one else is.
 
@@ -46,7 +46,7 @@ loss — never from token emissions or "guaranteed high yield":
    a gated roadmap path, not current income.
 
 **The scalable model (the Steer insight):** beyond running its own capital, DeepStack
-manages *others'* liquidity through **non-custodial vaults** and earns a management +
+manages *others'* liquidity through **trust-minimised vaults** and earns a management +
 performance fee on AUM. That is how an ALM scales — fees on deposited capital, not on
 a single operator's balance.
 
@@ -56,7 +56,7 @@ a single operator's balance.
 |---|---|---|
 | **1. Solo agent** | One agent, one pool, AI-tuned, mainnet-validated | ✅ live |
 | **2. Multi-pool** | Several sBTC pairs; concentrated-liquidity (DLMM) adapter; arbitrage; **Velar perps quoting (gated on re-audit)** | next |
-| **3. Vaults** | Non-custodial Clarity vaults others deposit into; fee on AUM | the revenue model |
+| **3. Vaults** | Trust-minimised Clarity vaults others deposit into; fee on AUM | the revenue model |
 | **4. Infrastructure** | White-label ALM for Stacks protocols bootstrapping liquidity | the platform |
 
 ## The Steer model, precisely (what their live playbook teaches)

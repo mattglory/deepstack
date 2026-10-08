@@ -6,11 +6,12 @@ financial advice, and nothing here is an offer, a promise of return, or an inves
 depositing gives you a claim on vault assets priced by a transparent on-chain formula, and pays
 DeepStack a fee only on realized gains it actually delivers.
 
-**Status: not yet deployed to mainnet.** This document describes what the contracts do, proven
-on a local test network (60 automated tests passing, including a real test that the one
-first-depositor pricing attack this class of contract is known for is actually blocked). A
-mainnet deploy, even funded only with DeepStack's own capital at first, is a separate decision
-made after this document and the code are both public.
+**Status: deployed to mainnet on 2026-10-05 and funded only with DeepStack's own capital.
+Deposits were paused on 2026-10-08 (tx c3a8c435754c260cd663058779eb9d420236ee71af4e871ee9f9ebb909317f8d)
+after an independent review found design issues that need a new contract. It is not open to
+outside depositors.** See "Independent review, October 2026" below. The contract source files
+still carry a "STATUS: NOT YET DEPLOYED" header. That comment is left unchanged on purpose, so
+the files in this repo stay byte-identical to what is deployed on-chain.
 
 ## The one thing to understand before anything else
 
@@ -39,10 +40,11 @@ track record are Phase 2/3 milestones, not something this version has.
   be fully deployed at the strategy right then (see below), but once accepted, it is fully
   reserved and cannot later become unfundable.
 - **Fee changes, cap changes, and a change of admin all require advance public notice.** Any
-  such change must be queued on-chain and wait out a fixed delay (currently targeted at roughly
-  7 days, computed from observed mainnet block timing — exact value fixed in the contract
-  before deploy, chosen so it meaningfully outlasts the withdrawal delay below, giving you a
-  real window to exit before a change takes effect) before it can take effect, and once
+  such change must be queued on-chain and wait out a fixed delay of 39,660 Stacks blocks
+  before it can take effect. That was sized for about 7 days, but blocks have run faster than
+  assumed: at the pace measured in October 2026 it is about 6.1 days. It was meant to outlast
+  the withdrawal delay below so you could exit before a change lands, but the independent
+  review found that exit window is not guaranteed (see below), and once
   queued, DeepStack cannot cancel or skip that wait. Changing your mind after is only possible
   by queuing the old value back, which waits out the same delay again.
 - **The performance fee has a hard ceiling** that no queued, delayed change can ever exceed,
@@ -54,11 +56,11 @@ also readable live at any time via `npm run m1:vault -- status`)
 | Parameter | Default | What it means |
 |---|---|---|
 | Max vault size (`max-tvl`) | 500 STX | The vault stops accepting new deposits once total assets reach this. Deliberately small for a first pilot; raised later only via the timelock. |
-| Performance fee | 10% | Charged only on realized gains that exceed the vault's prior high point (see below) — never on deposits, never on unrealized/paper gains, never on losses. |
+| Performance fee | 10% | Charged only on realized gains that take the vault as a whole above its prior high point (see below). Never on deposits or unrealized gains. Because the high point is tracked for the whole vault, an individual depositor can still pay part of a fee while below their own entry value. |
 | Fee ceiling (`MAX-PERFORMANCE-FEE-BPS`) | 20% | The fee can never be raised above this, no matter what's queued and confirmed. |
 | Minimum first deposit | 1 STX | Required only while the vault has zero depositors — part of what prevents a pricing-manipulation attack on the very first deposit. |
-| Withdrawal delay | ~2 days (block-computed) | Time between requesting a withdrawal and being able to claim it. Fixed in Phase 1 — not adjustable at all, by anyone, without a new contract. |
-| Timelock delay | ~7 days (block-computed) | Minimum notice before any parameter change (cap, fee, fee recipient, admin) takes effect. Deliberately longer than the withdrawal delay above, with real margin — so you have time to notice a queued change and withdraw before it lands, not just to notice it. |
+| Withdrawal delay | 11,330 Stacks blocks, about 1.75 days at the October 2026 pace (the first real withdrawal took 42.1 hours) | Time between requesting a withdrawal and being able to claim it. Fixed in Phase 1 — not adjustable at all, by anyone, without a new contract. |
+| Timelock delay | 39,660 Stacks blocks, about 6.1 days at the October 2026 pace | Minimum notice before any parameter change (cap, fee, fee recipient, admin) takes effect. Longer than the withdrawal delay, but an exit before a change lands is not guaranteed while capital is deployed (see below). |
 
 ## How the fee actually works
 
@@ -68,8 +70,33 @@ pro-rata, exactly like a deposit at the current price — no STX ever leaves the
 only when capital that was swept out to the strategy comes back showing a real, realized gain
 *above the vault's best previous result*. A loss is never fee-able, and recovering a loss back
 to where the vault was before doesn't trigger a fee either — only a genuinely new high-water
-mark does. This means DeepStack only gets paid when it actually makes the vault's depositors,
-collectively, better off than they've ever been before.
+mark does. This means DeepStack only gets paid when the vault as a whole is better off than it has
+ever been before. Individually it is less clean: the high point is tracked in total STX for the
+whole vault, not per share, so a depositor who joined later can pay part of a fee while still
+below their own entry value, and one who joined after a loss can benefit from a recovery
+without paying any fee. Tracking the high point per share is part of the planned redesign.
+
+## Independent review, October 2026
+
+An external reviewer examined both contracts on 2026-10-07 and added 30 tests that demonstrate
+each finding. The reviewer's conclusion: the code is clean in the narrow sense, but the vault is not ready
+for outside depositors. The main findings, in plain terms:
+
+- **Custodial in practice.** The admin can sweep all free deposits to its own wallet instantly,
+  with no timelock, and then report any result, including a total loss. The admin key is also
+  the trading agent's key on a server.
+- **Withdrawals can be frozen in effect.** Sweeping all free STX means every new withdrawal
+  request is rejected until capital comes back.
+- **No guaranteed exit window.** The admin can queue a parameter change and sweep capital at
+  the same moment, so depositors may be unable to leave before the change takes effect.
+- **Front-running is possible.** Capital at the strategy is valued at cost, and a withdrawal's
+  amount is fixed when it is requested, so someone who knows the strategy's result can enter
+  before a gain or exit before a loss at the expense of other holders.
+- **The fee high point is vault-wide**, with the fairness effects described above.
+- **Delays are counted in Stacks blocks**, which have run faster than the contract assumed.
+
+Deposits are paused. The fixes require a new contract, which will be tested on testnet, run
+through a real gain and a real loss on mainnet, and re-reviewed before anyone else deposits.
 
 ## Honest limitations, stated plainly
 

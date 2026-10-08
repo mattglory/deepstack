@@ -12,7 +12,7 @@ the category is real and getting good. Bitflow runs first-party concentrated-liq
 Keepers; independent AI agents on the **aibtcdev** network (notably **K9Dreamer**) now
 market-make Bitflow HODLMM pools in public with on-chain receipts. DeepStack's distinct
 ground is **flash-loan-composable rebalancing (FlashStack), an explicit fail-closed safety
-architecture, and cross-venue/multichain independence** — with a non-custodial vault as the
+architecture, and cross-venue/multichain independence** — with a trust-minimised vault as the
 end goal. Transparency is no longer a differentiator on its own; it is now table stakes, and
 that is a good thing for the ecosystem.
 
@@ -65,9 +65,11 @@ roadmap, and each is labelled as such.
 3. **Independent and cross-venue by design — partly shipped, partly roadmap.** DeepStack is not
    tied to one venue's first-party automation or one agent network. The multichain thesis
    (other Bitcoin L2s) is a declared direction, not a shipped fact.
-4. **A non-custodial vault as the end goal — roadmap.** The endgame is managing *others'*
+4. **A trust-minimised vault as the end goal — roadmap.** The endgame is managing *others'*
    capital under a safety mandate (yield in calm markets, capital preservation when risk
-   spikes), not only running the project's own book. This is a stated goal, not a live product.
+   spikes), not only running the project's own book. This is a stated goal, not a live product. The Phase 1 vault deployed in October 2026 is
+   custodial in practice (its admin can move deployed capital), so it is paused and closed to
+   outside deposits pending a redesign.
 
 ## Honest positioning
 

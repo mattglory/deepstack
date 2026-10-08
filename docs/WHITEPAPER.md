@@ -202,7 +202,7 @@ this transparently rather than assume it. A ~$1,000 self-funded pilot proves the
 *mechanism*, not scale.
 
 **Scalable model.** Like Steer/Gamma, the path beyond a single operator's capital is
-**non-custodial vaults**: third parties deposit, the agent manages their liquidity, and
+**trust-minimised vaults**: third parties deposit, the agent manages their liquidity, and
 DeepStack earns a management/performance fee on AUM. This requires audited Clarity vault
 contracts and is a deliberate later phase, not a current claim.
 
@@ -247,7 +247,7 @@ mode; live execution is gated behind explicit opt-in and hard caps.
 |---|---|---|
 | 1. Solo agent | One agent, one pool, AI-tuned, mainnet-validated | live |
 | 2. Multi-venue | More sBTC pairs; concentrated-liquidity (DLMM) adapter; cross-venue arbitrage; **Velar perps quoting (gated on venue re-audit)** | next |
-| 3. Vaults | Non-custodial Clarity vaults; fee on AUM | the revenue model |
+| 3. Vaults | Trust-minimised Clarity vaults; fee on AUM | the revenue model |
 | 4. Infrastructure | Open ALM tooling / white-label for Stacks protocols | the platform |
 
 ## 10. Risk analysis
@@ -276,7 +276,7 @@ profitability depends on volume and incentives net of IL, first-party automation
 exists for passive liquidity, and independent agents already market-make concentrated
 liquidity well. Its defensible edge is a specific combination no one else has: **atomic
 flash-composable rebalancing (FlashStack, proven on-chain), a fail-closed safety
-architecture, and cross-venue/multichain independence — the foundation for a non-custodial
+architecture, and cross-venue/multichain independence — the foundation for a trust-minimised
 vault** — with active market-making that extends toward order-book/perps quoting as safe
 venues mature. The honest, measurable approach is the point: prove whether fee income beats
 IL on Bitcoin-native venues, in public, and build the flash-composable, safety-first
