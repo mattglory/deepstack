@@ -328,6 +328,23 @@ export function nextDlmmCounters(current: DlmmCounters, outcome: { executed: boo
 // path in agent-cli.ts's act(). `safe` is the SAME oracle-divergence/drawdown/pool-paused
 // check the XYK and DLMM paths already share — a flash-rebalance is a real broadcast, it does
 // not get a lighter safety bar than a plain swap just because it uses a different mechanism.
+// Routing rule for the autonomous flash rebalance (2026-10-08). The deployed receiver
+// (deepstack-rebalance-receiver.clar) repays the loan from the agent's OWN STX, and the
+// executor caps every loan at that STX (sizeFlashRebalance's usable-balance clamp). So a flash
+// rebalance can never move more than a direct swap funded by the same STX would. Measured on
+// mainnet (4 runs, 2026-10-07/08, 51.7-75.3 STX): each cost ~0.08 STX more than one direct
+// swap (a second transaction plus the 0.05% loan fee), and it raised the per-trade limit on
+// buying sBTC from maxSwapYBase (50 STX) to FLASH_MAX_SWAP_Y_BASE (150 STX) for exactly the
+// same market risk. It also generated FlashStack volume funded entirely by our own capital.
+// The flash route is therefore used only with a receiver that ADDS capacity, i.e. repays from
+// something other than the agent's own STX (a cross-venue leg; see docs/FLASH_REBALANCE.md).
+// Flip this only when such a receiver is deployed and audited.
+export const FLASH_RECEIVER_ADDS_CAPACITY = false;
+
+export function useFlashRoute(o: { overCap: boolean; action: string; receiverAddsCapacity: boolean }): boolean {
+  return o.overCap && o.action === "swap-y-for-x" && o.receiverAddsCapacity;
+}
+
 export function flashLiveGate(opts: {
   flashLiveFlag: boolean;
   live: boolean;

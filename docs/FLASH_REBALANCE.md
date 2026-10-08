@@ -87,12 +87,55 @@ transaction (another pool, or the agent's own inventory acting as the counter-si
 detector deliberately stays venue-agnostic; the journal tells us whether the edge is worth
 building the second leg for.
 
+## Routing decision, October 2026: flash route paused until it adds capacity
+
+**What we measured.** Four autonomous flash rebalances ran on mainnet between 2026-10-07 and
+2026-10-08, sized 51.7 to 75.3 STX, all successful. Each cost two network fees (arm + loan,
+0.10 STX) plus FlashStack's 0.05% fee, about **0.08 STX more than one direct swap** of the same
+size (0.05 STX). Total extra over the four: 0.33 STX.
+
+**Why the route is paused.** The deployed receiver repays the loan from the agent's own STX,
+and the executor caps each loan at that STX. So a flash rebalance could never move more than a
+direct swap funded by the same STX. In practice it:
+- added cost and a second transaction that can fail;
+- raised the per-trade limit for buying sBTC from 50 STX (`maxSwapYBase`) to 150 STX
+  (`FLASH_MAX_SWAP_Y_BASE`) for exactly the same market risk, a risk limit bypassed by routing;
+- generated FlashStack volume and fees funded entirely by our own capital, which is activity
+  rather than real usage and should not be presented as customer demand.
+
+**What runs now.** `FLASH_RECEIVER_ADDS_CAPACITY = false` in `src/m1/agent.ts`. A purchase over
+the 50 STX cap is done as a capped direct swap, with the remainder on later 30-minute cycles.
+In a thin pool, splitting a large trade is also the gentler execution. The flash code path,
+receiver contract and manual CLI stay in place. The proven 2026-07-18 flash rebalance and the
+milestone evidence are unaffected.
+
+**When it comes back: a receiver that adds capacity.** A flash loan beats a direct swap only
+when the repayment comes from somewhere other than the agent's own STX. Two credible designs:
+
+1. **Cross-venue arbitrage leg (recommended first).** Borrow STX, buy sBTC on the venue where
+   it is cheap, sell it on the venue where it is rich, repay, keep the edge. No own capital is
+   needed, and buying on the cheaper Bitflow pool pushes its price toward the market, which also
+   helps the LP position. Preconditions:
+   - a second sBTC/STX venue with real depth and a callable swap (candidates: the Bitflow
+     HODLMM sBTC pools, ALEX; Velar spot only, never Velar perps while that gate holds);
+   - the detector's journal (`arb.ts`, already logging net edges such as 0.24 STX at 0.88%
+     divergence) showing edges that clear both pool fees, the 0.05% loan fee and two network
+     fees often enough to matter;
+   - a receiver with real minimum outputs on both legs, an independent review, and a testnet
+     run before mainnet.
+2. **Atomic position migration.** Use a loan to move liquidity between pools or ranges in one
+   transaction without pre-holding idle capital. Valuable only at a scale well beyond the pilot.
+
+Do not re-enable the autonomous route with a receiver that repays from own inventory.
+
 ## Honest framing for reviewers
 
 - **Today:** direct-swap rebalancing (live, validated).
 - **M2:** first live flash-loan rebalance via FlashStack (committed deliverable).
-- **At scale:** flash-loan rebalancing is the default, making DeepStack capital-efficient
-  and turning every rebalance into FlashStack fee revenue.
+- **Paused (October 2026):** the autonomous flash route, because the current receiver adds no
+  capacity over a direct swap (see the routing decision above).
+- **At scale:** flash loans with a capacity-adding receiver (a cross-venue leg), which is what
+  makes rebalancing genuinely capital-efficient and FlashStack fees genuine usage.
 
 This is the technical basis for "DeepStack is FlashStack's first production customer" —
 stated as a design + committed milestone, not as something every current rebalance does.

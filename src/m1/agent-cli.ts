@@ -21,7 +21,7 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
@@ -482,7 +482,7 @@ async function act(
   // sized and gated independently of the direct-swap cap — should cover the rest instead.
   const directCap = d.action === "swap-y-for-x" ? params.maxSwapYBase : params.maxSwapXBase;
   const overCap = d.uncappedAmountBase > directCap;
-  if (overCap && d.action === "swap-y-for-x") {
+  if (useFlashRoute({ overCap, action: d.action, receiverAddsCapacity: FLASH_RECEIVER_ADDS_CAPACITY })) {
     // FlashStack's receiver only borrows STX to buy sBTC (swap-y-for-x) — there is no
     // sBTC-borrowing equivalent, so the opposite direction always falls through to the
     // capped direct swap below, same as before this feature existed.
@@ -515,6 +515,8 @@ async function act(
       }
     }
     console.log("  flash-rebalance not armed this cycle — falling back to capped direct swap");
+  } else if (overCap && d.action === "swap-y-for-x") {
+    console.log("  over the per-trade cap: capped direct swap now, remainder on later cycles (the current flash receiver adds no capacity over a direct swap, see FLASH_RECEIVER_ADDS_CAPACITY)");
   } else if (overCap) {
     console.log("  over cap, but no sBTC flash-loan receiver exists for this direction — capped direct swap only");
   }

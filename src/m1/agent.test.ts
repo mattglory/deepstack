@@ -18,7 +18,7 @@ test("pool-share cap: bounds our share AFTER the add; refuses on unreadable pool
   // unreadable pool value → refuse to grow (fail closed)
   assert.equal(exceedsPoolShare(1000, 100, 0, 200), true);
 });
-import { decide, decideLp, defaultParams, bandBpsFromVol, dlmmLiveGate, xykLiveGate, flashLiveGate, nextDlmmCounters, nextFlashCounters, type AgentParams } from "./agent.js";
+import { decide, decideLp, defaultParams, bandBpsFromVol, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type AgentParams } from "./agent.js";
 import { minusSlippage, plusSlippage } from "./quotes.js";
 import { assessSafety, defaultSafetyParams } from "./safety.js";
 
@@ -373,4 +373,15 @@ test("nextFlashCounters: a thrown attempt still counts as attempted", () => {
     nextFlashCounters({ failStreak: 1, attempts: 4 }, { executed: false, attempted: true }),
     { failStreak: 2, attempts: 4 },
   );
+});
+
+test("useFlashRoute: never with the current receiver, which repays from our own STX (2026-10-08)", () => {
+  assert.equal(FLASH_RECEIVER_ADDS_CAPACITY, false);
+  assert.equal(useFlashRoute({ overCap: true, action: "swap-y-for-x", receiverAddsCapacity: FLASH_RECEIVER_ADDS_CAPACITY }), false);
+});
+
+test("useFlashRoute: only over cap, only buying sBTC, only with a capacity-adding receiver", () => {
+  assert.equal(useFlashRoute({ overCap: true, action: "swap-y-for-x", receiverAddsCapacity: true }), true);
+  assert.equal(useFlashRoute({ overCap: false, action: "swap-y-for-x", receiverAddsCapacity: true }), false);
+  assert.equal(useFlashRoute({ overCap: true, action: "swap-x-for-y", receiverAddsCapacity: true }), false);
 });
