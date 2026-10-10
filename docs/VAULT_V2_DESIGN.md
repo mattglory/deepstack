@@ -2,8 +2,8 @@
 
 Status: draft for review, 2026-10-08. No Clarity code has been written. This note answers the
 independent review of v1 (2026-10-07: C1, H1-H3, M1, M2, L1-L5, I1) and the reviewer's design
-notes of 2026-10-08. Values marked **[confirm]** are recommendations awaiting the owner's
-decision.
+notes of 2026-10-08. Values marked **[decided]** were confirmed by the owner on 2026-10-10
+(section 10).
 
 Revised 2026-10-09 with the reviewer's design-review changes D1-D11. Each change is tagged
 **[review D#]** where it lands, so it can be accepted or rejected on its own. D1-D3 are
@@ -30,9 +30,9 @@ pools, which is later, separate work.
 
 | Role | Principal | Can do | Cannot do |
 |---|---|---|---|
-| Admin | Native Stacks 2-of-3 multisig **[confirm]** | Queue/confirm parameter changes, sweep to strategy, unpause, queue admin change | Return capital, bypass the timelock, touch settled payouts |
+| Admin | Native Stacks 2-of-3 multisig **[decided]** | Queue/confirm parameter changes, sweep to strategy, unpause, queue admin change | Return capital, bypass the timelock, touch settled payouts |
 | Strategy | One fixed address, changeable only through the timelock and only while idle | Return capital (`return-from-strategy` is callable only by this address) | Sweep, change parameters, pause |
-| Guardian | The agent's hot key **[confirm]**; changed only through the timelock while IDLE **[review D7]** | Pause deposits and pause sweeps | Unpause, sweep, return, change anything else |
+| Guardian | The agent's hot key **[decided]**; changed only through the timelock while IDLE **[review D7]** | Pause deposits and pause sweeps | Unpause, sweep, return, change anything else |
 | Anyone | | Confirm a matured timelocked change; settle an overdue epoch with `settle-overdue` **[review D1]**; settle nothing else on others' behalf | |
 
 **Multisig type: native (SM… address), not a contract multisig.** A native multisig is a
@@ -48,7 +48,7 @@ Leather since 2023. Not yet confirmed: hardware-wallet (Ledger) cosigning throug
 Asigna's current maturity (a small user base). Plan: prove the full admin flow (sweep,
 unpause, queue/confirm) with the chosen setup on testnet before any mainnet deploy.
 
-**Recommended key holders [confirm]:** key 1 on a hardware wallet held by the owner, key 2 on
+**Recommended key holders [decided]:** key 1 on a hardware wallet held by the owner, key 2 on
 a second hardware wallet stored in a different location, key 3 a recovery key held offline by
 a trusted person who is not the reviewer, so the review stays independent. No admin key on
 the VPS.
@@ -172,8 +172,7 @@ strategy, after every call.
 This order means newcomers never pay a fee on gains they did not share, and leavers bear
 exactly the epoch they were in (H3 closed in both directions).
 
-Precision and rounding **[review D6]**: PPS and `HWM-PPS` use a stated fixed-point scale (for
-example 1e18 in uint128), since PPS is about 0.001 uSTX per share unit with the new offset.
+Precision and rounding **[review D6]**: PPS and `HWM-PPS` use a stated fixed-point scale of 1e18 in uint128 **[decided]**, since PPS is about 0.001 uSTX per share unit with the new offset.
 Round the fee down and `HWM-PPS` up, so rounding residue is never charged twice. Apply the
 same virtual offsets in every formula (PPS, fee, claims). Checked with an exact-integer
 model: on a +100% epoch with a 10% fee, `fee-shares = fee × S / (A − fee)` gives the
@@ -186,10 +185,10 @@ compromise can lose.
 
 | Parameter | Recommended | Changeable |
 |---|---|---|
-| Max deployed per sweep | **50% of settled assets** net of ring-fenced payouts **[confirm]** | Timelocked, hard ceiling 80% |
+| Max deployed per sweep | **50% of settled assets** net of ring-fenced payouts **[decided]** | Timelocked, hard ceiling 80% |
 | Max vault size | 500 STX for the pilot | Timelocked |
 | Performance fee | 10%, hard ceiling 20% | Timelocked |
-| Max epoch length | **1,008 burn blocks, about 7 days [confirm]** | Constant |
+| Max epoch length | **432 burn blocks, about 3 days [decided]** | Constant |
 | Timelock | 1,008 burn blocks, about 7 days | Constant |
 | Idle withdrawal delay | 288 burn blocks, about 2 days | Constant |
 
@@ -200,14 +199,15 @@ strategy wallet costs depositors at most half.
 What the cap does not bound **[review D5]**: a strategy that returns slightly less every
 epoch, booked as losses, can skim over many epochs. Mitigations: the admin multisig reviews
 each settlement (and the dedicated strategy wallet's balance) before sweeping again, and
-sweeps are blocked automatically once the drawdown from `HWM-PPS` exceeds a set threshold
-**[confirm]**, resumable only by the admin through the timelock. Whatever remains is
+sweeps are blocked automatically once PPS falls more than **10% below `HWM-PPS` [decided]**,
+resumable only by the admin through the timelock. Whatever remains is
 disclosed: the returned amount is self-reported by the strategy **[review D11]**.
 
 Worst-case exit time **[review D9]**, to state in the disclosure: 288 burn blocks from IDLE;
 up to `MAX-EPOCH` plus settlement while DEPLOYED (with D1 this is a hard bound). DLMM
-positions unwind in minutes, so a shorter `MAX-EPOCH` (288-432 burn blocks) would shorten
-the wait for queued exits **[confirm]**.
+positions unwind in minutes, so `MAX-EPOCH` is set to 432 burn blocks **[decided]**: about 3
+days, short enough to bound queued exits, long enough that each new sweep's two multisig
+signatures are not needed every day.
 
 ## 7. Timelock rules
 
@@ -226,7 +226,7 @@ the wait for queued exits **[confirm]**.
 - Events: print on deposit, request, cancel, claim, sweep, return/settle, queue, confirm,
   accept, pause, unpause (L3).
 - New token contract with a distinct name and symbol, "DeepStack Vault Shares v2" / `dsSTX2`
-  **[confirm]**, linked once to the v2 vault.
+  **[decided]**, linked once to the v2 vault.
 - Mint and burn stay gated by `contract-caller` as in v1, which the review found sound.
 - Defense in depth **[review D10]**: if the target epoch supports Clarity 4, consider
   `as-contract?` with explicit STX allowances, so a sweep can never move more than the cap
@@ -250,16 +250,22 @@ the wait for queued exits **[confirm]**.
    trip, docs updated.
 6. Independent re-review before any outside deposit.
 
-## 10. Open items for the owner
+## 10. Owner decisions (2026-10-10)
 
-1. Multisig key holders (section 2).
-2. Sweep cap of 50% of settled assets (section 6).
-3. Max epoch length of 1,008 burn blocks (section 6).
-4. Whether the agent's hot key should hold the guardian pause role (section 2).
-5. Token name and symbol (section 8).
+All of the reviewer's changes D1-D11 are accepted as written. Decisions:
 
-Reviewer's recommendations on these **[review]**: (1) agree; key 3 must not be the reviewer.
-(2) 50% is fine for the pilot. (3) Acceptable only together with D1; shorter is preferable
-(D9). (4) Agree: a compromised guardian can only pause, and only the admin can unpause (D7).
-(5) Fine. New items for the owner: the drawdown threshold that blocks sweeps (D5) and the
-fixed-point scale (D6).
+1. Admin: native Stacks 2-of-3 multisig. Key 1 on the owner's hardware wallet, key 2 on a
+   second hardware wallet stored elsewhere, key 3 a recovery key held offline by a trusted
+   person who is not the reviewer. Holder identities are kept out of public docs.
+2. Sweep cap: 50% of settled assets, timelocked, hard ceiling 80%.
+3. `MAX-EPOCH`: 432 burn blocks, about 3 days, with `settle-overdue` (D1).
+4. Guardian: the agent's hot key, pause-only, changed only through the timelock while IDLE (D7).
+5. Token: "DeepStack Vault Shares v2" / `dsSTX2`.
+6. Drawdown sweep block (D5): sweeps stop once PPS is more than 10% below `HWM-PPS`; only the
+   admin can resume them, through the timelock.
+7. Fixed-point scale (D6): 1e18 in uint128.
+
+v1 status: fully wound down on 2026-10-10. The 90 STX was returned from the strategy,
+withdrawn as request #1 and claimed (tx 9a1b1c05...). v1 stays paused and deprecated.
+
+Next: the reviewer re-reviews this revised note; then Clarity code, test-first; then testnet.
