@@ -95,4 +95,14 @@ plan:
       emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
       path: ../contracts/deepstack-vault.clar
       clarity-version: 3
+    - transaction-type: emulated-contract-publish
+      contract-name: deepstack-vault-v2-token
+      emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+      path: ../contracts/deepstack-vault-v2-token.clar
+      clarity-version: 3
+    - transaction-type: emulated-contract-publish
+      contract-name: deepstack-vault-v2
+      emulated-sender: ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM
+      path: ../contracts/deepstack-vault-v2.clar
+      clarity-version: 3
     epoch: '3.4'

@@ -24,3 +24,13 @@ epoch = "3.4"
 path = "../contracts/deepstack-vault.clar"
 clarity_version = 3
 epoch = "3.4"
+
+[contracts.deepstack-vault-v2-token]
+path = "../contracts/deepstack-vault-v2-token.clar"
+clarity_version = 3
+epoch = "3.4"
+
+[contracts.deepstack-vault-v2]
+path = "../contracts/deepstack-vault-v2.clar"
+clarity_version = 3
+epoch = "3.4"
