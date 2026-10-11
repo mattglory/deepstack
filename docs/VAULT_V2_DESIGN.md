@@ -10,6 +10,10 @@ Revised 2026-10-09 with the reviewer's design-review changes D1-D11. Each change
 blocking: without them a failed strategy freezes every holder (H1 survives) and the fee can
 be charged on a phantom gain.
 
+Revised 2026-10-11 with the re-review's D12-D13, tagged the same way. D12 is required: without
+it, deposits made after a write-off capture the later recovery from the holders who bore the
+loss.
+
 ## 1. Goals and non-goals
 
 v2 must make each review finding impossible by construction, not by operator discipline:
@@ -74,6 +78,7 @@ what is already deployed, and the guardian role still lets the agent pause insta
 
    DEPLOYED + burn-block-height > epoch-start + MAX-EPOCH:
        settle-overdue (anyone) → settle epoch n as a return of 0 → IDLE   [review D1]
+       (also pauses deposits, refunds epoch n's queued deposits)        [review D12]
 ```
 
 **IDLE** (capital-at-strategy = 0). All capital is in the vault, so NAV is exact.
@@ -97,8 +102,10 @@ what is already deployed, and the guardian role still lets the agent pause insta
 - No sweeps, no parameter queuing (including admin change).
 - Overdue **[review D1]**: once `MAX-EPOCH` burn blocks pass without a return, `overdue`
   reads true and anyone may call `settle-overdue`. It settles epoch n exactly as a return of 0
-  would (section 5): the deployed amount is booked as a loss, the queues are priced at the
-  written-down PPS, and the vault returns to IDLE so every holder can exit. Without this, a
+  would (section 5): the deployed amount is booked as a loss, queued withdrawals are priced at
+  the written-down PPS, queued deposits are refunded **[review D12]**, and the vault returns
+  to IDLE so every holder can exit. Until someone calls it, `return-from-strategy` still
+  settles the epoch normally, even while `overdue` reads true. Without this, a
   total loss (a return of 0 hits the `stx-transfer?` u0 error), a lost strategy key or a
   strategy that keeps the funds leaves the vault DEPLOYED forever: no sweeps, no queuing and
   no IDLE withdrawals, so even the half that never left the vault is frozen (H1).
@@ -106,6 +113,20 @@ what is already deployed, and the guardian role still lets the agent pause insta
   `recover-from-strategy` (strategy only, IDLE only). It raises assets and so benefits the
   holders at that time; no fee is due until PPS passes `HWM-PPS` again, which follows from
   the fee rule. Disclosed: whoever exits after a write-off misses any later recovery.
+- Entry after a write-off **[review D12]**: a write-off leaves IDLE at the written-down PPS,
+  where deposits would mint at once, and a later recovery would then be shared with those
+  newcomers. So `settle-overdue` also:
+  - sets deposits paused. Only the admin can unpause, which it can choose to do before or
+    after a recovery. The guardian cannot unpause.
+  - refunds epoch n's queued deposits 1:1 instead of pricing them: `dep-total` moves from the
+    pending bucket to ring-fenced refunds, claimable through the deposit claim as STX, not
+    shares. Their money never entered, so it neither bears the loss nor shares the recovery.
+
+  Exact-integer model: a 100 STX vault, 50 swept and written off, a 20 STX deposit queued in
+  epoch n, a 50 STX deposit right after the write-off, then a 50 STX recovery. Without D12,
+  the original holders end with 70.83 STX: the queued depositor gains 8.33 and the newcomer
+  20.83. With D12, the holders end with 100 STX and the queued deposit is refunded 20 STX.
+  IDLE withdrawals stay open throughout.
 
 ## 4. Per-epoch storage
 
@@ -119,7 +140,8 @@ epochs: epoch-id → {
   wd-shares-total: uint,  ;; shares queued for withdrawal (net of cancels)
   settled: bool,
   dep-shares-minted: uint,;; shares created for all of this epoch's depositors
-  wd-stx-paid: uint       ;; uSTX ring-fenced for all of this epoch's withdrawers
+  wd-stx-paid: uint,      ;; uSTX ring-fenced for all of this epoch's withdrawers
+  written-off: bool       ;; settled by settle-overdue: deposits refunded [review D12]
 }
 epoch-deposits:    { epoch, user } → uSTX
 epoch-withdrawals: { epoch, user } → shares
@@ -128,7 +150,8 @@ epoch-withdrawals: { epoch, user } → shares
 Claims after settlement:
 - deposit: `floor(user-amt × dep-shares-minted / dep-total)` shares, transferred on claim
   from the vault's own escrow. All `dep-shares-minted` are minted to the vault at settlement,
-  not on claim **[review D2]**.
+  not on claim **[review D2]**. In a written-off epoch the deposit claim instead pays back
+  `user-amt` in uSTX from the ring-fenced refunds **[review D12]**.
 - withdrawal: `floor(user-shares × wd-stx-paid / wd-shares-total)` uSTX, paid on claim.
 - Each claim deletes the user's `{epoch, user}` record, so it cannot be repeated. A second
   deposit or request in the same epoch adds to the record; a cancel subtracts from both the
@@ -139,7 +162,7 @@ Accounting definitions, used by every formula in section 5 **[review D2]**:
 - `S` = the token's real total supply, including shares escrowed for queued withdrawals (they
   bear the current epoch) and settled deposit shares held in escrow until claimed.
 - `A` = capital at strategy + vault STX − pending-deposit bucket − all ring-fenced payouts
-  (IDLE requests and settled epoch withdrawals).
+  (IDLE requests, settled epoch withdrawals and written-off deposit refunds **[review D12]**).
 
 Why minting on claim fails: unclaimed deposit shares would be missing from `S` while their
 STX is already in `A`. Modelled with exact integers, a zero-profit epoch with a 100 STX
@@ -167,6 +190,8 @@ strategy, after every call.
    shares.
 4. Price queued deposits at the same post-fee, post-withdrawal PPS: record
    `dep-shares-minted`, move `dep-total` from the pending bucket into assets.
+   `settle-overdue` instead refunds them: it moves `dep-total` from the pending bucket to
+   ring-fenced refunds, sets `written-off`, and pauses deposits **[review D12]**.
 5. Mark the epoch settled, return to IDLE, print one settlement event with all totals.
 
 This order means newcomers never pay a fee on gains they did not share, and leavers bear
@@ -202,6 +227,23 @@ each settlement (and the dedicated strategy wallet's balance) before sweeping ag
 sweeps are blocked automatically once PPS falls more than **10% below `HWM-PPS` [decided]**,
 resumable only by the admin through the timelock. Whatever remains is
 disclosed: the returned amount is self-reported by the strategy **[review D11]**.
+
+How the block resumes **[review D13]**: after a drawdown, PPS only gets back to `HWM-PPS`
+through gains, and gains need sweeps. So a resume that only clears a flag would trip again at
+the very next sweep. The block therefore measures against its own reference, not `HWM-PPS`
+itself:
+- `sweep-ref-pps` (same 1e18 scale) starts at the initial PPS. Each settlement raises it to
+  the post-fee PPS when that is higher, so it tracks `HWM-PPS` until the first resume.
+- A sweep requires `PPS × 10 ≥ sweep-ref-pps × 9`, in integers with no division.
+- Resume is a timelocked change (queued while IDLE like any other). At confirm it resets
+  `sweep-ref-pps` to the PPS at that moment.
+- `HWM-PPS` is never touched by the block or the resume, so the fee still waits for a full
+  recovery.
+
+A further loss of more than 10% from the reset point blocks sweeps again. Modelled with
+integers: a -30% epoch blocks the sweep; clearing a flag alone still blocks it; a reset
+allows it; a further -8% is still allowed; a cumulative loss past 10% from the reset blocks
+again.
 
 Worst-case exit time **[review D9]**, to state in the disclosure: 288 burn blocks from IDLE;
 up to `MAX-EPOCH` plus settlement while DEPLOYED (with D1 this is a hard bound). DLMM
@@ -244,8 +286,15 @@ signatures are not needed every day.
    deposit (D2); an IDLE request followed by a loss epoch, where the leaver's payout is fixed
    and the remaining holders' PPS is unaffected (D3); double claim, cancel after settlement
    and a zero-value claim (D4).
+   **[review D12]** A write-off, then a deposit attempt (rejected while paused), then a
+   recovery that raises PPS for the existing holders only; queued deposits refunded 1:1 on a
+   write-off, claimed as STX; `return-from-strategy` still settles normally while `overdue`
+   reads true. **[review D13]** A loss of more than 10% blocks the sweep; a resume is queued and
+   confirmed; the sweep then works and `HWM-PPS` is unchanged; a further loss of more than 10%
+   from the reset point blocks again. Also a max-value test of every 1e18-scaled product.
 3. Testnet deploy with the site pointed at it, including a claim through the UI (closes M2).
 4. Wind down v1: return the 90 STX, request, claim, leave v1 paused and marked deprecated.
+   Done 2026-10-10 (section 10).
 5. Mainnet v2 with the owner's own capital: one real gain round trip and one real loss round
    trip, docs updated.
 6. Independent re-review before any outside deposit.
@@ -269,3 +318,17 @@ v1 status: fully wound down on 2026-10-10. The 90 STX was returned from the stra
 withdrawn as request #1 and claimed (tx 9a1b1c05...). v1 stays paused and deprecated.
 
 Next: the reviewer re-reviews this revised note; then Clarity code, test-first; then testnet.
+
+Re-review (2026-10-11) **[review]**: the decisions above are fine, and the note is approved
+once D12 is accepted:
+- D12 (required): `settle-overdue` pauses deposits and refunds epoch n's queued deposits
+  (section 3). The 3-day `MAX-EPOCH` makes a late return that later recovers the usual cause
+  of a write-off, so without D12 newcomers routinely capture recoveries.
+- D13 (clarifies decision 6): resuming after the drawdown block resets `sweep-ref-pps`
+  (section 6).
+
+Decision 7 checked: with every STX in existence in the vault, the largest 1e18-scaled product
+(the fee step) is about 6e36, below 2^128 ≈ 3.4e38, provided no two scaled terms are
+multiplied before dividing. v1 wind-down checked on chain: the claim of request #1 returned
+`(ok u90000000)`. It was sent without post-conditions, so it doesn't prove the frontend claim
+fix. M2 still closes at step 3.
