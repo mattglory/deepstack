@@ -329,15 +329,22 @@
     (asserts! (get settled ep) ERR-NOT-SETTLED)
     (asserts! (> shares u0) ERR-NOT-FOUND)
     (map-delete epoch-withdrawals { epoch: e, user: user })
-    (let ((amount (/ (* shares (get wd-stx-paid ep)) (get wd-shares-total ep))))
-      (if (> amount u0)
-        (begin
-          (var-set ringfenced (- (var-get ringfenced) amount))
-          (var-set vault-stx (- (var-get vault-stx) amount))
-          (try! (as-contract (stx-transfer? amount tx-sender user))))
-        true)
-      (print { event: "epoch-withdrawal-claimed", user: user, epoch: e, amount: amount })
-      (ok amount))
+    (if (get written-off ep)
+      ;; Written-off epoch (D14): the escrowed shares go back unpriced, so whoever calls
+      ;; settle-overdue cannot buy out queued leavers at the written-down price.
+      (begin
+        (try! (as-contract (contract-call? .deepstack-vault-v2-token transfer shares tx-sender user none)))
+        (print { event: "epoch-withdrawal-returned", user: user, epoch: e, shares: shares })
+        (ok u0))
+      (let ((amount (/ (* shares (get wd-stx-paid ep)) (get wd-shares-total ep))))
+        (if (> amount u0)
+          (begin
+            (var-set ringfenced (- (var-get ringfenced) amount))
+            (var-set vault-stx (- (var-get vault-stx) amount))
+            (try! (as-contract (stx-transfer? amount tx-sender user))))
+          true)
+        (print { event: "epoch-withdrawal-claimed", user: user, epoch: e, amount: amount })
+        (ok amount)))
   )
 )
 
@@ -384,7 +391,7 @@
 )
 
 ;; Anyone, once MAX-EPOCH burn blocks have passed: settle as a return of 0 (D1), refund the
-;; queued deposits and pause deposits (D12).
+;; queued deposits and pause deposits (D12), and hand queued withdrawals back unpriced (D14).
 (define-public (settle-overdue)
   (begin
     (asserts! (var-get epoch-open) ERR-NOT-DEPLOYED)
@@ -429,13 +436,13 @@
       (s1 (+ s0 fee-shares))
       (post-pps (/ (* (+ a0 VA) SCALE) (+ s1 VS)))
       (post-pps-up (/ (- (+ (* (+ a0 VA) SCALE) (+ s1 VS)) u1) (+ s1 VS)))
-      ;; 3. Queued withdrawals at the post-fee price
+      ;; 3. Queued withdrawals at the post-fee price (on a write-off, unpriced: D14)
       (wd (get wd-shares-total ep))
-      (wd-stx (/ (* wd (+ a0 VA)) (+ s1 VS)))
+      (wd-stx (if writeoff u0 (/ (* wd (+ a0 VA)) (+ s1 VS))))
       ;; 4. Queued deposits at the post-withdrawal price (or refunded on a write-off)
       (dep (get dep-total ep))
       (a2 (- a0 wd-stx))
-      (s2 (- s1 wd))
+      (s2 (if writeoff s1 (- s1 wd)))
       (minted (if writeoff u0 (/ (* dep (+ s2 VS)) (+ a2 VA))))
     )
       (if (> fee-shares u0)
@@ -443,7 +450,7 @@
         true)
       (if (> pps-pre hwm) (var-set hwm-pps post-pps-up) true)
       (if (> post-pps (var-get sweep-ref-pps)) (var-set sweep-ref-pps post-pps) true)
-      (if (> wd u0)
+      (if (and (> wd u0) (not writeoff))
         (begin
           (try! (as-contract (contract-call? .deepstack-vault-v2-token burn-for-vault wd tx-sender)))
           (var-set ringfenced (+ (var-get ringfenced) wd-stx)))
@@ -498,6 +505,7 @@
 
 (define-private (check-queue)
   (begin
+    (asserts! (var-get initialized) ERR-NOT-INITIALIZED) ;; nothing queued by the deployer survives initialize
     (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-ADMIN)
     (asserts! (not (var-get epoch-open)) ERR-NOT-IDLE)
     (ok (+ burn-block-height TIMELOCK))))
