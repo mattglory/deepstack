@@ -389,6 +389,40 @@ describe("write-off entry (D12)", () => {
 });
 
 // ============================================================================================
+describe("write-off exits (D14, re-review 2026-10-12)", () => {
+  it("D14: a write-off hands queued withdrawals back unpriced, so calling settle-overdue cannot buy out the leavers", () => {
+    ok(deposit(100n * STX, alice)); // stays
+    ok(deposit(100n * STX, bob));   // queues an exit
+    ok(sweep(100n * STX));
+    const bobShares = shares(bob);
+    ok(request(bobShares, bob));
+    burn(MAX_EPOCH + 1);            // the strategy is late, the funds are intact
+    ok(call("settle-overdue", [], alice));
+    const before = stxOf(bob);
+    expect(ok(claimWd(0n, bob))).toBe(0n);
+    expect(stxOf(bob)).toBe(before);   // no STX at the written-down price...
+    expect(shares(bob)).toBe(bobShares); // ...the shares come back instead
+    expect(errCode(claimWd(0n, bob))).toBe(316); // once
+    ok(call("recover-from-strategy", [Cl.uint(100n * STX)], strategy));
+    near(valueOf(bob), 100n * STX, 2n);   // without D14: bob 50, alice 150
+    near(valueOf(alice), 100n * STX, 2n);
+  });
+
+  it("D14: a leaver who does not wait for a recovery exits IDLE at the written-down price, as before", () => {
+    ok(deposit(100n * STX, alice));
+    ok(deposit(100n * STX, bob));
+    ok(sweep(100n * STX));
+    ok(request(shares(bob), bob));
+    burn(MAX_EPOCH + 1);
+    ok(call("settle-overdue", [], alice));
+    ok(claimWd(0n, bob));
+    near(exitIdle(bob), 50n * STX, 2n);
+    near(valueOf(alice), 50n * STX, 2n);
+  });
+
+});
+
+// ============================================================================================
 describe("drawdown sweep block (D5, D13)", () => {
   it("D13: a loss over 10% blocks sweeps; a timelocked resume resets the reference; HWM is untouched; a further 10% loss blocks again", () => {
     ok(deposit(100n * STX, alice));

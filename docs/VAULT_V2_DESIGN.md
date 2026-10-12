@@ -102,8 +102,8 @@ what is already deployed, and the guardian role still lets the agent pause insta
 - No sweeps, no parameter queuing (including admin change).
 - Overdue **[review D1]**: once `MAX-EPOCH` burn blocks pass without a return, `overdue`
   reads true and anyone may call `settle-overdue`. It settles epoch n exactly as a return of 0
-  would (section 5): the deployed amount is booked as a loss, queued withdrawals are priced at
-  the written-down PPS, queued deposits are refunded **[review D12]**, and the vault returns
+  would (section 5): the deployed amount is booked as a loss, queued withdrawals are handed
+  back unpriced **[review D14]**, queued deposits are refunded **[review D12]**, and the vault returns
   to IDLE so every holder can exit. Until someone calls it, `return-from-strategy` still
   settles the epoch normally, even while `overdue` reads true. Without this, a
   total loss (a return of 0 hits the `stx-transfer?` u0 error), a lost strategy key or a
@@ -127,6 +127,13 @@ what is already deployed, and the guardian role still lets the agent pause insta
   the original holders end with 70.83 STX: the queued depositor gains 8.33 and the newcomer
   20.83. With D12, the holders end with 100 STX and the queued deposit is refunded 20 STX.
   IDLE withdrawals stay open throughout.
+- Exit after a write-off **[review D14]**: pricing epoch n's queued withdrawals at the
+  written-down PPS would let any holder who stays call `settle-overdue` on a strategy that is
+  merely late and keep the leavers' share of the recovery. In a Clarinet test with 200 STX,
+  100 swept and returned in full after `MAX-EPOCH`, the leaver got 50 STX and the stayer's
+  position rose to 150. So a written-off epoch's escrowed withdrawal shares go back to their
+  owners on claim, unpriced. They are holders again: they can exit IDLE at once at the same
+  written-down price, or wait for a recovery.
 
 ## 4. Per-epoch storage
 
@@ -289,7 +296,9 @@ signatures are not needed every day.
    **[review D12]** A write-off, then a deposit attempt (rejected while paused), then a
    recovery that raises PPS for the existing holders only; queued deposits refunded 1:1 on a
    write-off, claimed as STX; `return-from-strategy` still settles normally while `overdue`
-   reads true. **[review D13]** A loss of more than 10% blocks the sweep; a resume is queued and
+   reads true. **[review D14]** A write-off returns queued withdrawal shares unpriced, and a
+   later recovery makes leaver and stayer whole; nothing can be queued before `initialize`.
+   **[review D13]** A loss of more than 10% blocks the sweep; a resume is queued and
    confirmed; the sweep then works and `HWM-PPS` is unchanged; a further loss of more than 10%
    from the reset point blocks again. Also a max-value test of every 1e18-scaled product.
 3. Testnet deploy with the site pointed at it, including a claim through the UI (closes M2).
