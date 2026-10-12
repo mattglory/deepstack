@@ -16,6 +16,9 @@ export default defineConfig({
     // clarinet handles test isolation by resetting the simnet between tests
     isolate: false,
     maxWorkers: 1,
+    // The seeded invariant runs can exceed vitest's 5 s default on a loaded machine
+    // (noted in the v2 code review, PR #16).
+    testTimeout: 60_000,
     setupFiles: [vitestSetupFilePath],
     environmentOptions: {
       clarinet: {
