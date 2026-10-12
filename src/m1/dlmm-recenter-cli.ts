@@ -184,7 +184,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
 async function main() {
   console.log("=== DeepStack — DLMM recenter (two-sided concentrated position) ===\n");
   const { action, amount, rest, yes, explicitHalfWidth } = parseArgs();
-  if (!["status", "open", "recenter", "withdraw", "reset-basis"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | reset-basis> [--yes-mainnet]");
+  if (!["status", "open", "recenter", "withdraw", "reset-basis", "set-basis"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | reset-basis | set-basis <xQty> <yQty> [iso-time]> [--yes-mainnet]");
 
   const w = await getWallet();
   if (w.network !== "mainnet") throw new Error(`refusing: STACKS_NETWORK is ${w.network}; DLMM is mainnet-only.`);
