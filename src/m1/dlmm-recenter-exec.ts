@@ -20,10 +20,10 @@ import { withRpc, hiroFetch } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { exceedsPoolShare } from "./agent.js";
-import { setDlmmBasis, loadHistory } from "./metrics.js";
-import { readUserPosition } from "./dlmm-position.js";
+import { setDlmmBasis, loadHistory, loadVenueBases } from "./metrics.js";
+import { readUserPosition, type DlmmPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
@@ -242,12 +242,29 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
 export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean, log: (s: string) => void = () => {}): Promise<RecenterResult> {
   const poolDef = DLMM_POOLS.find((p) => p.key === cfg.pair);
   if (!poolDef) throw new Error(`unknown DLMM pair '${cfg.pair}'`);
-  const st = await readDlmmState(poolDef);
-  if (!st) throw new Error(`could not read pool state for ${cfg.pair}`);
+  // Every read before the decision. A failure here means nothing was attempted, so it returns a
+  // skip instead of throwing: the caller counts a throw as a FAILED ADD, and on 2026-10-11 two
+  // flaky Hiro reads ("could not read pool state") tripped the 2-failure stop and switched DLMM
+  // trading off for 10+ hours with no transaction ever sent.
+  let st!: DlmmState;
+  let xTok!: TokenMeta;
+  let yTok!: TokenMeta;
+  let pos!: DlmmPosition;
+  try {
+    const s0 = await readDlmmState(poolDef);
+    if (!s0) throw new Error(`could not read pool state for ${cfg.pair}`);
+    st = s0;
+    [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
+    pos = await readUserPosition(poolDef, w.address);
+  } catch (err) {
+    return {
+      action: "skip", reason: `read failed before any broadcast: ${(err as Error).message}`,
+      activeBin: -1, posLo: null, posHi: null, posX: 0, posY: 0, halfWidth: cfg.halfWidth,
+      executed: false, skipped: true,
+    };
+  }
   const halfWidth = resolveHalfWidth(cfg.sigmaDaily, st.binStep, cfg.halfWidth, cfg.rangeOpts);
   const effCfg: RecenterConfig = { ...cfg, halfWidth };
-  const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
-  const pos = await readUserPosition(poolDef, w.address);
   const dec = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
   const base: RecenterResult = {
     action: dec.action, reason: dec.reason, activeBin: st.activeBinId,
@@ -355,5 +372,24 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   const addTxid = await executeAdd(w, poolDef, st2, xTok, yTok, effCfg, log);
   const as = await waitForTx(addTxid, log);
   const outcome = recenterSequenceOutcome(ws, as);
+  if (outcome.executed) {
+    // Capital moved by the resize goes into the basis, not the P&L (adjustBasisForRecenter).
+    try {
+      const after = await readUserPosition(poolDef, w.address);
+      const prev = loadVenueBases().dlmmBasis;
+      if (prev) {
+        const xu = 10 ** xTok.decimals, yu = 10 ** yTok.decimals;
+        const next = adjustBasisForRecenter(
+          prev,
+          { x: Number(pos.totalX) / xu, y: Number(pos.totalY) / yu },
+          { x: Number(after.totalX) / xu, y: Number(after.totalY) / yu },
+        );
+        setDlmmBasis(next);
+        log(`  basis adjusted for the resize: ${next.xQty} x + ${next.yQty} y`);
+      }
+    } catch (err) {
+      log(`  (basis adjust skipped: ${(err as Error).message})`);
+    }
+  }
   return { ...base, executed: outcome.executed, withdrawTxid: wr.txid, addTxid, reason: outcome.reason };
 }

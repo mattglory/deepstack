@@ -56,6 +56,24 @@ export interface RecenterDecision {
  * `hysteresisBins` requires the active bin to move a little BEYOND the edge before recentering,
  * so price oscillating on the boundary doesn't thrash (each recenter costs fees + realizes IL).
  */
+/**
+ * Cost basis after a recenter (2026-10-12). A recenter withdraws the whole position and re-adds
+ * it, and the re-add can be larger or smaller than what came out (the agent sizes it to its
+ * target from free wallet balances). The difference is capital moved in or out, not profit, so
+ * the basis legs move by exactly that difference. P&L (value of the position minus value of the
+ * basis, at the same prices) is then unchanged across the recenter. Legs may go negative; that
+ * is correct for continuity, since valuation is linear. Found live: the 2026-10-08 recenter
+ * topped the position up from ~$199 to ~$596, and without this the dashboard showed the
+ * ~$400 of added capital as +1,438 STX of DLMM profit.
+ */
+export function adjustBasisForRecenter<T extends { xQty: number; yQty: number }>(
+  prev: T,
+  before: { x: number; y: number },
+  after: { x: number; y: number },
+): T {
+  return { ...prev, xQty: prev.xQty + after.x - before.x, yQty: prev.yQty + after.y - before.y };
+}
+
 export function decideRecenter(
   activeBin: number,
   position: PositionRange,

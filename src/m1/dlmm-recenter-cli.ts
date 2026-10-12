@@ -80,7 +80,7 @@ function parseArgs() {
   if (explicitHalfWidth !== null && !(Number.isInteger(explicitHalfWidth) && explicitHalfWidth >= 1 && explicitHalfWidth <= 50)) {
     throw new Error("--half-width must be a whole number of bins from 1 to 50");
   }
-  return { action: pos[0], amount: pos[1], yes: a.includes("--yes-mainnet"), explicitHalfWidth };
+  return { action: pos[0], amount: pos[1], rest: pos.slice(1), yes: a.includes("--yes-mainnet"), explicitHalfWidth };
 }
 
 async function waitFor(txid: string): Promise<string> {
@@ -183,7 +183,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
 
 async function main() {
   console.log("=== DeepStack — DLMM recenter (two-sided concentrated position) ===\n");
-  const { action, amount, yes, explicitHalfWidth } = parseArgs();
+  const { action, amount, rest, yes, explicitHalfWidth } = parseArgs();
   if (!["status", "open", "recenter", "withdraw", "reset-basis"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | reset-basis> [--yes-mainnet]");
 
   const w = await getWallet();
@@ -212,6 +212,23 @@ async function main() {
   console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}` : "none"}`);
   console.log(`decision: ${decision.action} — ${decision.reason}\n`);
   if (action === "status") return;
+
+  if (action === "set-basis") {
+    // One-off correction with explicit legs, for when the basis is known from chain data
+    // (e.g. a resize the agent recorded before adjustBasisForRecenter existed). No broadcast.
+    const [xs, ys, ts] = rest;
+    const xQty = Number(xs), yQty = Number(ys);
+    if (!Number.isFinite(xQty) || !Number.isFinite(yQty)) throw new Error("usage: set-basis <xQty> <yQty> [iso-time]");
+    const t = ts ?? new Date().toISOString();
+    if (Number.isNaN(Date.parse(t))) throw new Error("set-basis: bad iso-time");
+    setDlmmBasis({ xQty, yQty, t });
+    console.log(`cost basis set to ${xQty} x + ${yQty} y (since ${t}).`);
+    if (isPublishConfigured()) {
+      const ok = await publishMetrics();
+      console.log(ok ? "published to the gist mirror." : "gist publish failed; the dashboard picks it up on the agent's next cycle.");
+    }
+    return;
+  }
 
   if (action === "reset-basis") {
     // No broadcast -- pure recovery for the stale-basis bug (see the `recenter` branch's

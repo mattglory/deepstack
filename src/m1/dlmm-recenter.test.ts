@@ -2,7 +2,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decideRecenter, minDlpFromExpected, minOutFromExpected, expectedDlp } from "./dlmm-recenter.js";
+import { decideRecenter, minDlpFromExpected, minOutFromExpected, expectedDlp, adjustBasisForRecenter } from "./dlmm-recenter.js";
 
 test("decideRecenter: no position → open a band around the active bin", () => {
   const d = decideRecenter(-236, { lo: null, hi: null }, 5);
@@ -188,4 +188,19 @@ test("recenterSequenceOutcome: a successful withdraw with no re-add attempted fa
   const outcome = recenterSequenceOutcome("success", null);
   assert.equal(outcome.executed, false);
   assert.equal(outcome.attemptedReAdd, false);
+});
+
+test("adjustBasisForRecenter: capital added in a recenter moves the basis, not the P&L (2026-10-08 live amounts)", () => {
+  // Basis after the 2026-10-07 open; then the 2026-10-08 recenter withdrew 0.00239082 sBTC and
+  // re-added 0.00356705 sBTC + 300 USDCx.
+  const prev = { xQty: 0.00119684, yQty: 100, t: "2026-10-07T12:28:41Z" };
+  const before = { x: 0.00239082, y: 0 };
+  const after = { x: 0.00356705, y: 300 };
+  const next = adjustBasisForRecenter(prev, before, after);
+  assert.ok(Math.abs(next.xQty - 0.00237307) < 1e-12);
+  assert.equal(next.yQty, 400);
+  assert.equal(next.t, prev.t);
+  const price = 83_970; // P&L at one price is identical before and after
+  const pnl = (pos: { x: number; y: number }, b: { xQty: number; yQty: number }) => pos.x * price + pos.y - (b.xQty * price + b.yQty);
+  assert.ok(Math.abs(pnl(before, prev) - pnl(after, next)) < 1e-9);
 });
