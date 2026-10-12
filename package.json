@@ -26,6 +26,7 @@
     "m1:dlmm-smoke": "tsx src/m1/dlmm-smoke-cli.ts",
     "m1:dlmm-recenter": "tsx src/m1/dlmm-recenter-cli.ts",
     "m1:vault": "tsx src/m1/vault-cli.ts",
+    "m1:vault-v2": "tsx src/m1/vault-v2-cli.ts",
     "m1:allocator": "tsx src/m1/allocator-cli.ts"
   },
   "dependencies": {

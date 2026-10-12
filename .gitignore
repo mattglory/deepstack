@@ -19,3 +19,4 @@ evidence-backup/
 # Keep locally, never commit.
 reports/
 research_notes/
+.env.testnet
