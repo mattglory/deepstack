@@ -20,3 +20,8 @@ evidence-backup/
 reports/
 research_notes/
 .env.testnet
+
+# multisig rehearsal transactions and signatures
+ms-*.hex
+ms-*.hex.sig*.json
+.env.testnet*
