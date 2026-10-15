@@ -55,6 +55,8 @@ export interface MetricsSample {
   dlmmValueY?: number; // DLMM position value in y (optional — only present once DLMM is active)
   freeUsdcxValueY?: number; // free (non-DLMM-locked) USDCx value in y this tick
   stxUsd?: number; // USD per STX used to value the DLMM position's non-STX leg this tick
+  dlmmActiveBin?: number; // DLMM pool's active bin this tick (absent when the read failed) — the vol source for range width
+  dlmmBinStep?: number; // that pool's bin step in bps, so a bin series is never mixed across pools
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
   // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y

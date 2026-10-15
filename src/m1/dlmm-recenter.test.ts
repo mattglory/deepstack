@@ -204,3 +204,28 @@ test("adjustBasisForRecenter: capital added in a recenter moves the basis, not t
   const pnl = (pos: { x: number; y: number }, b: { xQty: number; yQty: number }) => pos.x * price + pos.y - (b.xQty * price + b.yQty);
   assert.ok(Math.abs(pnl(before, prev) - pnl(after, next)) < 1e-9);
 });
+
+// --- binSeriesVolDaily (2026-10-15) ---
+import { binSeriesVolDaily } from "./dlmm-recenter.js";
+
+const halfHourly = (bins: number[], step = 10) =>
+  bins.map((bin, i) => ({ t: new Date(Date.UTC(2026, 9, 1) + i * 1_800_000).toISOString(), bin, binStep: step }));
+
+test("binSeriesVolDaily: null until enough readings", () => {
+  assert.equal(binSeriesVolDaily(halfHourly(Array(95).fill(200))), null);
+  assert.equal(binSeriesVolDaily(halfHourly(Array(96).fill(200))), 0);
+});
+
+test("binSeriesVolDaily: one bin per half hour at 10 bps is sqrt(48) x ln(1.001) per day", () => {
+  const bins = Array.from({ length: 200 }, (_, i) => 200 + (i % 2)); // alternate 200, 201
+  const v = binSeriesVolDaily(halfHourly(bins))!;
+  assert.ok(Math.abs(v - Math.sqrt(48) * Math.log(1.001)) < 1e-9, `got ${v}`);
+});
+
+test("binSeriesVolDaily: ignores failed reads (-1) and never mixes bin steps", () => {
+  const s = halfHourly(Array.from({ length: 120 }, (_, i) => 200 + (i % 2)));
+  const withGlitch = [...s.slice(0, 60), { ...s[60], bin: -1 }, ...s.slice(61)];
+  assert.ok(binSeriesVolDaily(withGlitch)! < 0.01, "a -1 sentinel must not register as a 200-bin crash");
+  const mixed = s.map((x, i) => (i === 60 ? { ...x, bin: 5000, binStep: 25 } : x));
+  assert.ok(binSeriesVolDaily(mixed)! < 0.01, "a sample from another pool must not count as a move");
+});

@@ -52,7 +52,7 @@ import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.) AND
 // for half-width sizing (dlmmSigmaDaily/resolveHalfWidth) — see their doc comments there for
 // why this CLI no longer has its own, disconnected fixed-width default.
-import { resolveToken, ftBalance, priceOfToken, dlmmSigmaDaily, resolveHalfWidth, type TokenMeta } from "./dlmm-recenter-exec.js";
+import { resolveToken, ftBalance, priceOfToken, dlmmSigmaDaily, resolveHalfWidth, pinnedHalfWidth, type TokenMeta } from "./dlmm-recenter-exec.js";
 import { setDlmmBasis } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 
@@ -203,10 +203,11 @@ async function main() {
   // position that went out of range within hours. Broadcasting open/recenter without vol data
   // or an explicit width now refuses below; previews and status still work.
   const halfWidth = explicitHalfWidth ?? resolveHalfWidth(sigmaDaily, st.binStep, FALLBACK_HALF_WIDTH);
-  const widthIsFallback = explicitHalfWidth === null && !(sigmaDaily != null && sigmaDaily > 0);
+  const pinned = pinnedHalfWidth(); // DLMM_PIN_HALF_WIDTH: a deliberate width, never the silent fallback
+  const widthIsFallback = explicitHalfWidth === null && pinned === null && !(sigmaDaily != null && sigmaDaily > 0);
   const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
 
-  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | half-width ${halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback — no vol history yet)"}${explicitHalfWidth !== null ? " [set by --half-width]" : ""} | x=${xTok.asset || "STX"} y=${yTok.asset}`);
+  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | half-width ${halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback — no vol history yet)"}${explicitHalfWidth !== null ? " [set by --half-width]" : pinned !== null ? " [pinned by DLMM_PIN_HALF_WIDTH]" : ""} | x=${xTok.asset || "STX"} y=${yTok.asset}`);
   const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
   const xdp = xTok.decimals === 8 ? 6 : 3;
   console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}` : "none"}`);
