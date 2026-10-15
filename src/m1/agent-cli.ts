@@ -28,7 +28,7 @@ import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
 import { scanCrossPools } from "./crosspool.js";
 import { scanStstxGap } from "./ststx-gap.js";
-import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmSigmaDaily } from "./dlmm-recenter-exec.js";
+import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmVol, pinnedHalfWidth } from "./dlmm-recenter-exec.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
@@ -98,6 +98,8 @@ interface Snapshot {
   dlmmValueY: number;
   freeUsdcxValueY: number;
   usdPerStx: number;
+  dlmmActiveBin?: number;
+  dlmmBinStep?: number;
   portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
@@ -155,7 +157,7 @@ function lazyInitFromDisk(): void {
   }
 }
 
-async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<{ dlmmValueY: number; freeUsdcxValueY: number; usdPerStx: number }> {
+async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<{ dlmmValueY: number; freeUsdcxValueY: number; usdPerStx: number; activeBin?: number; binStep?: number }> {
   const pairKey = process.env.DLMM_OBSERVE_PAIR;
   if (!pairKey) return { dlmmValueY: 0, freeUsdcxValueY: 0, usdPerStx: 0 };
   lazyInitFromDisk();
@@ -165,6 +167,10 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     if (!poolDef) return { dlmmValueY: 0, freeUsdcxValueY: 0, usdPerStx: 0 };
     const st = await readDlmmState(poolDef);
     if (!st) return last;
+    // Recorded for the bin-based vol series (dlmm-recenter.ts binSeriesVolDaily). Taken from a
+    // successful pool read only; on any failure below the reused `last` carries no bin, so a
+    // stale value can never enter the series.
+    const bin = { activeBin: st.activeBinId, binStep: st.binStep };
     if (st.xToken !== tokenId(xToken)) {
       console.warn(`  [dlmm-value] pool x-token (${st.xToken}) isn't the pair's x-token (${tokenId(xToken)}) — skipping DLMM valuation this tick`);
       return last;
@@ -179,7 +185,7 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     const freeYBase = await ftBalance(w.address, `${yTok.principal}::${yTok.asset}`);
     lastFreeUsdcxValueY = Number(freeYBase) / 10 ** yTok.decimals / usdPerStx;
 
-    return { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx };
+    return { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx, ...bin };
   } catch (err) {
     console.warn(`  [dlmm-value] read failed, reusing last known values (dlmm ${last.dlmmValueY.toFixed(2)}, free-y ${last.freeUsdcxValueY.toFixed(2)}): ${(err as Error).message}`);
     return last;
@@ -204,7 +210,7 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     lpValueY = (Number(q.xOut) / 10 ** cfg.x.decimals) * pool.midXinY + Number(q.yOut) / 10 ** cfg.y.decimals;
   }
   const freeValueY = xH * pool.midXinY + yH;
-  const { dlmmValueY, freeUsdcxValueY, usdPerStx } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
+  const { dlmmValueY, freeUsdcxValueY, usdPerStx, activeBin: dlmmActiveBin, binStep: dlmmBinStep } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
   const portfolioY = freeValueY + lpValueY + dlmmValueY + freeUsdcxValueY;
   const yFraction = freeValueY > 0 ? yH / freeValueY : 0;
   return {
@@ -218,6 +224,8 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     dlmmValueY,
     freeUsdcxValueY,
     usdPerStx,
+    dlmmActiveBin,
+    dlmmBinStep,
     portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
@@ -362,6 +370,8 @@ async function act(
     dlmmValueY: s.dlmmValueY,
     freeUsdcxValueY: s.freeUsdcxValueY || undefined,
     stxUsd: s.usdPerStx || undefined,
+    dlmmActiveBin: s.dlmmActiveBin,
+    dlmmBinStep: s.dlmmBinStep,
     portfolioY: s.portfolioY,
     safe: safety.safe,
     poolX: s.xReserve,
@@ -779,7 +789,8 @@ async function main() {
             dlmmRecenters,
             maxTrades: f.maxTrades,
           });
-          const sigmaDaily = dlmmSigmaDaily();
+          const { sigmaDaily, source: volSource } = dlmmVol();
+          const pinned = pinnedHalfWidth();
           const res = await recenterOnce(w, { pair: dlmmPair, halfWidth, targetUsd, sigmaDaily }, dlmmLive, (m) => console.log(m));
           // A real attempt is dlmmLive with a decision that wasn't "hold" and wasn't a
           // deliberate pre-broadcast skip (kill switch / nonce gate — see RecenterResult.skipped).
@@ -790,8 +801,8 @@ async function main() {
           ));
           if (!res.executed && attempted) dlmmFailedThisTick = true;
           if (attempted) saveDlmmCounters({ failStreak: dlmmFailStreak, recenters: dlmmRecenters });
-          appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, dlmmFailStreak, ...res });
-          console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
+          appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, volSource, dlmmFailStreak, ...res });
+          console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${pinned !== null ? " (pinned)" : ""}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day, ${volSource})` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
         } catch (e) {
           // a thrown add (e.g. sizing/network) is still a real failed attempt
           if (dlmmLive) {

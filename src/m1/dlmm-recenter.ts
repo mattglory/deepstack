@@ -223,3 +223,36 @@ export function recenterSequenceOutcome(withdrawStatus: string, addStatus: strin
   }
   return { executed: addStatus === "success", reason: addStatus === "success" ? "recentered" : `re-add ${addStatus}`, attemptedReAdd: true };
 }
+
+// ---------------------------------------------------------------------------------------------
+// Realised volatility from the pool's OWN active bin (added 2026-10-15).
+//
+// The width used to come from an implied BTC/USD series: the sBTC-STX XYK mid times the STX/USD
+// price, both read every 30 minutes. Each leg carries its own noise and the product compounds it,
+// so that series measured ~4.5%/day while the sbtc-usdcx pool's real active bin, replayed from
+// 44 days of the agent's own journal (2,052 readings), moved ~1.9%/day. The inflated figure
+// pinned the width at the ±50 cap. The active bin IS the pool's price on a log scale:
+// price ∝ (1 + binStep/1e4)^bin, so log-return between two samples = Δbin · ln(1 + binStep/1e4).
+//
+// Needs `minPoints` readings (default 96 ≈ 2 days at the 30-min cadence) before it returns a
+// number; until then the caller falls back to the old series, as before. A read failure is
+// simply absent from the series (never a fake bin), so a gap becomes one longer interval and
+// the time weighting absorbs it.
+export interface BinSample { t: string; bin: number; binStep: number }
+
+export function binSeriesVolDaily(samples: BinSample[], minPoints = 96): number | null {
+  const pts = samples.filter((s) => Number.isInteger(s.bin) && s.bin >= 0 && s.binStep > 0);
+  if (pts.length < minPoints) return null;
+  let sumR2 = 0;
+  let sumDt = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if (a.binStep !== b.binStep) continue; // a different pool, not a price move
+    const dtDays = (Date.parse(b.t) - Date.parse(a.t)) / 86_400_000;
+    if (!(dtDays > 0)) continue;
+    const r = (b.bin - a.bin) * Math.log(1 + a.binStep / 10_000);
+    sumR2 += r * r;
+    sumDt += dtDays;
+  }
+  return sumDt > 0 ? Math.sqrt(sumR2 / sumDt) : null;
+}

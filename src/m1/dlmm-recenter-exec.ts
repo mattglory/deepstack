@@ -23,7 +23,7 @@ import { exceedsPoolShare } from "./agent.js";
 import { setDlmmBasis, loadHistory, loadVenueBases } from "./metrics.js";
 import { readUserPosition, type DlmmPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter, binSeriesVolDaily } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
@@ -45,17 +45,48 @@ import { realizedVolDaily } from "./lvr.js";
 // own trigger judged the drift insignificant and never acted. Unifying the width alone could not
 // prevent that (it recurred 2026-10-07 from a manual run with no vol history); the real fix was
 // decideRecenter judging the position's own edges instead of the current band.
+//
+// Since 2026-10-15 the preferred source is the pool's own active-bin series (binSeriesVolDaily
+// in dlmm-recenter.ts), recorded every tick in metrics samples; the implied series below is
+// only the fallback until ~2 days of bin readings exist. See binSeriesVolDaily for why.
+export type DlmmVolSource = "active-bin" | "implied-btcusd";
+export function dlmmVol(): { sigmaDaily: number | null; source: DlmmVolSource | null } {
+  const hist = loadHistory();
+  const fromBins = binSeriesVolDaily(
+    hist
+      .filter((s) => s.dlmmActiveBin !== undefined && s.dlmmBinStep !== undefined)
+      .map((s) => ({ t: s.t, bin: s.dlmmActiveBin as number, binStep: s.dlmmBinStep as number })),
+  );
+  if (fromBins !== null) return { sigmaDaily: fromBins, source: "active-bin" };
+  const implied = realizedVolDaily(
+    hist
+      .filter((s) => s.mid > 0 && (s.stxUsd ?? 0) > 0)
+      .map((s) => ({ t: s.t, mid: s.mid * (s.stxUsd as number), lpValueY: 0 })),
+  );
+  return { sigmaDaily: implied, source: implied === null ? null : "implied-btcusd" };
+}
 export function dlmmSigmaDaily(): number | null {
-  const history = loadHistory()
-    .filter((s) => s.mid > 0 && (s.stxUsd ?? 0) > 0)
-    .map((s) => ({ t: s.t, mid: s.mid * (s.stxUsd as number), lpValueY: 0 }));
-  return realizedVolDaily(history);
+  return dlmmVol().sigmaDaily;
 }
 
 // The ONE place that decides vol-scaled vs. fixed-fallback half-width — used by recenterOnce()
 // below AND by the manual CLI directly, so the two can never again size positions differently
 // for the same live conditions.
+//
+// DLMM_PIN_HALF_WIDTH (1-50) overrides the vol-scaled width for both the agent and the CLI's
+// default. It exists so a corrected vol input can ship without silently narrowing the live
+// range: the width is a fee-vs-recenter-loss trade-off decided on measured fee data, not a
+// side effect of a measurement fix (2026-10-15). An explicit CLI --half-width still wins.
+export function pinnedHalfWidth(): number | null {
+  const raw = process.env.DLMM_PIN_HALF_WIDTH;
+  if (raw === undefined || raw.trim() === "") return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1 || n > 50) throw new Error(`DLMM_PIN_HALF_WIDTH must be a whole number from 1 to 50 (got '${raw}')`);
+  return n;
+}
 export function resolveHalfWidth(sigmaDaily: number | null | undefined, binStepBps: number, fallbackHalfWidth: number, rangeOpts: RangeOpts = {}): number {
+  const pinned = pinnedHalfWidth();
+  if (pinned !== null) return pinned;
   return sigmaDaily != null && sigmaDaily > 0
     ? binRangeFromVol(sigmaDaily, binStepBps, { maxHalfWidthBins: 50, ...rangeOpts }).halfWidthBins
     : fallbackHalfWidth;
