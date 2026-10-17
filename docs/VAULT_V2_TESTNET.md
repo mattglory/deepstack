@@ -41,8 +41,7 @@ The last row closes review finding M2 (a UI claim must succeed in deny mode).
 | Drawdown block | A sweep of 5 at price 0.8517 (below 90% of the 1.045 reference) aborted with u313 (`21cde541…`) |
 | Late recovery | Strategy recovered 20 STX (`recover-from-strategy`); price back to 1.033658, so the holder whose shares were returned unpriced kept full value. `queue-resume-sweeps` accepted, executable at burn block 28,307 |
 
-Still to run on testnet: confirm the resume after the timelock (burn block 28,307), then
-unpause deposits.
+| Timelocked resume (2026-10-17) | After block 28,307 `confirm-resume-sweeps` succeeded (`5d8c4f59…`): the sweep reference reset to the current price 1.033658 and the fee high-water mark stayed at 1.045 (D13). Deposits unpaused by the admin (`7c145e7a…`) |
 
 ## 2-of-3 multisig admin (2026-10-15)
 
