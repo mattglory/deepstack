@@ -79,6 +79,9 @@ Also queued on the first testnet vault: `queue-admin-change` to the same multisi
 (executable at burn block 28,631), so the hand-over path (`accept-admin-change`, which only
 the proposed admin can call) is proven by the multisig itself.
 
-Still to run: after block 28,631, `confirm-fee-bps` on the rehearsal vault and
-`accept-admin-change` signed by the multisig on the first vault. Before mainnet: the same flow
-with the real devices (two hardware wallets and the offline recovery key).
+| After block 28,631 (2026-10-19): `confirm-fee-bps` signed by keys 3+2 | Success; the rehearsal vault's fee is now 15% |
+| `accept-admin-change` on the first vault, signed by the multisig (keys 1+3) | Success; the first vault's admin is now the multisig |
+| The old single operator key then queues a fee change on the first vault | Rejected on-chain, u300 not-admin |
+
+Before mainnet: the same flow with the real devices (two hardware wallets and the offline
+recovery key).
