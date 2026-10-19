@@ -6,6 +6,7 @@
 // STACKS_PRIVATE_KEY (the deployer, and the admin until initialize hands that role on).
 //
 //   npm run m1:vault-v2 -- status --testnet
+//   npm run m1:vault-v2 -- status --testnet --env=.env.testnet-ms   # a second rehearsal deployment
 //   npm run m1:vault-v2 -- deploy --testnet             # token, then vault, then the one-time link
 //   npm run m1:vault-v2 -- initialize --testnet [admin strategy guardian fee-recipient]
 //   npm run m1:vault-v2 -- deposit 100 --testnet
@@ -49,6 +50,10 @@ const TRAIT_TESTNET_PATH = "contracts/testnet/sip-010-trait-ft-standard-v-1-1.cl
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith("--")));
 const pos = argv.filter((a) => !a.startsWith("--"));
+// --env=<file> loads an extra env file FIRST (first value wins), e.g. a second testnet deployer
+// key for a separate rehearsal deployment, without touching .env.testnet.
+const envFlag = [...flags].find((f) => f.startsWith("--env="));
+if (envFlag) loadDotenv(envFlag.slice("--env=".length));
 if (flags.has("--testnet")) loadDotenv(".env.testnet");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
