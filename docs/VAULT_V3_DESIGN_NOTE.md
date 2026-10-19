@@ -17,7 +17,7 @@ instruction. v3 adopts that model for one Bitflow HODLMM pool.
 
 ## 2. Verified feasibility
 
-Checked against the live mainnet sources on 2026-10-19:
+Checked against the live mainnet contract sources (read from the Hiro API) on 2026-10-19:
 
 - `SP1PFR4V…dlmm-core-v-1-1` `add-liquidity` takes `caller` as `tx-sender`, transfers the
   x and y tokens from `caller` to the pool, and mints the bin's LP shares to `caller`.
@@ -26,9 +26,15 @@ Checked against the live mainnet sources on 2026-10-19:
 - So a vault contract that calls the core (directly, or through
   `SM1FKXG…dlmm-liquidity-router-v-1-2`) from its own context becomes the owner of the bins.
   Only it can withdraw them.
-- The core only works with pools whose code hash is on its verified list, and the core's
-  own admin controls that list and the fee settings. That is a third-party dependency v3
-  inherits (section 7).
+- `withdraw-liquidity` only checks that the pool is a known pool, not that it is enabled,
+  so withdrawals keep working if Bitflow disables a pool. `add-liquidity` and the swaps
+  require an enabled pool.
+- The core's admins control its verified-pool list, pool status and fees, and can **migrate a
+  pool to a new core** after a cooldown (default two weeks, minimum one week, enforced in the
+  core). After a migration the old core rejects withdrawals for that pool, so v3 must not
+  hard-code the core address: it has to follow the pool's current core, with the vault's own
+  timelock shorter than Bitflow's minimum migration cooldown. These are third-party
+  dependencies v3 inherits (section 7).
 
 Not yet verified: that the pattern works end to end under the Clarity version in force at
 build time (its rules for a contract spending its own assets), and the runtime cost of a
@@ -83,9 +89,12 @@ no admin path that moves user funds.
    transaction bounds the maximum range width.
 4. **Reference price:** whether a trustworthy on-chain sBTC/USD reference exists for the
    rebalance check. If none does, rely on cooldown, range bounds and the guardian.
-5. **The pool's own risks:** Bitflow can change verified pools and fees. Bitflow's audit
-   status for the DLMM core, and its pause and upgrade powers, need to be confirmed and
-   disclosed.
+5. **The pool's own risks:** Bitflow can change verified pools and fees, disable pools and
+   migrate them to a new core (section 2). Bitflow runs an Immunefi bug bounty that refers to
+   completed audits, but no published audit report for the DLMM core was found on
+   2026-10-19. The audit status must be confirmed with Bitflow and disclosed.
+6. **Testing venue:** HODLMM does not appear to exist on testnet, so testing has to use
+   simnet with the mainnet contract sources, then a tiny mainnet proof.
 
 ## 7. Dependencies and disclosure
 
