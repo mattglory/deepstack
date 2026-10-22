@@ -7,7 +7,11 @@
 
 export function hodlNow(m: unknown, s: { mid: number; stxUsd?: number; portfolioY: number }): number | null;
 
-export function ilAdjustedReturn(m: unknown, s: { mid: number; stxUsd?: number; portfolioY: number }): number | null;
+export function ilAdjustedReturn(m: unknown, s: { t: string; mid: number; stxUsd?: number; portfolioY: number }): number | null;
+
+export function withdrawnUpTo(m: unknown, t: string): number;
+
+export function adjustedPortfolio(m: unknown, s: { t: string; portfolioY: number }): number;
 
 export function isPlausibleAgainstHodl(portfolioY: number, hodl: number | null, maxFrac?: number): boolean;
 

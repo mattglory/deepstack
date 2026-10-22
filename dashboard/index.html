@@ -137,7 +137,7 @@
     </div>
 
     <script type="module">
-      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr } from "./pnl-math.js";
+      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo } from "./pnl-math.js";
       const CFG = {
         wallet: "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
         api: "https://api.mainnet.hiro.so",
@@ -383,7 +383,7 @@
         const series = ss
           .map((s) => {
             const hodl = hodlNow(m, s);
-            return { t: s.t, hodl, port: s.portfolioY, v: ilAdjustedReturn(m, s) ?? 0 };
+            return { t: s.t, hodl, port: adjustedPortfolio(m, s), v: ilAdjustedReturn(m, s) ?? 0 };
           })
           // Drop samples hodlNow can't value yet (no stxUsd recorded that tick — only
           // samples from 2026-09-11 onward have it), plus the existing glitch filter: a
@@ -420,7 +420,7 @@
         $("perfT0").textContent = tstr(new Date(series[0].t).getTime() / 1000);
         $("perfT1").textContent = tstr(new Date(series[series.length - 1].t).getTime() / 1000);
         const val = (v) => (v >= 0 ? "+" : "") + fmt(v, 2) + "%";
-        note.innerHTML = `Latest: <b style="color:${col}">${val(lastV)}</b> · 0% = matching a buy-and-hold of the starting inventory; above the line, fees beat impermanent loss.`;
+        note.innerHTML = `Latest: <b style="color:${col}">${val(lastV)}</b> · 0% = matching a buy-and-hold of the starting inventory; above the line, fees beat impermanent loss.${(m.capitalFlows ?? []).length ? ` Owner withdrawals (${m.capitalFlows.length}) are added back, so they don't count as losses.` : ""}`;
         const tip = $("perfTip"), cross = svg.querySelector("#perfCross"), dot = svg.querySelector("#perfDot");
         svg.onmousemove = (e) => {
           const r = svg.getBoundingClientRect();
@@ -533,7 +533,7 @@
         const ilTile =
           ilAdj === null
             ? small("IL-adjusted return", `n/a<div class="sub2">measuring — see Economics for LP/DLMM P&L net of IL</div>`)
-            : small("IL-adjusted return", `<span style="color:${ilAdj >= 0 ? "var(--ok)" : "var(--bad)"}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs full HODL baseline (${fmt(last.portfolioY, 1)} vs ${fmt(hodlNowVal, 1)} STX)</div>`);
+            : small("IL-adjusted return", `<span style="color:${ilAdj >= 0 ? "var(--ok)" : "var(--bad)"}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs full HODL baseline (${fmt(adjustedPortfolio(m, last), 1)} vs ${fmt(hodlNowVal, 1)} STX)${withdrawnUpTo(m, last.t) > 0 ? ` · incl. ${fmt(withdrawnUpTo(m, last.t), 1)} STX withdrawn by the owner` : ""}</div>`);
 
         tiles.innerHTML =
           small("Uptime", `${uptime}<div class="sub2">${upSub}</div>`) +

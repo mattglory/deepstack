@@ -66,6 +66,12 @@ export interface MetricsSample {
   poolY?: number;
 }
 
+// An owner deposit into or withdrawal from the agent wallet: capital that changed hands with
+// the outside world, not a trading result. `stx` is signed, in STX: negative = withdrawn.
+// Added 2026-10-22 after two owner withdrawals (65 STX on 10-14, 700 STX on 10-22) showed up as
+// losses on the dashboard's HODL comparison and as drawdown in the agent's own risk checks.
+export interface CapitalFlow { t: string; txid: string; stx: number; note?: string }
+
 export interface MetricsFile {
   pair: string;
   wallet: string;
@@ -116,6 +122,7 @@ export interface MetricsFile {
     dlmmBasis?: { xQty: number; yQty: number };
   };
   samples: MetricsSample[];
+  capitalFlows?: CapitalFlow[];
   updated: string;
   deployedCommit?: string; // short git hash running when `updated` was written
 }
@@ -155,11 +162,45 @@ export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?
  * history, as a fraction in [0,1). 0 when at/above the peak or with no history. This is
  * the risk-off signal for defensive allocation — "how far below your best are you now".
  */
-export function currentDrawdown(portfolioYNow: number): number {
-  const hist = load()?.samples ?? [];
+//
+// Withdrawals are added back before comparing (see withdrawnStx), so taking money out is never
+// read as a drawdown: a 700 STX withdrawal is not a trading loss, and must not push the agent
+// into its defensive regime.
+export function currentDrawdown(portfolioYNow: number, nowT = new Date().toISOString()): number {
+  const m = load();
+  const hist = m?.samples ?? [];
   if (hist.length === 0 || !(portfolioYNow > 0)) return 0;
-  const peak = Math.max(portfolioYNow, ...hist.map((s) => s.portfolioY));
-  return peak > 0 ? Math.max(0, (peak - portfolioYNow) / peak) : 0;
+  const flows = m?.capitalFlows ?? [];
+  const now = portfolioYNow + withdrawnStx(flows, null, nowT);
+  const peak = Math.max(now, ...hist.map((s) => s.portfolioY + withdrawnStx(flows, null, s.t)));
+  return peak > 0 ? Math.max(0, (peak - now) / peak) : 0;
+}
+
+/** Net STX withdrawn (withdrawals minus deposits) in the window (afterT, upToT]. null = open end. */
+export function withdrawnStx(flows: CapitalFlow[], afterT: string | null, upToT: string | null): number {
+  const a = afterT === null ? -Infinity : Date.parse(afterT);
+  const b = upToT === null ? Infinity : Date.parse(upToT);
+  return flows.reduce((sum, f) => {
+    const t = Date.parse(f.t);
+    return t > a && t <= b ? sum - f.stx : sum;
+  }, 0);
+}
+
+export function loadCapitalFlows(): CapitalFlow[] {
+  return load()?.capitalFlows ?? [];
+}
+
+/** Records a flow once (deduplicated by txid), keeping the list in time order. */
+export function addCapitalFlow(f: CapitalFlow): "added" | "exists" {
+  const m = load();
+  if (!m) throw new Error(`no metrics file at ${METRICS_PATH}`);
+  const flows = m.capitalFlows ?? [];
+  if (flows.some((x) => x.txid === f.txid)) return "exists";
+  flows.push(f);
+  flows.sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
+  m.capitalFlows = flows;
+  writeFileSync(METRICS_PATH, JSON.stringify(m));
+  return "added";
 }
 
 export function recordSample(

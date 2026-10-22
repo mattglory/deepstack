@@ -182,3 +182,31 @@ test("dlmmBasis: a same-cycle recenter (no intervening zero SAMPLE) does not res
   assert.equal(b.t, "2026-09-01T00:00:00Z"); // untouched
   assert.equal(b.yQty, 75);
 });
+
+// --- capital flows (owner deposits/withdrawals), 2026-10-22 ---
+const { withdrawnStx, currentDrawdown, addCapitalFlow, loadCapitalFlows } = await import("./metrics.js");
+
+test("withdrawnStx: sums withdrawals in (after, upTo], deposits net against them", () => {
+  const flows = [
+    { t: "2026-10-14T12:24:12Z", txid: "a", stx: -65 },
+    { t: "2026-10-20T00:00:00Z", txid: "b", stx: 10 },
+    { t: "2026-10-22T16:46:03Z", txid: "c", stx: -700 },
+  ];
+  assert.equal(withdrawnStx(flows, null, null), 755);
+  assert.equal(withdrawnStx(flows, null, "2026-10-14T12:24:12Z"), 65); // inclusive at the end
+  assert.equal(withdrawnStx(flows, "2026-10-14T12:24:12Z", null), 690); // exclusive at the start
+  assert.equal(withdrawnStx([], null, null), 0);
+});
+
+test("currentDrawdown: an owner withdrawal is not a drawdown", () => {
+  const s = (t: string, portfolioY: number) => ({ t, mid: 400_000, ext: null, xBase: "0", yBase: "0", lpValueY: 0, portfolioY, safe: true });
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-22T16:00:00Z", 3800));
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-22T17:00:00Z", 3100)); // after a 700 withdrawal
+  assert.ok(currentDrawdown(3100, "2026-10-22T17:00:00Z") > 0.18, "without the flow it looks like an 18% drop");
+  assert.equal(addCapitalFlow({ t: "2026-10-22T16:46:03Z", txid: "c", stx: -700 }), "added");
+  assert.equal(addCapitalFlow({ t: "2026-10-22T16:46:03Z", txid: "c", stx: -700 }), "exists");
+  assert.equal(loadCapitalFlows().length, 1);
+  assert.equal(currentDrawdown(3100, "2026-10-22T17:00:00Z"), 0);
+  // A real trading loss after the withdrawal still counts.
+  assert.ok(Math.abs(currentDrawdown(3062, "2026-10-22T17:30:00Z") - 38 / 3800) < 1e-12);
+});

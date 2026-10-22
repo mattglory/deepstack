@@ -35,7 +35,22 @@ export function hodlNow(m, s) {
 // (the headline card) renders null as "n/a", never as 0 or a fabricated number.
 export function ilAdjustedReturn(m, s) {
   const hodl = hodlNow(m, s);
-  return hodl !== null && hodl > 0 ? ((s.portfolioY - hodl) / hodl) * 100 : null;
+  return hodl !== null && hodl > 0 ? ((adjustedPortfolio(m, s) - hodl) / hodl) * 100 : null;
+}
+
+// Owner withdrawals (and deposits) recorded in m.capitalFlows, as net STX withdrawn up to and
+// including time t. Same rule as src/m1/metrics.ts withdrawnStx(): flow.stx is signed, negative
+// = withdrawn. Taking money out of the wallet is not a trading loss, so every comparison against
+// the HODL baseline adds it back (added 2026-10-22, after two owner withdrawals showed as losses).
+export function withdrawnUpTo(m, t) {
+  const b = Date.parse(t);
+  return (m.capitalFlows ?? []).reduce((sum, f) => (Date.parse(f.t) <= b ? sum - f.stx : sum), 0);
+}
+
+// The sample's portfolio with withdrawals made by then added back: the like-for-like figure to
+// compare with holding the original basket.
+export function adjustedPortfolio(m, s) {
+  return s.portfolioY + withdrawnUpTo(m, s.t);
 }
 
 // Glitch filter for the performance chart's series: a failed LP/DLMM-value read shows up as

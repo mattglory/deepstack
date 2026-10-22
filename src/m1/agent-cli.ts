@@ -34,7 +34,7 @@ import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
 import { checkNonceSafety } from "./nonce-safety.js";
-import { recordSample, loadHistory, adjustLpBasis, currentDrawdown } from "./metrics.js";
+import { recordSample, loadHistory, adjustLpBasis, currentDrawdown, loadCapitalFlows, withdrawnStx } from "./metrics.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
 import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
@@ -646,6 +646,7 @@ async function main() {
   const FLASH_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.FLASH_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
   let sessionStart = 0;
+  let sessionStartT = ""; // when sessionStart was read: withdrawals after it are added back
   // Forward reference: the supervisor is created after step() below (it wraps step itself),
   // but step's own circuit-breaker check needs its live streak. Assigned once, right after
   // creation, before runStep() ever calls step() — closures capture the variable, not its
@@ -667,7 +668,10 @@ async function main() {
     // Same role as dlmmFailedThisTick, for the autonomous flash-rebalance path below.
     let flashFailedThisTick = false;
     const snap = await readMarket(w);
-    if (sessionStart === 0) sessionStart = snap.portfolioY;
+    if (sessionStart === 0) {
+      sessionStart = snap.portfolioY;
+      sessionStartT = new Date().toISOString();
+    }
     if (i % f.tuneEvery === 0) {
       const tuned = await tuneParams(snap.market, defaultParams());
       printTune(tuned);
@@ -724,7 +728,8 @@ async function main() {
         poolMid: snap.midXinY,
         externalMid: snap.externalMid,
         poolActive: snap.poolActive,
-        portfolioStx: snap.portfolioY,
+        // An owner withdrawal since the session started is not a loss (capital-flow-cli.ts).
+        portfolioStx: snap.portfolioY + withdrawnStx(loadCapitalFlows(), sessionStartT, null),
         sessionStartStx: sessionStart,
       },
       defaultSafetyParams(),
