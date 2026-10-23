@@ -139,3 +139,20 @@ test("organicApr: a non-positive yLegUsdRate is a guard failure, not a divide-by
   const r = organicApr({ currentValueY: 110, basisXQty: 0, basisYQty: 100, basisT: tenDaysAgo, mid: 1, yLegUsdRate: 0 });
   assert.deepEqual(r, { netY: null, apr: null, days: 0 });
 });
+
+// --- owner withdrawals (m.capitalFlows), 2026-10-22 ---
+import { withdrawnUpTo, adjustedPortfolio } from "./pnl-math.js";
+
+test("withdrawals are added back before comparing with HODL", () => {
+  const m = {
+    pilotBaseline: { xBase: "0", yBase: "1000000000" }, // 1,000 STX
+    capitalFlows: [{ t: "2026-10-14T12:24:12Z", txid: "a", stx: -65 }, { t: "2026-10-22T16:46:03Z", txid: "c", stx: -700 }],
+  };
+  const before = { t: "2026-10-14T00:00:00Z", mid: 200000, portfolioY: 1000 };
+  const after = { t: "2026-10-22T17:00:00Z", mid: 200000, portfolioY: 235 };
+  assert.equal(withdrawnUpTo(m, before.t), 0);
+  assert.equal(withdrawnUpTo(m, after.t), 765);
+  assert.equal(adjustedPortfolio(m, after), 1000);
+  assert.equal(ilAdjustedReturn(m, after), 0); // flat, not -76.5%
+  assert.equal(ilAdjustedReturn({ pilotBaseline: m.pilotBaseline }, after), -76.5); // what it showed before
+});
