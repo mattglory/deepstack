@@ -256,3 +256,58 @@ export function binSeriesVolDaily(samples: BinSample[], minPoints = 96): number 
   }
   return sumDt > 0 ? Math.sqrt(sumR2 / sumDt) : null;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Keep the whole position through a recenter (2026-10-26).
+//
+// When price runs through a position, the bins it crossed convert to one token: a fall turns the
+// USDCx bins into sBTC. The re-add used to size itself 50/50 from wallet balances, so it was
+// limited by the scarce side and left the surplus loose. On 2026-10-26 a recenter shrank the
+// position from ~$597 to ~$352, and the XYK rebalancer then sold the loose sBTC through the thin
+// sBTC/STX pool. Re-adding the surplus one-sided instead is not a fix either: a one-sided range
+// sits entirely on one side of the price and drifts out again after a single bin, so the agent
+// would recenter every cycle in a trend.
+//
+// So: swap half of the imbalance back across, in the SAME pool, through the router's
+// minimum-output swap, then re-add everything. This plans that swap. Amounts are base units;
+// priceYPerX is human Y per human X (USDCx per sBTC). No swap when the split is already within
+// `toleranceFrac` of 50/50 of total value.
+export interface RebalanceSwapPlan {
+  direction: "x-for-y" | "y-for-x" | "none";
+  amountIn: bigint; // base units of the input token
+  minOut: bigint; // base units of the output token
+}
+
+export function planRebalanceSwap(
+  xBase: bigint,
+  yBase: bigint,
+  priceYPerX: number,
+  xDecimals: number,
+  yDecimals: number,
+  opts: { toleranceFrac?: number; slippageBps?: number } = {},
+): RebalanceSwapPlan {
+  const none: RebalanceSwapPlan = { direction: "none", amountIn: 0n, minOut: 0n };
+  if (!(priceYPerX > 0) || xBase < 0n || yBase < 0n) return none;
+  const tol = opts.toleranceFrac ?? 0.1;
+  const slip = (opts.slippageBps ?? 100) / 10_000;
+  const xu = 10 ** xDecimals, yu = 10 ** yDecimals;
+  const xVal = (Number(xBase) / xu) * priceYPerX; // in Y
+  const yVal = Number(yBase) / yu;
+  const total = xVal + yVal;
+  if (!(total > 0)) return none;
+  const excess = xVal - total / 2; // > 0: too much X
+  if (Math.abs(excess) <= tol * total) return none;
+  if (excess > 0) {
+    const amountIn = BigInt(Math.floor((excess / priceYPerX) * xu));
+    const minOut = BigInt(Math.floor(excess * (1 - slip) * yu));
+    return amountIn > 0n && amountIn <= xBase ? { direction: "x-for-y", amountIn, minOut } : none;
+  }
+  const amountIn = BigInt(Math.floor(-excess * yu));
+  const minOut = BigInt(Math.floor((-excess / priceYPerX) * (1 - slip) * xu));
+  return amountIn > 0n && amountIn <= yBase ? { direction: "y-for-x", amountIn, minOut } : none;
+}
+
+/** |pool - reference| / reference in bps; used to refuse a rebalance swap at a manipulated price. */
+export function divergenceBps(poolPrice: number, referencePrice: number): number {
+  return referencePrice > 0 ? Math.round((Math.abs(poolPrice - referencePrice) / referencePrice) * 10_000) : Infinity;
+}

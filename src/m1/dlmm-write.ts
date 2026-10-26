@@ -204,3 +204,35 @@ export function buildWithdrawLiquidity(pool: PoolRefs, withdrawals: BinWithdraw[
     note: `BUILD-ONLY withdraw (${withdrawals.length} bins) on ${pool.poolName}`,
   };
 }
+
+const SWAP_ROUTER = "dlmm-swap-router-v-1-2";
+
+/**
+ * Build (do NOT broadcast) a single-pool swap with a minimum output, through
+ * SM1FKXG….dlmm-swap-router-v-1-2 `swap-x-for-y-simple-multi` / `swap-y-for-x-simple-multi`
+ * (verified against the live source 2026-10-26: it walks up to 319 bins from the active bin and
+ * asserts the total output >= min, else ERR_MINIMUM_RECEIVED). The deadline is unix seconds,
+ * compared with stacks-block-time.
+ */
+export function buildSwapSimple(
+  pool: PoolRefs,
+  direction: "x-for-y" | "y-for-x",
+  amountIn: bigint,
+  minOut: bigint,
+  opts: WriteOpts = {},
+): CallDescriptor {
+  return {
+    contractAddress: DEPLOYER,
+    contractName: SWAP_ROUTER,
+    functionName: direction === "x-for-y" ? "swap-x-for-y-simple-multi" : "swap-y-for-x-simple-multi",
+    functionArgs: [
+      principalCV(`${DEPLOYER}.${pool.poolName}`),
+      principalCV(pool.xToken),
+      principalCV(pool.yToken),
+      Cl.uint(amountIn),
+      Cl.uint(minOut),
+      deadlineCV(opts),
+    ],
+    note: `BUILD-ONLY ${direction} swap of ${amountIn} (min out ${minOut}) on ${pool.poolName}`,
+  };
+}

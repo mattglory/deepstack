@@ -22,8 +22,8 @@ import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, rea
 import { exceedsPoolShare } from "./agent.js";
 import { setDlmmBasis, loadHistory, loadVenueBases } from "./metrics.js";
 import { readUserPosition, type DlmmPosition } from "./dlmm-position.js";
-import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter, binSeriesVolDaily } from "./dlmm-recenter.js";
+import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, buildSwapSimple, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter, binSeriesVolDaily, planRebalanceSwap, divergenceBps } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
@@ -214,7 +214,9 @@ async function tokenBalance(w: Wallet, tok: TokenMeta): Promise<bigint> {
 // Build + broadcast a two-sided add centered on `activeBin`. Handles X = native STX (stx-usdcx)
 // or a SIP-010 like sBTC (sbtc-usdcx): price + decimals come from the resolved token, input caps
 // branch native/FT automatically. Returns txid, or throws.
-async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void): Promise<string> {
+// `amounts`, when given, are the exact X/Y to add (the recenter path re-adds what it withdrew,
+// see the recenter's step 3/3); otherwise the add is sized 50/50 to cfg.targetUsd from balances.
+async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void, amounts?: { xBase: bigint; yBase: bigint }): Promise<string> {
   // Configurable, not a bare 250 — the live agent never overrides cfg.maxTargetUsd, so this
   // was also capping every future autonomous recenter of the position at $250, not just a
   // one-off manual open (found 2026-09-30 sizing a deliberate $600 position — the position
@@ -228,7 +230,12 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   const xBalRaw = await tokenBalance(w, xTok);
   const availX = xTok.native ? (xBalRaw > GAS_RESERVE_USTX ? xBalRaw - GAS_RESERVE_USTX : 0n) : xBalRaw;
   const availY = await tokenBalance(w, yTok);
-  const size = sizeTwoSidedDeposit(cfg.targetUsd, xPrice, availX, availY, xTok.decimals, yTok.decimals);
+  const size = amounts
+    ? capToTarget(
+        { xBase: amounts.xBase > availX ? availX : amounts.xBase, yBase: amounts.yBase > availY ? availY : amounts.yBase },
+        xPrice, xTok.decimals, yTok.decimals, cap,
+      )
+    : sizeTwoSidedDeposit(cfg.targetUsd, xPrice, availX, availY, xTok.decimals, yTok.decimals);
   if (size.xBase <= 0n || size.yBase <= 0n)
     throw new Error(`cannot size two-sided: ${xTok.asset || "STX"} ${Number(availX) / 10 ** xTok.decimals}, ${yTok.asset} ${Number(availY) / 10 ** yTok.decimals}`);
   const deposits = distributeAcrossRange(st.activeBinId, cfg.halfWidth, size.xBase, size.yBase);
@@ -264,6 +271,25 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   if (!r.txid) throw new Error("add broadcast returned no txid");
   return r.txid;
 }
+
+// Scale an explicit re-add down proportionally if it would exceed the configured ceiling (USD).
+function capToTarget(a: { xBase: bigint; yBase: bigint }, xPriceUsd: number, xDec: number, yDec: number, capUsd: number) {
+  const valueUsd = (Number(a.xBase) / 10 ** xDec) * xPriceUsd + Number(a.yBase) / 10 ** yDec;
+  if (!(valueUsd > capUsd)) return { ...a, valueUsd };
+  const f = capUsd / valueUsd;
+  return { xBase: BigInt(Math.floor(Number(a.xBase) * f)), yBase: BigInt(Math.floor(Number(a.yBase) * f)), valueUsd: capUsd };
+}
+
+const REBALANCE_SLIPPAGE_BPS = Number(process.env.DLMM_REBALANCE_SLIPPAGE_BPS ?? 100);
+const REBALANCE_MAX_DIVERGENCE_BPS = Number(process.env.DLMM_REBALANCE_MAX_DIVERGENCE_BPS ?? 300);
+
+// Amount actually received by a withdraw (balance after minus before), never negative. Measuring
+// the wallet delta, not the position read, means the re-add only ever uses this position's own
+// tokens: the XYK side's free sBTC sitting in the same wallet is never pulled into the DLMM.
+const delta = (after: bigint, before: bigint) => (after > before ? after - before : 0n);
+// Known limit: balances come from the Hiro indexer. If it lags a block behind a confirmed tx the
+// delta reads short; the effect is a smaller swap or the fallback sizing (the old behaviour), and
+// the add is always capped by the real wallet balance and the configured ceiling.
 
 /**
  * One recenter cycle. live===false: decide + return (observe). live===true: execute the decision.
@@ -386,7 +412,8 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // fails outright, not if it succeeds at a bad price).
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
-  log(`  recenter 1/2 — withdraw ${pos.bins.length} bins`);
+  const [x0, y0] = await Promise.all([tokenBalance(w, xTok), tokenBalance(w, yTok)]);
+  log(`  recenter 1/3 — withdraw ${pos.bins.length} bins`);
   const wnonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce: wnonce });
   if (!wr.txid) throw new Error("withdraw returned no txid");
@@ -398,9 +425,48 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     const outcome = recenterSequenceOutcome(ws, null);
     return { ...base, executed: outcome.executed, withdrawTxid: wr.txid, reason: outcome.reason };
   }
+  const [x1, y1] = await Promise.all([tokenBalance(w, xTok), tokenBalance(w, yTok)]);
+  let gotX = delta(x1, x0), gotY = delta(y1, y0);
+  log(`  withdrew ${Number(gotX) / 10 ** xTok.decimals} ${xTok.asset || "STX"} + ${Number(gotY) / 10 ** yTok.decimals} ${yTok.asset}`);
+
+  // 2/3: rebalance the withdrawn tokens toward 50/50 inside the same pool, only at a sane price.
   const st2 = (await readDlmmState(poolDef)) ?? st;
-  log(`  recenter 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const addTxid = await executeAdd(w, poolDef, st2, xTok, yTok, effCfg, log);
+  try {
+    const active = (await readBinLiquidityStates(poolDef, st2.coreAddress, st2.initialPrice, st2.binStep, [st2.activeBinId])).get(st2.activeBinId);
+    if (!active) throw new Error("could not read the active-bin price");
+    const poolPrice = (Number(active.binPrice) / 1e8) * 10 ** (xTok.decimals - yTok.decimals); // Y per X
+    const refPrice = (await priceOfToken(xTok)) / (await priceOfToken(yTok));
+    const div = divergenceBps(poolPrice, refPrice);
+    const plan = planRebalanceSwap(gotX, gotY, poolPrice, xTok.decimals, yTok.decimals, { slippageBps: REBALANCE_SLIPPAGE_BPS });
+    if (plan.direction === "none") {
+      log(`  recenter 2/3 — no rebalance swap needed`);
+    } else if (div > REBALANCE_MAX_DIVERGENCE_BPS) {
+      log(`  recenter 2/3 — rebalance swap SKIPPED: pool price diverges ${div}bps from the reference (cap ${REBALANCE_MAX_DIVERGENCE_BPS}bps)`);
+    } else {
+      const inTok = plan.direction === "x-for-y" ? xTok : yTok;
+      const sdesc = buildSwapSimple({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, plan.direction, plan.amountIn, plan.minOut, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+      const spcs = buildInputCaps(w.address, [{ token: inTok.principal, asset: inTok.asset, max: plan.amountIn }]);
+      log(`  recenter 2/3 — rebalance swap ${plan.direction} ${Number(plan.amountIn) / 10 ** inTok.decimals} ${inTok.asset || "STX"} (min out ${plan.minOut}, divergence ${div}bps)`);
+      const snonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+      const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, feeMicroStx: FEE_USTX, nonce: snonce });
+      const ss = sr.txid ? await waitForTx(sr.txid, log) : "no-txid";
+      if (ss !== "success") log(`  rebalance swap ${ss}: re-adding what is there (the old behaviour)`);
+    }
+  } catch (err) {
+    log(`  rebalance swap skipped: ${(err as Error).message}`);
+  }
+  const [x2, y2] = await Promise.all([tokenBalance(w, xTok), tokenBalance(w, yTok)]);
+  gotX = delta(x2, x0);
+  gotY = delta(y2, y0);
+
+  // 3/3: re-add what came out (after the swap), keeping 2% back for the pool's liquidity fee.
+  const st3 = (await readDlmmState(poolDef)) ?? st2;
+  log(`  recenter 3/3 — re-add centered on active ${st3.activeBinId}`);
+  // If one side is still empty (the swap was skipped or failed), fall back to the old 50/50 sizing
+  // from wallet balances rather than attempting a one-sided add that cannot be two-sided.
+  const exact = gotX > 0n && gotY > 0n ? { xBase: gotX - gotX / 50n, yBase: gotY - gotY / 50n } : undefined;
+  if (!exact) log(`  one side is empty after the withdraw: sizing the re-add from wallet balances instead`);
+  const addTxid = await executeAdd(w, poolDef, st3, xTok, yTok, effCfg, log, exact);
   const as = await waitForTx(addTxid, log);
   const outcome = recenterSequenceOutcome(ws, as);
   if (outcome.executed) {

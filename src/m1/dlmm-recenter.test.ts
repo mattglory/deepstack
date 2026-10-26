@@ -229,3 +229,36 @@ test("binSeriesVolDaily: ignores failed reads (-1) and never mixes bin steps", (
   const mixed = s.map((x, i) => (i === 60 ? { ...x, bin: 5000, binStep: 25 } : x));
   assert.ok(binSeriesVolDaily(mixed)! < 0.01, "a sample from another pool must not count as a move");
 });
+
+// --- planRebalanceSwap / divergenceBps (2026-10-26) ---
+import { planRebalanceSwap, divergenceBps } from "./dlmm-recenter.js";
+
+test("planRebalanceSwap: the 2026-10-26 case, a position that turned mostly sBTC, swaps half the excess to USDCx", () => {
+  // 0.0055 sBTC at $80,000 = $440, plus 150 USDCx: total $590, half $295; excess $145 of sBTC.
+  const p = planRebalanceSwap(550_000n, 150_000_000n, 80_000, 8, 6, { slippageBps: 100 });
+  assert.equal(p.direction, "x-for-y");
+  assert.equal(p.amountIn, 181_250n); // $145 / $80,000 = 0.0018125 sBTC
+  assert.equal(p.minOut, 143_550_000n); // $145 less 1%
+});
+
+test("planRebalanceSwap: too much USDCx swaps the other way, with min sBTC out", () => {
+  const p = planRebalanceSwap(0n, 600_000_000n, 80_000, 8, 6, { slippageBps: 100 });
+  assert.equal(p.direction, "y-for-x");
+  assert.equal(p.amountIn, 300_000_000n);
+  assert.equal(p.minOut, 371_249n); // $300 / $80,000 = 0.00375 sBTC, less 1%, floored (the safe direction)
+});
+
+test("planRebalanceSwap: within tolerance of 50/50, no swap; never spends more than it has", () => {
+  assert.equal(planRebalanceSwap(375_000n, 300_000_000n, 80_000, 8, 6).direction, "none"); // $300 vs $300
+  assert.equal(planRebalanceSwap(400_000n, 280_000_000n, 80_000, 8, 6).direction, "none"); // $320 vs $280: 3% off
+  assert.equal(planRebalanceSwap(0n, 0n, 80_000, 8, 6).direction, "none");
+  assert.equal(planRebalanceSwap(1n, 0n, 0, 8, 6).direction, "none"); // no price, no trade
+  const p = planRebalanceSwap(1_000_000n, 0n, 80_000, 8, 6);
+  assert.ok(p.amountIn <= 1_000_000n && p.amountIn === 500_000n);
+});
+
+test("divergenceBps: refuses to trust a pool price far from the reference", () => {
+  assert.equal(divergenceBps(80_000, 80_000), 0);
+  assert.equal(divergenceBps(82_400, 80_000), 300);
+  assert.equal(divergenceBps(80_000, 0), Infinity);
+});
