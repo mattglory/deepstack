@@ -215,7 +215,7 @@ async function tokenBalance(w: Wallet, tok: TokenMeta): Promise<bigint> {
 // or a SIP-010 like sBTC (sbtc-usdcx): price + decimals come from the resolved token, input caps
 // branch native/FT automatically. Returns txid, or throws.
 // `amounts`, when given, are the exact X/Y to add (the recenter path re-adds what it withdrew,
-// see reAddAmounts below); otherwise the add is sized 50/50 to cfg.targetUsd from wallet balances.
+// see the recenter's step 3/3); otherwise the add is sized 50/50 to cfg.targetUsd from balances.
 async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig, log: (s: string) => void, amounts?: { xBase: bigint; yBase: bigint }): Promise<string> {
   // Configurable, not a bare 250 — the live agent never overrides cfg.maxTargetUsd, so this
   // was also capping every future autonomous recenter of the position at $250, not just a
@@ -287,6 +287,9 @@ const REBALANCE_MAX_DIVERGENCE_BPS = Number(process.env.DLMM_REBALANCE_MAX_DIVER
 // the wallet delta, not the position read, means the re-add only ever uses this position's own
 // tokens: the XYK side's free sBTC sitting in the same wallet is never pulled into the DLMM.
 const delta = (after: bigint, before: bigint) => (after > before ? after - before : 0n);
+// Known limit: balances come from the Hiro indexer. If it lags a block behind a confirmed tx the
+// delta reads short; the effect is a smaller swap or the fallback sizing (the old behaviour), and
+// the add is always capped by the real wallet balance and the configured ceiling.
 
 /**
  * One recenter cycle. live===false: decide + return (observe). live===true: execute the decision.
