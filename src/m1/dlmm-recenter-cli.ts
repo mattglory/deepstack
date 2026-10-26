@@ -20,6 +20,9 @@
 //                    --yes-mainnet REFUSES when there's no vol history (the old silent ±3
 //                    fallback stranded a position on 2026-10-07); run on the server instead.
 //   withdraw    withdraw all bins and stop — no re-add (winding a position down)
+//   swap <x-for-y|y-for-x> <amount>   one min-output swap in this pool (dlmm-swap-router-v-1-2), the
+//               same call the agent's recenter now uses to rebalance before re-adding. Refuses when
+//               the pool price is more than 3% from the reference price. Amount in human units.
 //   reset-basis no broadcast: reset the dashboard's dlmmBasis to the currently confirmed
 //               position and push it to the gist immediately (recovery for the stale-basis
 //               bug the `open`/`recenter` fixes above now prevent going forward)
@@ -44,10 +47,11 @@ import {
   buildAddLiquidity,
   buildWithdrawLiquidity,
   buildInputCaps,
+  buildSwapSimple,
   type PoolRefs,
   type BinWithdraw,
 } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, divergenceBps } from "./dlmm-recenter.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.) AND
 // for half-width sizing (dlmmSigmaDaily/resolveHalfWidth) — see their doc comments there for
@@ -184,7 +188,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
 async function main() {
   console.log("=== DeepStack — DLMM recenter (two-sided concentrated position) ===\n");
   const { action, amount, rest, yes, explicitHalfWidth } = parseArgs();
-  if (!["status", "open", "recenter", "withdraw", "reset-basis", "set-basis"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | reset-basis | set-basis <xQty> <yQty> [iso-time]> [--yes-mainnet]");
+  if (!["status", "open", "recenter", "withdraw", "reset-basis", "set-basis", "swap"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | swap <x-for-y|y-for-x> <amount> | reset-basis | set-basis <xQty> <yQty> [iso-time]> [--yes-mainnet]");
 
   const w = await getWallet();
   if (w.network !== "mainnet") throw new Error(`refusing: STACKS_NETWORK is ${w.network}; DLMM is mainnet-only.`);
@@ -285,6 +289,35 @@ async function main() {
       } else process.exitCode = 1;
     }
     else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first: touch /opt/deepstack/KILL).");
+    return;
+  }
+
+  if (action === "swap") {
+    const dir = rest[0];
+    const amt = Number(rest[1]);
+    if ((dir !== "x-for-y" && dir !== "y-for-x") || !(amt > 0)) throw new Error("usage: swap <x-for-y|y-for-x> <amount in human units>");
+    const inTok = dir === "x-for-y" ? xTok : yTok;
+    const outTok = dir === "x-for-y" ? yTok : xTok;
+    const amountIn = BigInt(Math.floor(amt * 10 ** inTok.decimals));
+    const active = (await readBinLiquidityStates(poolDef, st.coreAddress, st.initialPrice, st.binStep, [st.activeBinId])).get(st.activeBinId);
+    if (!active) throw new Error("could not read the active-bin price");
+    const poolPrice = (Number(active.binPrice) / 1e8) * 10 ** (xTok.decimals - yTok.decimals); // Y per X
+    const refPrice = (await priceOfToken(xTok)) / (await priceOfToken(yTok));
+    const div = divergenceBps(poolPrice, refPrice);
+    const expectedOut = dir === "x-for-y" ? amt * poolPrice : amt / poolPrice;
+    const minOut = BigInt(Math.floor(expectedOut * 0.99 * 10 ** outTok.decimals));
+    console.log(`swap ${amt} ${inTok.asset || "STX"} -> min ${Number(minOut) / 10 ** outTok.decimals} ${outTok.asset || "STX"} (pool price ${poolPrice.toFixed(2)}, reference ${refPrice.toFixed(2)}, divergence ${div}bps)`);
+    if (div > 300) throw new Error(`refusing: pool price diverges ${div}bps from the reference`);
+    const bal = inTok.native ? (await getStxBalance(w.address, w.network)).microStx : await ftBalance(w.address, `${inTok.principal}::${inTok.asset}`);
+    if (bal < amountIn) throw new Error(`insufficient ${inTok.asset || "STX"}: have ${Number(bal) / 10 ** inTok.decimals}`);
+    if (!yes) { console.log("  (preview — not broadcast)"); return; }
+    const desc = buildSwapSimple({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, dir, amountIn, minOut, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+    const pcs = buildInputCaps(w.address, [{ token: inTok.principal, asset: inTok.asset, max: amountIn }]);
+    const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
+    if (!r.txid) throw new Error("swap broadcast returned no txid");
+    const s = await waitFor(r.txid);
+    if (s !== "success") process.exitCode = 1;
     return;
   }
 

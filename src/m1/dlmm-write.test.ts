@@ -101,3 +101,25 @@ test("buildInputCaps: caps that send nothing are dropped (0 and negative)", () =
   ]);
   assert.equal(pcs.length, 1);
 });
+
+// --- buildSwapSimple (2026-10-26) ---
+import { buildSwapSimple } from "./dlmm-write.js";
+
+test("buildSwapSimple: min-output swap through dlmm-swap-router-v-1-2, args in the router's order", () => {
+  const pool: PoolRefs = {
+    poolName: "dlmm-pool-sbtc-usdcx-v-1-bps-10",
+    xToken: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token",
+    yToken: "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx",
+  };
+  const d = buildSwapSimple(pool, "x-for-y", 181_250n, 143_550_000n, { deadlineTime: 1_800_000_000 });
+  assert.equal(d.contractName, "dlmm-swap-router-v-1-2");
+  assert.equal(d.functionName, "swap-x-for-y-simple-multi");
+  const a = d.functionArgs.map((v) => cvToJSON(v));
+  assert.equal(a[0].value, "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10");
+  assert.equal(a[1].value, pool.xToken);
+  assert.equal(a[2].value, pool.yToken);
+  assert.equal(a[3].value, "181250");
+  assert.equal(a[4].value, "143550000");
+  assert.equal(a[5].value.value, "1800000000");
+  assert.equal(buildSwapSimple(pool, "y-for-x", 1n, 1n).functionName, "swap-y-for-x-simple-multi");
+});
