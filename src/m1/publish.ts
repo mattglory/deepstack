@@ -15,7 +15,7 @@
 //   METRICS_GIST_TOKEN  — classic PAT, `gist` scope ONLY
 
 import { readFileSync } from "node:fs";
-import { METRICS_PATH } from "./metrics.js";
+import { METRICS_PATH, loadCapitalFlows } from "./metrics.js";
 
 type Fetch = typeof fetch;
 
@@ -38,7 +38,12 @@ export async function publishMetrics(doFetch: Fetch = fetch): Promise<boolean> {
   if (!id || !token) return false; // graceful no-op until configured
 
   try {
-    const content = readFileSync(METRICS_PATH, "utf8");
+    // Merge the owner-flow list from its own file, so a flow recorded by capital-flow-cli
+    // appears on the dashboard immediately rather than at the agent's next sample.
+    const parsed = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+    const flows = loadCapitalFlows();
+    if (flows.length) parsed.capitalFlows = flows;
+    const content = JSON.stringify(parsed);
     const res = await doFetch(`https://api.github.com/gists/${id}`, {
       method: "PATCH",
       headers: {

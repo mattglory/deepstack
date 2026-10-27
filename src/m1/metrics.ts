@@ -8,11 +8,16 @@
 // On-chain transactions remain the independently verifiable source of truth; this file
 // is supporting evidence for cadence/uptime and price context.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { execSync } from "node:child_process";
 
 export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json";
+// Owner deposits/withdrawals live in their own file, written only by capital-flow-cli, so the
+// agent (the only writer of metrics.json) and a recording can never overwrite each other's
+// whole-file write (review of #20, 2026-10-23). journal/ survives deploys. The agent copies the
+// list into metrics.json on each sample so the dashboard keeps reading one file.
+export const CAPITAL_FLOWS_PATH = process.env.CAPITAL_FLOWS_PATH ?? "journal/capital-flows.json";
 
 // Which commit produced these numbers — otherwise the only way to know is to ask the
 // operator (found via external review, 2026-09: a status message cited a stale commit
@@ -167,10 +172,9 @@ export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?
 // read as a drawdown: a 700 STX withdrawal is not a trading loss, and must not push the agent
 // into its defensive regime.
 export function currentDrawdown(portfolioYNow: number, nowT = new Date().toISOString()): number {
-  const m = load();
-  const hist = m?.samples ?? [];
+  const hist = load()?.samples ?? [];
   if (hist.length === 0 || !(portfolioYNow > 0)) return 0;
-  const flows = m?.capitalFlows ?? [];
+  const flows = loadCapitalFlows();
   const now = portfolioYNow + withdrawnStx(flows, null, nowT);
   const peak = Math.max(now, ...hist.map((s) => s.portfolioY + withdrawnStx(flows, null, s.t)));
   return peak > 0 ? Math.max(0, (peak - now) / peak) : 0;
@@ -186,20 +190,35 @@ export function withdrawnStx(flows: CapitalFlow[], afterT: string | null, upToT:
   }, 0);
 }
 
+function readFlowsFile(): CapitalFlow[] {
+  try {
+    if (!existsSync(CAPITAL_FLOWS_PATH)) return [];
+    const v = JSON.parse(readFileSync(CAPITAL_FLOWS_PATH, "utf8"));
+    return Array.isArray(v) ? (v as CapitalFlow[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The flows file, plus any flows recorded inside metrics.json before the file existed. */
 export function loadCapitalFlows(): CapitalFlow[] {
-  return load()?.capitalFlows ?? [];
+  const byTx = new Map<string, CapitalFlow>();
+  for (const f of [...(load()?.capitalFlows ?? []), ...readFlowsFile()]) byTx.set(f.txid, f);
+  return [...byTx.values()].sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
 }
 
 /** Records a flow once (deduplicated by txid), keeping the list in time order. */
+// Writes only the flows file, atomically (temp file + rename), so a reader never sees half a
+// file. Never touches metrics.json.
 export function addCapitalFlow(f: CapitalFlow): "added" | "exists" {
-  const m = load();
-  if (!m) throw new Error(`no metrics file at ${METRICS_PATH}`);
-  const flows = m.capitalFlows ?? [];
+  const flows = loadCapitalFlows();
   if (flows.some((x) => x.txid === f.txid)) return "exists";
   flows.push(f);
   flows.sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
-  m.capitalFlows = flows;
-  writeFileSync(METRICS_PATH, JSON.stringify(m));
+  mkdirSync(dirname(CAPITAL_FLOWS_PATH), { recursive: true });
+  const tmp = `${CAPITAL_FLOWS_PATH}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(flows, null, 2));
+  renameSync(tmp, CAPITAL_FLOWS_PATH);
   return "added";
 }
 
@@ -247,6 +266,9 @@ export function recordSample(
     }
     m.samples.push(s);
     if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);
+    // Carry the owner-flow list (its own file) into metrics.json for the dashboard.
+    const flows = loadCapitalFlows();
+    if (flows.length) m.capitalFlows = flows;
     m.updated = s.t;
     m.deployedCommit = deployedCommit();
     mkdirSync(dirname(METRICS_PATH), { recursive: true });
