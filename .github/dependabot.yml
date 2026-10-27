@@ -14,6 +14,10 @@ updates:
     directory: "/clarinet"
     schedule:
       interval: weekly
+    # vitest 5 breaks the Clarinet suite (PR #32); move majors deliberately, with test changes.
+    ignore:
+      - dependency-name: vitest
+        update-types: ["version-update:semver-major"]
     groups:
       minor-and-patch:
         update-types: ["minor", "patch"]
