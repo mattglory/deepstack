@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.METRICS_PATH = join(tmpdir(), `deepstack-metrics-test-${process.pid}.json`);
+process.env.CAPITAL_FLOWS_PATH = join(tmpdir(), `deepstack-flows-test-${process.pid}.json`);
 const { recordSample, adjustLpBasis, markPilotStart, METRICS_PATH } = await import("./metrics.js");
 
 const sample = (lpValueY: number, mid = 400_000) => ({
@@ -27,7 +28,7 @@ const dlmmSample = (t: string, dlmmValueY: number, mid = 400_000) => ({
 const readBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).lpBasis;
 const readDlmmBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).dlmmBasis;
 
-beforeEach(() => rmSync(METRICS_PATH, { force: true }));
+beforeEach(() => { rmSync(METRICS_PATH, { force: true }); rmSync(process.env.CAPITAL_FLOWS_PATH!, { force: true }); });
 
 test("basis: auto-initialises 50/50 at current mid for a pre-tracking position", () => {
   recordSample("sbtc-stx", "SPX", 1800, sample(200));
@@ -209,4 +210,27 @@ test("currentDrawdown: an owner withdrawal is not a drawdown", () => {
   assert.equal(currentDrawdown(3100, "2026-10-22T17:00:00Z"), 0);
   // A real trading loss after the withdrawal still counts.
   assert.ok(Math.abs(currentDrawdown(3062, "2026-10-22T17:30:00Z") - 38 / 3800) < 1e-12);
+});
+
+test("capital flows live in their own file; metrics.json writes never drop them", () => {
+  const s = (t: string) => ({ t, mid: 400_000, ext: null, xBase: "0", yBase: "0", lpValueY: 0, portfolioY: 1000, safe: true });
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-27T08:00:00Z"));
+  addCapitalFlow({ t: "2026-10-27T08:47:21Z", txid: "d", stx: 3300 });
+  // The flow went to its own file, not into metrics.json…
+  assert.equal(JSON.parse(readFileSync(process.env.CAPITAL_FLOWS_PATH!, "utf8")).length, 1);
+  assert.equal(JSON.parse(readFileSync(METRICS_PATH, "utf8")).capitalFlows, undefined);
+  // …and the agent's next sample copies it across for the dashboard.
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-27T09:00:00Z"));
+  assert.equal(JSON.parse(readFileSync(METRICS_PATH, "utf8")).capitalFlows[0].txid, "d");
+});
+
+test("capital flows recorded in metrics.json before the file existed are kept", () => {
+  const s = (t: string) => ({ t, mid: 400_000, ext: null, xBase: "0", yBase: "0", lpValueY: 0, portfolioY: 1000, safe: true });
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-27T08:00:00Z"));
+  const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  m.capitalFlows = [{ t: "2026-10-14T12:24:12Z", txid: "old", stx: -65 }];
+  writeFileSync(METRICS_PATH, JSON.stringify(m));
+  assert.equal(addCapitalFlow({ t: "2026-10-27T08:47:21Z", txid: "new", stx: 3300 }), "added");
+  assert.deepEqual(loadCapitalFlows().map((f) => f.txid), ["old", "new"]);
+  assert.equal(addCapitalFlow({ t: "2026-10-14T12:24:12Z", txid: "old", stx: -65 }), "exists");
 });
