@@ -33,7 +33,7 @@ export function createSupervisor(onFailure?: (r: FailureReport) => void | Promis
       } catch (e) {
         consecutive++;
         try {
-          await onFailure?.({ error: (e as Error)?.message ?? String(e), consecutive });
+          await onFailure?.({ error: briefError((e as Error)?.message ?? String(e)), consecutive });
         } catch {
           // Reporting is best-effort. If journalling or alerting is itself broken, that
           // must not become the thing that kills the agent — the whole point is to survive.
@@ -43,4 +43,22 @@ export function createSupervisor(onFailure?: (r: FailureReport) => void | Promis
     },
     consecutiveFailures: () => consecutive,
   };
+}
+
+
+/**
+ * One readable line from an error message. API gateways answer failures with whole HTML pages
+ * (2026-10-27: a Hiro 504 put ~60 lines of Cloudflare markup into the journal and the log).
+ * Keeps the page's <title> and any HTTP status, drops the markup, collapses whitespace, caps
+ * the length. Plain messages pass through unchanged apart from the cap.
+ */
+export function briefError(msg: string, max = 300): string {
+  let m = String(msg);
+  if (/<html|<!doctype/i.test(m)) {
+    const title = /<title[^>]*>([^<]*)<\/title>/i.exec(m)?.[1]?.trim();
+    const head = m.split(/<!doctype|<html/i)[0].trim();
+    m = `${head ? `${head} ` : ""}[HTML error page${title ? `: ${title}` : ""}]`;
+  }
+  m = m.replace(/\s+/g, " ").trim();
+  return m.length > max ? `${m.slice(0, max - 1)}…` : m;
 }

@@ -88,3 +88,21 @@ test("supervisor: survives a non-Error throw", async () => {
   });
   assert.equal(seen[0].error, "just a string");
 });
+
+// --- briefError (2026-10-27) ---
+import { briefError } from "./supervise.js";
+
+test("briefError: an HTML gateway page becomes one line with its title", () => {
+  const page = 'Error calling read-only function. Response 504: Gateway Time-out. <!DOCTYPE html>\n<html><head><title>api.mainnet.hiro.so | 504: Gateway time-out</title></head>\n<body>\n  <div>lots\n of markup</div></body></html>';
+  const b = briefError(page);
+  assert.equal(b, "Error calling read-only function. Response 504: Gateway Time-out. [HTML error page: api.mainnet.hiro.so | 504: Gateway time-out]");
+  assert.ok(!b.includes("<"));
+});
+
+test("briefError: plain messages pass through, long ones are capped", () => {
+  assert.equal(briefError("fetch failed"), "fetch failed");
+  assert.equal(briefError("a\n  b"), "a b");
+  const long = briefError("x".repeat(1000), 50);
+  assert.equal(long.length, 50);
+  assert.ok(long.endsWith("…"));
+});
