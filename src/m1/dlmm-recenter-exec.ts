@@ -23,11 +23,12 @@ import { exceedsPoolShare } from "./agent.js";
 import { setDlmmBasis, loadHistory, loadVenueBases } from "./metrics.js";
 import { readUserPosition, type DlmmPosition } from "./dlmm-position.js";
 import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, buildSwapSimple, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter, binSeriesVolDaily, planRebalanceSwap, divergenceBps } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter, binSeriesVolDaily, planRebalanceSwap, divergenceBps, nextReaddStep, parseSwapResult, sumWithdrawResult } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
 import { briefError } from "./supervise.js";
+import { loadPending, savePending, clearPending, pendingStatePath, type PendingReadd } from "./dlmm-pending-state.js";
 import { realizedVolDaily } from "./lvr.js";
 
 // Realised daily vol of the DLMM pair's OWN underlying price — deliberately NOT the sBTC-STX
@@ -155,6 +156,11 @@ export async function priceOfToken(tok: TokenMeta): Promise<number> {
 }
 
 export async function waitForTx(txid: string, log: (s: string) => void): Promise<string> {
+  return (await waitForTxResult(txid, log)).status;
+}
+
+/** Like waitForTx, plus the Clarity result repr (swap in/out, withdraw amounts). */
+export async function waitForTxResult(txid: string, log: (s: string) => void): Promise<{ status: string; repr?: string }> {
   log(`  ${txid} — confirming…`);
   for (let i = 0; i < 40; i++) {
     await sleep(6000);
@@ -165,12 +171,15 @@ export async function waitForTx(txid: string, log: (s: string) => void): Promise
           return res.json() as Promise<{ tx_status?: string; tx_result?: { repr?: string } }>;
         }),
       );
-      if (j.tx_status && j.tx_status !== "pending") { log(`  status: ${j.tx_status}${j.tx_result?.repr ? `  ${j.tx_result.repr}` : ""}`); return j.tx_status; }
+      if (j.tx_status && j.tx_status !== "pending") {
+        log(`  status: ${j.tx_status}${j.tx_result?.repr ? `  ${briefError(j.tx_result.repr, 200)}` : ""}`);
+        return { status: j.tx_status, repr: j.tx_result?.repr };
+      }
     } catch {
       // no endpoint answered (or all timed out) this poll — treat as still-pending, retry
     }
   }
-  return "timeout";
+  return { status: "timeout" };
 }
 
 export interface RecenterConfig {
@@ -186,6 +195,9 @@ export interface RecenterConfig {
   // position's real edges, so a position opened at any width recenters once price leaves it.
   sigmaDaily?: number | null;
   rangeOpts?: RangeOpts;
+  // Attended use only (dlmm-recenter-cli `force-recenter`): recenter even though price is inside
+  // the position, e.g. to apply a new width, through exactly the path the agent uses on its own.
+  force?: boolean;
 }
 export interface RecenterResult {
   action: "open" | "hold" | "recenter" | "skip";
@@ -204,6 +216,9 @@ export interface RecenterResult {
   skipped?: boolean;
   withdrawTxid?: string;
   addTxid?: string;
+  // Needs a human to look (a pending re-add that couldn't finish this cycle). The caller alerts
+  // without counting it as a failed add, so DLMM isn't switched off while it retries.
+  alert?: boolean;
 }
 
 // Read a token's wallet balance (native STX or SIP-010), in the token's base units.
@@ -283,6 +298,9 @@ function capToTarget(a: { xBase: bigint; yBase: bigint }, xPriceUsd: number, xDe
 
 const REBALANCE_SLIPPAGE_BPS = Number(process.env.DLMM_REBALANCE_SLIPPAGE_BPS ?? 100);
 const REBALANCE_MAX_DIVERGENCE_BPS = Number(process.env.DLMM_REBALANCE_MAX_DIVERGENCE_BPS ?? 300);
+// Largest single rebalance swap, in Y units (USDCx). The attended conversions on 2026-10-27 went
+// through in chunks of $600-700 with ~0.5% slippage; a single $2,100 swap would likely miss min-out.
+const REBALANCE_CHUNK_VALUE_Y = Number(process.env.DLMM_REBALANCE_CHUNK_VALUE_Y ?? 600);
 
 // Amount actually received by a withdraw (balance after minus before), never negative. Measuring
 // the wallet delta, not the position read, means the re-add only ever uses this position's own
@@ -325,7 +343,27 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   }
   const halfWidth = resolveHalfWidth(cfg.sigmaDaily, st.binStep, cfg.halfWidth, cfg.rangeOpts);
   const effCfg: RecenterConfig = { ...cfg, halfWidth };
-  const dec = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
+  // A pending re-add from an earlier cycle takes priority over a fresh decision: the position is
+  // empty because the agent withdrew it, not because it should open from wallet balances.
+  const pendingNow = loadPending();
+  if (pendingNow && pendingNow.pair === cfg.pair) {
+    if (pos.bins.length > 0) {
+      log(`  [dlmm] a pending re-add was recorded but a position exists again; discarding the pending record`);
+      clearPending();
+    } else {
+      const baseP: RecenterResult = {
+        action: "recenter", reason: "resuming pending re-add", activeBin: st.activeBinId, posLo: null, posHi: null,
+        posX: 0, posY: 0, halfWidth, executed: false,
+      };
+      if (!live) return { ...baseP, reason: "pending re-add (observe: not resumed)" };
+      if (!cfg.force && (process.env.KILL_SWITCH === "1" || existsSync("KILL"))) return { ...baseP, reason: "kill switch engaged — pending re-add not resumed", skipped: true };
+      const ns = await checkNonceSafety(w.address).catch((err) => ({ safe: false, reason: `nonce check failed: ${(err as Error).message}` }));
+      if (!ns.safe) return { ...baseP, reason: ns.reason ?? "nonce check failed", skipped: true };
+      return readdPending(w, poolDef, st, xTok, yTok, effCfg, pendingNow, baseP, log);
+    }
+  }
+  const decided = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
+  const dec = cfg.force && pos.bins.length > 0 ? { ...decided, action: "recenter" as const, reason: `forced recenter (attended) to ±${halfWidth} around ${st.activeBinId}` } : decided;
   const base: RecenterResult = {
     action: dec.action, reason: dec.reason, activeBin: st.activeBinId,
     posLo: pos.lowerSignedBin, posHi: pos.upperSignedBin,
@@ -343,7 +381,8 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // The manual kill switch (safety.ts's own check) previously covered only the XYK path — the
   // Sep 21 incident's failure loop ran for ~7 hours with no way to stop it short of editing
   // .env and restarting the whole process. Same check, same file (KILL), now here too.
-  if (process.env.KILL_SWITCH === "1" || existsSync("KILL")) {
+  // An attended force-recenter is run by the operator with the agent paused, so KILL is expected.
+  if (!cfg.force && (process.env.KILL_SWITCH === "1" || existsSync("KILL"))) {
     return { ...base, reason: "kill switch engaged — DLMM broadcast skipped", skipped: true };
   }
 
@@ -415,81 +454,111 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // fails outright, not if it succeeds at a bad price).
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
-  const [x0, y0] = await Promise.all([tokenBalance(w, xTok), tokenBalance(w, yTok)]);
   log(`  recenter 1/3 — withdraw ${pos.bins.length} bins`);
   const wnonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce: wnonce });
   if (!wr.txid) throw new Error("withdraw returned no txid");
-  const ws = await waitForTx(wr.txid, log);
+  const wres = await waitForTxResult(wr.txid, log);
   // The sequencing rule itself (abort before re-add on anything but a successful withdraw)
-  // lives in recenterSequenceOutcome (dlmm-recenter.ts) — pure, unit-tested — not inlined
-  // here. This function only supplies the real tx ids the decision doesn't need.
-  if (ws !== "success") {
-    const outcome = recenterSequenceOutcome(ws, null);
+  // lives in recenterSequenceOutcome (dlmm-recenter.ts) — pure, unit-tested — not inlined here.
+  if (wres.status !== "success") {
+    const outcome = recenterSequenceOutcome(wres.status, null);
     return { ...base, executed: outcome.executed, withdrawTxid: wr.txid, reason: outcome.reason };
   }
-  const [x1, y1] = await Promise.all([tokenBalance(w, xTok), tokenBalance(w, yTok)]);
-  let gotX = delta(x1, x0), gotY = delta(y1, y0);
-  log(`  withdrew ${Number(gotX) / 10 ** xTok.decimals} ${xTok.asset || "STX"} + ${Number(gotY) / 10 ** yTok.decimals} ${yTok.asset}`);
+  // Exactly what came back, from the withdraw's own result (no indexer lag); the position read
+  // just before the withdraw is the fallback.
+  const got = sumWithdrawResult(wres.repr) ?? { x: pos.totalX, y: pos.totalY };
+  const xu = 10 ** xTok.decimals, yu = 10 ** yTok.decimals;
+  const pending: PendingReadd = {
+    pair: cfg.pair, xBase: got.x, yBase: got.y,
+    before: { x: Number(pos.totalX) / xu, y: Number(pos.totalY) / yu },
+    t: new Date().toISOString(), abortedSwaps: 0,
+  };
+  savePending(pending);
+  log(`  withdrew ${Number(got.x) / xu} ${xTok.asset || "STX"} + ${Number(got.y) / yu} ${yTok.asset}; recorded as a pending re-add`);
+  const res = await readdPending(w, poolDef, st, xTok, yTok, effCfg, pending, base, log);
+  return { ...res, withdrawTxid: wr.txid };
+}
 
-  // 2/3: rebalance the withdrawn tokens toward 50/50 inside the same pool, only at a sane price.
-  const st2 = (await readDlmmState(poolDef)) ?? st;
+const READD_MAX_CHUNKS = 6; // swaps per cycle; the rest resumes next cycle
+const READD_MAX_ABORTED_SWAPS = 3; // consecutive on-chain swap failures before waiting for a human
+
+// Rebalance a pending re-add toward 50/50 in chunks, then re-add all of it. If it can't finish
+// this cycle the tokens stay withdrawn and recorded; the result asks the caller to alert.
+async function readdPending(
+  w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, cfg: RecenterConfig,
+  pending: PendingReadd, base: RecenterResult, log: (s: string) => void,
+): Promise<RecenterResult> {
+  const xu = 10 ** xTok.decimals, yu = 10 ** yTok.decimals;
+  const waitResult = (reason: string): RecenterResult => {
+    log(`  ⚠ re-add not finished: ${reason}. Tokens stay withdrawn (pending re-add saved); retrying next cycle.`);
+    return { ...base, executed: false, skipped: true, alert: true, reason: `re-add pending: ${reason}` };
+  };
+  if (pending.abortedSwaps >= READD_MAX_ABORTED_SWAPS) {
+    return waitResult(`${pending.abortedSwaps} rebalance swaps failed in a row; not retrying until a human checks (delete ${pendingStatePath()} to abandon)`);
+  }
+  let stNow = st;
+  for (let i = 0; i <= READD_MAX_CHUNKS; i++) {
+    stNow = (await readDlmmState(poolDef)) ?? stNow;
+    let poolPrice: number;
+    let refPrice: number | null = null;
+    try {
+      const active = (await readBinLiquidityStates(poolDef, stNow.coreAddress, stNow.initialPrice, stNow.binStep, [stNow.activeBinId])).get(stNow.activeBinId);
+      if (!active) return waitResult("could not read the active-bin price");
+      poolPrice = (Number(active.binPrice) / 1e8) * 10 ** (xTok.decimals - yTok.decimals); // Y per X
+    } catch (err) {
+      return waitResult(`pool read failed: ${briefError((err as Error).message)}`);
+    }
+    try {
+      refPrice = (await priceOfToken(xTok)) / (await priceOfToken(yTok));
+    } catch {
+      refPrice = null;
+    }
+    const step = nextReaddStep(pending.xBase, pending.yBase, poolPrice, refPrice, xTok.decimals, yTok.decimals, {
+      slippageBps: REBALANCE_SLIPPAGE_BPS, maxDivergenceBps: REBALANCE_MAX_DIVERGENCE_BPS, chunkValueY: REBALANCE_CHUNK_VALUE_Y,
+    });
+    if (step.kind === "wait") return waitResult(step.reason);
+    if (step.kind === "add") break;
+    if (i === READD_MAX_CHUNKS) return waitResult(`still not balanced after ${READD_MAX_CHUNKS} swaps this cycle`);
+
+    const inTok = step.direction === "x-for-y" ? xTok : yTok;
+    const sdesc = buildSwapSimple({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, step.direction, step.amountIn, step.minOut, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+    const spcs = buildInputCaps(w.address, [{ token: inTok.principal, asset: inTok.asset, max: step.amountIn }]);
+    log(`  rebalance swap ${i + 1}: ${step.direction} ${Number(step.amountIn) / 10 ** inTok.decimals} ${inTok.asset || "STX"} (min out ${step.minOut})`);
+    const snonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
+    const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, feeMicroStx: FEE_USTX, nonce: snonce });
+    const sres = sr.txid ? await waitForTxResult(sr.txid, log) : { status: "no-txid" as string, repr: undefined };
+    const fill = sres.status === "success" ? parseSwapResult(sres.repr) : null;
+    if (!fill) {
+      pending.abortedSwaps += 1;
+      savePending(pending);
+      return waitResult(`rebalance swap ${sres.status}`);
+    }
+    if (step.direction === "x-for-y") { pending.xBase -= fill.in; pending.yBase += fill.out; }
+    else { pending.yBase -= fill.in; pending.xBase += fill.out; }
+    pending.abortedSwaps = 0;
+    savePending(pending);
+  }
+
+  // Balanced: re-add all of it, keeping 2% back for the pool's liquidity fee.
+  const stAdd = (await readDlmmState(poolDef)) ?? stNow;
+  log(`  re-add centered on active ${stAdd.activeBinId}: ${Number(pending.xBase) / xu} ${xTok.asset || "STX"} + ${Number(pending.yBase) / yu} ${yTok.asset}`);
+  const addTxid = await executeAdd(w, poolDef, stAdd, xTok, yTok, cfg, log, { xBase: pending.xBase - pending.xBase / 50n, yBase: pending.yBase - pending.yBase / 50n });
+  const as = await waitForTx(addTxid, log);
+  const outcome = recenterSequenceOutcome("success", as);
+  if (!outcome.executed) return { ...waitResult(`re-add ${as}`), addTxid };
+  clearPending();
+  // Capital moved by the resize goes into the basis, not the P&L (adjustBasisForRecenter).
   try {
-    const active = (await readBinLiquidityStates(poolDef, st2.coreAddress, st2.initialPrice, st2.binStep, [st2.activeBinId])).get(st2.activeBinId);
-    if (!active) throw new Error("could not read the active-bin price");
-    const poolPrice = (Number(active.binPrice) / 1e8) * 10 ** (xTok.decimals - yTok.decimals); // Y per X
-    const refPrice = (await priceOfToken(xTok)) / (await priceOfToken(yTok));
-    const div = divergenceBps(poolPrice, refPrice);
-    const plan = planRebalanceSwap(gotX, gotY, poolPrice, xTok.decimals, yTok.decimals, { slippageBps: REBALANCE_SLIPPAGE_BPS });
-    if (plan.direction === "none") {
-      log(`  recenter 2/3 — no rebalance swap needed`);
-    } else if (div > REBALANCE_MAX_DIVERGENCE_BPS) {
-      log(`  recenter 2/3 — rebalance swap SKIPPED: pool price diverges ${div}bps from the reference (cap ${REBALANCE_MAX_DIVERGENCE_BPS}bps)`);
-    } else {
-      const inTok = plan.direction === "x-for-y" ? xTok : yTok;
-      const sdesc = buildSwapSimple({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, plan.direction, plan.amountIn, plan.minOut, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
-      const spcs = buildInputCaps(w.address, [{ token: inTok.principal, asset: inTok.asset, max: plan.amountIn }]);
-      log(`  recenter 2/3 — rebalance swap ${plan.direction} ${Number(plan.amountIn) / 10 ** inTok.decimals} ${inTok.asset || "STX"} (min out ${plan.minOut}, divergence ${div}bps)`);
-      const snonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
-      const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, feeMicroStx: FEE_USTX, nonce: snonce });
-      const ss = sr.txid ? await waitForTx(sr.txid, log) : "no-txid";
-      if (ss !== "success") log(`  rebalance swap ${ss}: re-adding what is there (the old behaviour)`);
+    const after = await readUserPosition(poolDef, w.address);
+    const prev = loadVenueBases().dlmmBasis;
+    if (prev) {
+      const next = adjustBasisForRecenter(prev, pending.before, { x: Number(after.totalX) / xu, y: Number(after.totalY) / yu });
+      setDlmmBasis(next);
+      log(`  basis adjusted for the resize: ${next.xQty} x + ${next.yQty} y`);
     }
   } catch (err) {
-    log(`  rebalance swap skipped: ${(err as Error).message}`);
+    log(`  (basis adjust skipped: ${(err as Error).message})`);
   }
-  const [x2, y2] = await Promise.all([tokenBalance(w, xTok), tokenBalance(w, yTok)]);
-  gotX = delta(x2, x0);
-  gotY = delta(y2, y0);
-
-  // 3/3: re-add what came out (after the swap), keeping 2% back for the pool's liquidity fee.
-  const st3 = (await readDlmmState(poolDef)) ?? st2;
-  log(`  recenter 3/3 — re-add centered on active ${st3.activeBinId}`);
-  // If one side is still empty (the swap was skipped or failed), fall back to the old 50/50 sizing
-  // from wallet balances rather than attempting a one-sided add that cannot be two-sided.
-  const exact = gotX > 0n && gotY > 0n ? { xBase: gotX - gotX / 50n, yBase: gotY - gotY / 50n } : undefined;
-  if (!exact) log(`  one side is empty after the withdraw: sizing the re-add from wallet balances instead`);
-  const addTxid = await executeAdd(w, poolDef, st3, xTok, yTok, effCfg, log, exact);
-  const as = await waitForTx(addTxid, log);
-  const outcome = recenterSequenceOutcome(ws, as);
-  if (outcome.executed) {
-    // Capital moved by the resize goes into the basis, not the P&L (adjustBasisForRecenter).
-    try {
-      const after = await readUserPosition(poolDef, w.address);
-      const prev = loadVenueBases().dlmmBasis;
-      if (prev) {
-        const xu = 10 ** xTok.decimals, yu = 10 ** yTok.decimals;
-        const next = adjustBasisForRecenter(
-          prev,
-          { x: Number(pos.totalX) / xu, y: Number(pos.totalY) / yu },
-          { x: Number(after.totalX) / xu, y: Number(after.totalY) / yu },
-        );
-        setDlmmBasis(next);
-        log(`  basis adjusted for the resize: ${next.xQty} x + ${next.yQty} y`);
-      }
-    } catch (err) {
-      log(`  (basis adjust skipped: ${(err as Error).message})`);
-    }
-  }
-  return { ...base, executed: outcome.executed, withdrawTxid: wr.txid, addTxid, reason: outcome.reason };
+  return { ...base, executed: true, addTxid, reason: "recentered" };
 }

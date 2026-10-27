@@ -262,3 +262,52 @@ test("divergenceBps: refuses to trust a pool price far from the reference", () =
   assert.equal(divergenceBps(82_400, 80_000), 300);
   assert.equal(divergenceBps(80_000, 0), Infinity);
 });
+
+// --- nextReaddStep / parsers (2026-10-27, review of #21) ---
+import { nextReaddStep, parseSwapResult, sumWithdrawResult } from "./dlmm-recenter.js";
+
+test("nextReaddStep: all-sBTC after a fall swaps in chunks, never more than the chunk", () => {
+  // 0.0525 sBTC at $80,000 = $4,200, no USDCx: needs $2,100 of USDCx, chunked at $600.
+  const s = nextReaddStep(5_250_000n, 0n, 80_000, 80_000, 8, 6, { chunkValueY: 600 });
+  assert.equal(s.kind, "swap");
+  if (s.kind !== "swap") return;
+  assert.equal(s.direction, "x-for-y");
+  assert.equal(s.amountIn, 750_000n); // $600 / $80,000
+  assert.equal(s.minOut, 594_000_000n); // $600 less 1%
+});
+
+test("nextReaddStep: min-out uses the better of pool and reference (review point 2)", () => {
+  // Pool pushed 2.5% below the reference: selling sBTC must still get 99% of the REFERENCE.
+  const s = nextReaddStep(5_250_000n, 0n, 78_000, 80_000, 8, 6, { chunkValueY: 600 });
+  if (s.kind !== "swap") throw new Error("expected swap");
+  const minOutUsd = Number(s.minOut) / 1e6;
+  const inUsdAtRef = (Number(s.amountIn) / 1e8) * 80_000;
+  assert.ok(minOutUsd >= inUsdAtRef * 0.99 - 0.01, `${minOutUsd} vs ${inUsdAtRef}`);
+});
+
+test("nextReaddStep: waits rather than re-adding when it can't rebalance", () => {
+  assert.deepEqual(nextReaddStep(5_250_000n, 0n, 80_000, null, 8, 6), { kind: "wait", reason: "reference price unavailable" });
+  assert.equal(nextReaddStep(5_250_000n, 0n, 80_000, 84_000, 8, 6).kind, "wait"); // ~476 bps off
+  assert.equal(nextReaddStep(0n, 0n, 80_000, 80_000, 8, 6).kind, "wait");
+});
+
+test("nextReaddStep: within tolerance of 50/50, add; never one-sided", () => {
+  assert.deepEqual(nextReaddStep(2_625_000n, 2_100_000_000n, 80_000, 80_000, 8, 6), { kind: "add" });
+  assert.deepEqual(nextReaddStep(2_800_000n, 1_900_000_000n, 80_000, 80_000, 8, 6), { kind: "add" }); // $2,240 vs $1,900
+  // Buying sBTC with surplus USDCx: min-out uses the lower price (more sBTC expected).
+  const s = nextReaddStep(0n, 4_200_000_000n, 80_000, 79_000, 8, 6, { chunkValueY: 600 });
+  if (s.kind !== "swap") throw new Error("expected swap");
+  assert.equal(s.direction, "y-for-x");
+  assert.equal(s.amountIn, 600_000_000n);
+  assert.equal(s.minOut, BigInt(Math.floor((600 / 79_000) * 0.99 * 1e8)));
+});
+
+test("parseSwapResult / sumWithdrawResult read the router results", () => {
+  assert.deepEqual(parseSwapResult("(ok (tuple (in u395000000) (out u492580)))"), { in: 395_000_000n, out: 492_580n });
+  assert.equal(parseSwapResult("(err u1001)"), null);
+  assert.deepEqual(
+    sumWithdrawResult("(ok (list (tuple (x-amount u0) (y-amount u15882351)) (tuple (x-amount u698) (y-amount u31278862)) (tuple (x-amount u19925) (y-amount u0))))"),
+    { x: 20_623n, y: 47_161_213n },
+  );
+  assert.equal(sumWithdrawResult("(err u5)"), null);
+});
