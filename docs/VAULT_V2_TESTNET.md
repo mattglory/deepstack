@@ -31,13 +31,13 @@ Roles: admin, guardian and fee recipient are the testnet operator
 | Idle withdrawal request #0 (5 shares) | Accepted; claimable after 288 burn blocks (testnet burn blocks ~255 s, so ~20 h) |
 
 | Deposit site, operator key (2026-10-12) | The site's own transaction code, signed with the operator test key, ran every normal path in deny mode with exact post-conditions: idle deposit 2 STX, idle request #1, epoch 2 queued deposit and withdrawal, both cancels, then settled claims of 2.928076 shares and 4.098253 STX |
-| Deposit site, independent wallet (2026-10-12) | A separate testnet wallet (ST23PF43…DK647) used the site in a browser wallet: deposit 5 STX for 4.880127 dsSTX2 (`82571979…`), queued all of it in epoch 3 (`0653b993…`), operator returned 21 on 20 deployed, then **claimed 5.044381 STX through the site** (`4f3b69da…`). Deny mode, one post-condition: the vault contract sends exactly 5,044,381 uSTX. |
+| Deposit site, browser wallet (2026-10-12) | A separate testnet account (ST23PF43…DK647) used the site in a browser wallet. Correction (review, 2026-10-27): it is not independent of the operator side, because it shares its key with the mainnet agent wallet SP23PF43…WK60; the deny-mode result stands, and future site testing uses a fresh key. It deposit 5 STX for 4.880127 dsSTX2 (`82571979…`), queued all of it in epoch 3 (`0653b993…`), operator returned 21 on 20 deployed, then **claimed 5.044381 STX through the site** (`4f3b69da…`). Deny mode, one post-condition: the vault contract sends exactly 5,044,381 uSTX. |
 
 The last row closes review finding M2 (a UI claim must succeed in deny mode).
 
 | Idle claim of request #0 (2026-10-14) | After the 288-block delay the vault paid exactly 5.075714 STX (`35f9deff…`) |
 | Epoch 4 (2026-10-12) | Swept 20 and returned 20 unchanged, an operator sequencing slip (swept before the user's deposit had landed). No P&L, no effect on holders |
-| Epoch 5: overdue write-off through the site (2026-10-14) | Swept 20 and deliberately not returned. The independent wallet had queued a 2 STX deposit and all 4.837191 of its shares. After 432 burn blocks it pressed **Settle overdue epoch** on the site (`d51105f6…`, deny mode, zero post-conditions: no asset moves). Deposits paused automatically (D12); price fell to 0.851700. Claim refund paid exactly 2 STX 1:1 (`f0905bbb…`); claim shares back returned exactly 4.837191 dsSTX2 unpriced (`438e7c35…`, D14) |
+| Epoch 5: overdue write-off through the site (2026-10-14) | Swept 20 and deliberately not returned. The browser-wallet account had queued a 2 STX deposit and all 4.837191 of its shares. After 432 burn blocks it pressed **Settle overdue epoch** on the site (`d51105f6…`, deny mode, zero post-conditions: no asset moves). Deposits paused automatically (D12); price fell to 0.851700. Claim refund paid exactly 2 STX 1:1 (`f0905bbb…`); claim shares back returned exactly 4.837191 dsSTX2 unpriced (`438e7c35…`, D14) |
 | Drawdown block | A sweep of 5 at price 0.8517 (below 90% of the 1.045 reference) aborted with u313 (`21cde541…`) |
 | Late recovery | Strategy recovered 20 STX (`recover-from-strategy`); price back to 1.033658, so the holder whose shares were returned unpriced kept full value. `queue-resume-sweeps` accepted, executable at burn block 28,307 |
 
@@ -85,3 +85,18 @@ the proposed admin can call) is proven by the multisig itself.
 
 Before mainnet: the same flow with the real devices (two hardware wallets and the offline
 recovery key).
+
+## Multisig tool hardening (2026-10-27, after review)
+
+The review of #18 found that `sign` signed whatever file it was given. Now:
+
+| Change | Testnet evidence |
+|---|---|
+| Only allow-listed vault admin functions on the configured vault (`MS_VAULT`) can be built or signed | `deposit` and a call to a different vault were refused before anything was built |
+| `sign` decodes and prints network, contract, function, arguments, nonce, fee and post-condition mode, and needs the function name typed back | A wrong word cancelled with nothing signed; the right word signed |
+| Deny mode for every admin call; `sweep` asserts the vault sends exactly the amount | `pause-deposits` (`de9c0fe6…`) and `unpause-deposits` with 0 post-conditions; `sweep 5 STX` with 1 post-condition; all succeeded |
+| Each signature records the pre-sign hash; `broadcast` ignores signatures made for another transaction | A signature copied from another transaction was ignored, and broadcast refused with too few signatures |
+
+Still before mainnet (a hard gate): the same flow with the real devices. The tool signs only
+with raw keys from the environment; hardware-wallet signing, and whether those wallets can sign
+a SIP-027 non-sequential multisig, are not yet proven.

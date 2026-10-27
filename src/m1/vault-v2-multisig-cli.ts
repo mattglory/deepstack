@@ -23,16 +23,23 @@
 //   npm run m1:vault-v2-ms -- run <contract-id> <function> [args...] --signers=1,2 --testnet   # testnet rehearsal: all three steps
 //
 // Arguments: digits are uint, anything starting with S is a principal (a contract principal
-// when it contains a dot). Allow mode, like the operator CLI: admin calls move no user assets
-// except `sweep`, whose destination is the strategy address fixed in the contract.
+// when it contains a dot).
+//
+// Hardening after review (2026-10-27): only an allow-list of vault admin functions on the
+// configured vault (MS_VAULT, or --vault=) can be built or signed; every transaction is Deny
+// mode, with no post-conditions except sweep, which asserts the vault sends exactly the amount;
+// `sign` decodes and prints the transaction and needs the function name typed back before it
+// signs; each signature file records the transaction's pre-sign hash, and `broadcast` ignores
+// any signature that doesn't match (stale files from an earlier run).
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, appendFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { basename, dirname, join } from "node:path";
 import {
   makeUnsignedContractCall, broadcastTransaction, deserializeTransaction, fetchNonce, TransactionSigner,
   createTransactionAuthField, createMessageSignature, createStacksPublicKey, addressFromVersionHash,
   addressToString, AddressVersion, PubKeyEncoding, PostConditionMode, privateKeyToPublic, randomPrivateKey,
-  Cl, type ClarityValue, type MultiSigSpendingCondition,
+  Cl, Pc, cvToString, type ClarityValue, type MultiSigSpendingCondition,
 } from "@stacks/transactions";
 import { loadDotenv, getNetwork, apiBase, type Network } from "./wallet.js";
 
@@ -43,6 +50,26 @@ if (flags.has("testnet")) loadDotenv(".env.testnet");
 loadDotenv();
 const network: Network = getNetwork();
 const FEE = 100_000n; // a 2-of-3 is larger than a single-sig call; 0.1 STX
+
+// The only functions a multisig signer may be asked to sign: the vault's admin surface.
+export const ADMIN_FUNCTIONS = new Set([
+  "sweep", "pause-deposits", "pause-sweeps", "unpause-deposits", "unpause-sweeps",
+  "queue-max-tvl", "queue-fee-bps", "queue-max-deploy-bps", "queue-fee-recipient", "queue-strategy",
+  "queue-guardian", "queue-admin-change", "queue-resume-sweeps",
+  "confirm-max-tvl", "confirm-fee-bps", "confirm-max-deploy-bps", "confirm-fee-recipient",
+  "confirm-strategy", "confirm-guardian", "confirm-resume-sweeps", "accept-admin-change",
+]);
+
+function configuredVault(): string {
+  const v = (flags.get("vault") ?? process.env.MS_VAULT ?? "").trim();
+  if (!/^S[0-9A-Z]+\.[a-zA-Z][a-zA-Z0-9-]*$/.test(v)) throw new Error("set the vault contract id (MS_VAULT in the env, or --vault=ADDR.name)");
+  return v;
+}
+
+function checkAllowed(contractId: string, fn: string): void {
+  if (contractId !== configuredVault()) throw new Error(`refusing: ${contractId} is not the configured vault ${configuredVault()}`);
+  if (!ADMIN_FUNCTIONS.has(fn)) throw new Error(`refusing: ${fn} is not an allow-listed vault admin function`);
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function pubkeys(): string[] {
@@ -100,19 +127,49 @@ async function waitForTx(txid: string): Promise<boolean> {
 async function build(contractId: string, fn: string, args: string[], out: string): Promise<void> {
   const [contractAddress, contractName] = contractId.split(".");
   if (!contractName) throw new Error("contract id must be ADDRESS.name");
+  checkAllowed(contractId, fn);
   const keys = pubkeys();
   const address = await multisigAddress(keys);
   const nonce = await fetchNonce({ address, network });
   const tx = await makeUnsignedContractCall({
     contractAddress, contractName, functionName: fn, functionArgs: args.map(parseArg),
     numSignatures: 2, publicKeys: keys, useNonSequentialMultiSig: true,
-    network, fee: FEE, nonce, postConditionMode: PostConditionMode.Allow,
+    network, fee: FEE, nonce,
+    // Deny mode: admin calls move no assets, except sweep, which must send exactly the amount.
+    postConditionMode: PostConditionMode.Deny,
+    postConditions: fn === "sweep" ? [Pc.principal(contractId).willSendEq(BigInt(args[0])).ustx()] : [],
   });
   writeFileSync(out, tx.serialize() + "\n");
   console.log(`built ${fn}(${args.join(" ")}) on ${contractId}\n  from multisig ${address}, nonce ${nonce}, fee ${Number(FEE) / 1e6} STX\n  unsigned transaction: ${out}`);
 }
 
-function sign(file: string, keyN: string): void {
+function describe(tx: ReturnType<typeof deserializeTransaction>): { contractId: string; fn: string; text: string } {
+  const p = tx.payload as any;
+  if (!p?.functionName) throw new Error("not a contract call");
+  const contractId = `${addressToString(p.contractAddress)}.${p.contractName.content}`;
+  const fn = p.functionName.content as string;
+  const sc = tx.auth.spendingCondition as MultiSigSpendingCondition;
+  const net = tx.chainId === 1 ? "MAINNET" : `testnet (chain ${tx.chainId})`;
+  const mode = tx.postConditionMode === PostConditionMode.Deny ? "deny" : "ALLOW";
+  const text = [
+    `  network:          ${net}`,
+    `  contract:         ${contractId}`,
+    `  function:         ${fn}`,
+    `  arguments:        ${(p.functionArgs as ClarityValue[]).map((a) => cvToString(a)).join(", ") || "(none)"}`,
+    `  nonce / fee:      ${sc.nonce} / ${Number(sc.fee) / 1e6} STX`,
+    `  post-conditions:  ${mode} mode, ${tx.postConditions.values.length} condition(s)`,
+  ].join("\n");
+  return { contractId, fn, text };
+}
+
+async function confirmTyped(expected: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question(`Type the function name (${expected}) to sign it, anything else cancels: `)).trim();
+  rl.close();
+  return answer === expected;
+}
+
+async function sign(file: string, keyN: string, confirm = true): Promise<void> {
   const key = process.env[`MS_KEY_${keyN}`]?.trim();
   if (!key) throw new Error(`MS_KEY_${keyN} is not set on this machine`);
   const pub = privateKeyToPublic(key) as string;
@@ -120,6 +177,13 @@ function sign(file: string, keyN: string): void {
   const tx = deserializeTransaction(readFileSync(file, "utf8").trim());
   const sc = tx.auth.spendingCondition as MultiSigSpendingCondition;
   if (sc.fields.length !== 0) throw new Error("expected an unsigned transaction (it already has auth fields)");
+  // Decode and show what is being approved; refuse anything outside the allow-list.
+  const d = describe(tx);
+  checkAllowed(d.contractId, d.fn);
+  if (tx.postConditionMode !== PostConditionMode.Deny) throw new Error("refusing: not deny mode");
+  console.log(`About to sign with key ${keyN}:\n${d.text}`);
+  if (confirm && !(await confirmTyped(d.fn))) throw new Error("cancelled: nothing signed");
+  const preSignHash = tx.signBegin();
   // Non-sequential: every signer signs the same initial hash, so this signature is valid on its
   // own and can be combined with the others in any order.
   const signer = new TransactionSigner(tx);
@@ -127,7 +191,7 @@ function sign(file: string, keyN: string): void {
   const field = sc.fields[0];
   const sig = (field.contents as { data: string }).data;
   const out = `${file}.sig${keyN}.json`;
-  writeFileSync(out, JSON.stringify({ pubkey: pub, signature: sig, txid: tx.txid() }, null, 2) + "\n");
+  writeFileSync(out, JSON.stringify({ pubkey: pub, signature: sig, preSignHash }, null, 2) + "\n");
   console.log(`signed with key ${keyN} (${pub.slice(0, 10)}…)\n  signature: ${out}`);
 }
 
@@ -135,12 +199,17 @@ async function broadcast(file: string): Promise<boolean> {
   const keys = pubkeys();
   const tx = deserializeTransaction(readFileSync(file, "utf8").trim());
   const sc = tx.auth.spendingCondition as MultiSigSpendingCondition;
+  const d = describe(tx);
+  checkAllowed(d.contractId, d.fn);
+  const expectedHash = tx.signBegin();
   const sigs = new Map<string, string>();
   for (const f of sigFiles(file)) {
-    const j = JSON.parse(readFileSync(f, "utf8")) as { pubkey: string; signature: string };
+    const j = JSON.parse(readFileSync(f, "utf8")) as { pubkey: string; signature: string; preSignHash?: string };
+    if (j.preSignHash !== expectedHash) { console.log(`ignoring ${f}: it was signed for a different transaction`); continue; }
     if (!keys.includes(j.pubkey)) throw new Error(`${f} is from a key outside the multisig`);
     sigs.set(j.pubkey, j.signature);
   }
+  console.log(`Broadcasting:\n${d.text}`);
   if (sigs.size < sc.signaturesRequired) throw new Error(`need ${sc.signaturesRequired} signatures, found ${sigs.size}`);
   sc.fields = keys.map((k) =>
     sigs.has(k)
@@ -177,7 +246,8 @@ async function main(): Promise<void> {
     if (network !== "testnet") throw new Error("run is a testnet rehearsal; on mainnet use build / sign / broadcast on separate devices");
     const out = flags.get("out") ?? `ms-${pos[2]}-${Date.now()}.hex`;
     await build(pos[1], pos[2], pos.slice(3), out);
-    for (const n of (flags.get("signers") ?? "1,2").split(",")) sign(out, n);
+    // Testnet rehearsal with test keys: the details still print, the typed confirmation is skipped.
+    for (const n of (flags.get("signers") ?? "1,2").split(",")) await sign(out, n, false);
     if (!(await broadcast(out))) process.exitCode = 1;
     return;
   }
