@@ -311,3 +311,78 @@ export function planRebalanceSwap(
 export function divergenceBps(poolPrice: number, referencePrice: number): number {
   return referencePrice > 0 ? Math.round((Math.abs(poolPrice - referencePrice) / referencePrice) * 10_000) : Infinity;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Re-add after a recenter, made resilient (2026-10-27, review of #21).
+//
+// A recenter only triggers once price has left the position, so the withdraw always comes back
+// as (mostly) one token and the rebalance swap is always needed. If it can't complete (price feed
+// down, pool too far from the reference, min-out missed, router error) the old code fell back to
+// a 50/50 re-add from wallet balances, which is exactly the shrink of 26 Oct. Now the withdrawn
+// amounts are remembered as a pending re-add; the swap runs in chunks; and if it still can't
+// finish, the tokens stay withdrawn, the agent alerts, and the next cycle resumes. Nothing is
+// re-added until the split is within tolerance of 50/50.
+export type ReaddStep =
+  | { kind: "add" }
+  | { kind: "swap"; direction: "x-for-y" | "y-for-x"; amountIn: bigint; minOut: bigint }
+  | { kind: "wait"; reason: string };
+
+export interface ReaddOpts {
+  toleranceFrac?: number; // done when within this fraction of 50/50 by value (default 0.1)
+  slippageBps?: number; // min-out allowance below the better of pool and reference (default 100)
+  maxDivergenceBps?: number; // no swap when the pool is further than this from the reference (default 300)
+  chunkValueY?: number; // largest single swap, in Y units (USDCx), default 600
+}
+
+export function nextReaddStep(
+  xBase: bigint,
+  yBase: bigint,
+  poolPrice: number, // Y per X, human units
+  refPrice: number | null, // Y per X from the independent reference; null = unavailable
+  xDecimals: number,
+  yDecimals: number,
+  opts: ReaddOpts = {},
+): ReaddStep {
+  const tol = opts.toleranceFrac ?? 0.1;
+  const plan = planRebalanceSwap(xBase, yBase, poolPrice, xDecimals, yDecimals, { toleranceFrac: tol, slippageBps: 0 });
+  if (plan.direction === "none") {
+    if (xBase > 0n && yBase > 0n) return { kind: "add" };
+    return { kind: "wait", reason: "nothing to re-add" };
+  }
+  if (!(refPrice !== null && refPrice > 0)) return { kind: "wait", reason: "reference price unavailable" };
+  const div = divergenceBps(poolPrice, refPrice);
+  if (div > (opts.maxDivergenceBps ?? 300)) return { kind: "wait", reason: `pool ${div}bps from the reference` };
+
+  const slip = (opts.slippageBps ?? 100) / 10_000;
+  const chunk = opts.chunkValueY ?? 600;
+  const xu = 10 ** xDecimals, yu = 10 ** yDecimals;
+  if (plan.direction === "x-for-y") {
+    const capX = BigInt(Math.floor((chunk / poolPrice) * xu));
+    const amountIn = plan.amountIn < capX ? plan.amountIn : capX;
+    // Min-out from the BETTER of pool and reference, so a pool pushed toward the divergence cap
+    // can't make a poor fill acceptable (review of #21, point 2).
+    const best = Math.max(poolPrice, refPrice);
+    const minOut = BigInt(Math.floor((Number(amountIn) / xu) * best * (1 - slip) * yu));
+    return { kind: "swap", direction: "x-for-y", amountIn, minOut };
+  }
+  const capY = BigInt(Math.floor(chunk * yu));
+  const amountIn = plan.amountIn < capY ? plan.amountIn : capY;
+  const best = Math.min(poolPrice, refPrice); // fewer Y per X = more X out
+  const minOut = BigInt(Math.floor((Number(amountIn) / yu / best) * (1 - slip) * xu));
+  return { kind: "swap", direction: "y-for-x", amountIn, minOut };
+}
+
+/** (in, out) from a router swap's `(ok (tuple (in uN) (out uM)))`; null if it doesn't parse. */
+export function parseSwapResult(repr: string | undefined): { in: bigint; out: bigint } | null {
+  if (!repr?.startsWith("(ok")) return null;
+  const i = /\(in u(\d+)\)/.exec(repr), o = /\(out u(\d+)\)/.exec(repr);
+  return i && o ? { in: BigInt(i[1]), out: BigInt(o[1]) } : null;
+}
+
+/** Totals from withdraw-liquidity-multi's `(ok (list (tuple (x-amount uA) (y-amount uB)) …))`. */
+export function sumWithdrawResult(repr: string | undefined): { x: bigint; y: bigint } | null {
+  if (!repr?.startsWith("(ok")) return null;
+  let x = 0n, y = 0n, n = 0;
+  for (const m of repr.matchAll(/\(x-amount u(\d+)\) \(y-amount u(\d+)\)/g)) { x += BigInt(m[1]); y += BigInt(m[2]); n++; }
+  return n > 0 ? { x, y } : null;
+}

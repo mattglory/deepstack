@@ -820,6 +820,8 @@ async function main() {
             { executed: res.executed, attempted },
           ));
           if (!res.executed && attempted) dlmmFailedThisTick = true;
+          // A pending re-add that couldn't finish: alert (health check) without counting a failed add.
+          if (res.alert) dlmmFailedThisTick = true;
           if (attempted) saveDlmmCounters({ failStreak: dlmmFailStreak, recenters: dlmmRecenters });
           appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, volSource, dlmmFailStreak, ...res });
           console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${pinned !== null ? " (pinned)" : ""}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day, ${volSource})` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);

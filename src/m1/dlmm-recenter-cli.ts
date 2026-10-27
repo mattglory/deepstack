@@ -20,6 +20,9 @@
 //                    --yes-mainnet REFUSES when there's no vol history (the old silent ±3
 //                    fallback stranded a position on 2026-10-07); run on the server instead.
 //   withdraw    withdraw all bins and stop — no re-add (winding a position down)
+//   force-recenter   withdraw and re-add around the current price through the AGENT's own
+//               recenter path (withdraw, chunked min-output rebalance, full re-add, pending state).
+//               For applying a new width, and for exercising that path attended. --yes-mainnet.
 //   swap <x-for-y|y-for-x> <amount>   one min-output swap in this pool (dlmm-swap-router-v-1-2), the
 //               same call the agent's recenter now uses to rebalance before re-adding. Refuses when
 //               the pool price is more than 3% from the reference price. Amount in human units.
@@ -56,7 +59,7 @@ import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.) AND
 // for half-width sizing (dlmmSigmaDaily/resolveHalfWidth) — see their doc comments there for
 // why this CLI no longer has its own, disconnected fixed-width default.
-import { resolveToken, ftBalance, priceOfToken, dlmmSigmaDaily, resolveHalfWidth, pinnedHalfWidth, type TokenMeta } from "./dlmm-recenter-exec.js";
+import { resolveToken, ftBalance, priceOfToken, dlmmSigmaDaily, resolveHalfWidth, pinnedHalfWidth, recenterOnce, type TokenMeta } from "./dlmm-recenter-exec.js";
 import { setDlmmBasis } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 
@@ -191,7 +194,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
 async function main() {
   console.log("=== DeepStack — DLMM recenter (two-sided concentrated position) ===\n");
   const { action, amount, rest, yes, explicitHalfWidth } = parseArgs();
-  if (!["status", "open", "recenter", "withdraw", "reset-basis", "set-basis", "swap"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | swap <x-for-y|y-for-x> <amount> | reset-basis | set-basis <xQty> <yQty> [iso-time]> [--yes-mainnet]");
+  if (!["status", "open", "recenter", "withdraw", "reset-basis", "set-basis", "swap", "force-recenter"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | swap <x-for-y|y-for-x> <amount> | reset-basis | set-basis <xQty> <yQty> [iso-time]> [--yes-mainnet]");
 
   const w = await getWallet();
   if (w.network !== "mainnet") throw new Error(`refusing: STACKS_NETWORK is ${w.network}; DLMM is mainnet-only.`);
@@ -292,6 +295,16 @@ async function main() {
       } else process.exitCode = 1;
     }
     else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first: touch /opt/deepstack/KILL).");
+    return;
+  }
+
+  if (action === "force-recenter") {
+    if (pos.bins.length === 0) throw new Error("no position to recenter (a pending re-add, if any, resumes on the agent's next cycle)");
+    refuseFallbackWidth();
+    if (!yes) { console.log(`preview: would withdraw ${pos.bins.length} bins and re-add ±${halfWidth} around active ${st.activeBinId} through the agent's recenter path. Pause the agent first (touch /opt/deepstack/KILL) so the two never send at once, then re-run with --yes-mainnet.`); return; }
+    const r = await recenterOnce(w, { pair: PAIR, halfWidth, targetUsd: targetUsd(), sigmaDaily, force: true }, true, (m) => console.log(m));
+    console.log(`\nresult: ${r.action} — ${r.reason}${r.executed ? " ✓" : ""}${r.alert ? " (ALERT: pending re-add saved)" : ""}`);
+    if (!r.executed) process.exitCode = 1;
     return;
   }
 
