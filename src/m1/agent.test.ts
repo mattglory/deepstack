@@ -385,3 +385,19 @@ test("useFlashRoute: only over cap, only buying sBTC, only with a capacity-addin
   assert.equal(useFlashRoute({ overCap: false, action: "swap-y-for-x", receiverAddsCapacity: true }), false);
   assert.equal(useFlashRoute({ overCap: true, action: "swap-x-for-y", receiverAddsCapacity: true }), false);
 });
+
+// --- fee reserve and minimum trade (2026-10-27) ---
+import { tradableInventory, worthTrading } from "./agent.js";
+
+test("tradableInventory: keeps a fee reserve out of native STX only", () => {
+  const inv = { xBase: 46_518n, yBase: 150_000_000n }; // sBTC, STX (the 2026-10-27 case)
+  assert.deepEqual(tradableInventory(inv, true, 50_000_000n), { xBase: 46_518n, yBase: 100_000_000n });
+  assert.deepEqual(tradableInventory({ xBase: 1n, yBase: 40_000_000n }, true, 50_000_000n), { xBase: 1n, yBase: 0n });
+  assert.deepEqual(tradableInventory(inv, false, 50_000_000n), inv); // y not native: untouched
+});
+
+test("worthTrading: a 0.019 STX rebalance is not worth a 0.05 STX fee", () => {
+  assert.equal(worthTrading(0.019131, 5), false);
+  assert.equal(worthTrading(5, 5), true);
+  assert.equal(worthTrading(50, 5), true);
+});
