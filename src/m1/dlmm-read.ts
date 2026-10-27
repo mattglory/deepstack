@@ -48,6 +48,11 @@ export const DLMM_POOLS: readonly DlmmPool[] = [
   { key: "ststx-stx", name: "dlmm-pool-ststx-stx-v-1-bps-1" },
   { key: "stx-usdcx", name: "dlmm-pool-stx-usdcx-v-2-bps-10" },
   { key: "sbtc-usdcx", name: "dlmm-pool-sbtc-usdcx-v-1-bps-10" },
+  // The v-1 STX-USDCx pool is where STX-USDCx liquidity actually is (2026-10-27: active bin ~102,
+  // ~60k STX + ~$23k USDCx within 5 bins). The v-2 pool above sat at the top edge of its range
+  // (active bin 500, price 0.27 vs 0.30 market), and the attended swap refused it on the 3%
+  // divergence guard. Used for converting STX to USDCx; not a position pair.
+  { key: "stx-usdcx-v1", name: "dlmm-pool-stx-usdcx-v-1-bps-10" },
 ] as const;
 
 export interface DlmmState {
