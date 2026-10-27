@@ -67,11 +67,14 @@ const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
 // below overrides this with the SAME vol-scaled width the live agent uses, so a manual
 // open/recenter through this CLI can never again size a position the automated agent's own
 // drift trigger disagrees with.
-const FALLBACK_HALF_WIDTH = Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3)));
-const TARGET_USD = Number(process.env.DLMM_TARGET_USD ?? 40); // recenter re-adds to this size
+const fallbackHalfWidth = () => Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3))); // lazy, see targetUsd()
+// .env is loaded inside main() (getWallet), AFTER module load, so these must be read lazily:
+// read at load time they silently fell back to the defaults (found 2026-10-27: an attended $1,630
+// open was refused as "> 250" although .env said 1,700).
+const targetUsd = () => Number(process.env.DLMM_TARGET_USD ?? 40); // recenter re-adds to this size
 // Same cap as dlmm-recenter-exec.ts's executeAdd, same reasoning: configurable, not a bare
 // 250, so a deliberately-larger pilot position doesn't need another code edit each time.
-const MAX_TARGET_USD = Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
+const maxTargetUsd = () => Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
 const ADD_MIN_DLP_SLIPPAGE_BPS = 100; // matches dlmm-recenter-exec.ts's live-agent value
 const FEE_USTX = 300_000n;
 const DEADLINE_SECS = 600;
@@ -113,7 +116,7 @@ async function waitFor(txid: string): Promise<string> {
 // Build + (optionally) broadcast a two-sided open centered on the active bin. Handles X = native
 // STX (stx-usdcx) or a SIP-010 like sBTC (sbtc-usdcx). Returns txid or null (preview).
 async function doOpen(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMeta, yTok: TokenMeta, target: number, yes: boolean, halfWidth: number): Promise<string | null> {
-  if (target <= 0 || target > MAX_TARGET_USD) throw new Error(`target must be >0 and ≤ ${MAX_TARGET_USD}`);
+  if (target <= 0 || target > maxTargetUsd()) throw new Error(`target must be >0 and ≤ ${maxTargetUsd()}`);
   const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
   const xSym = xTok.asset || "STX";
   const xdp = xTok.decimals === 8 ? 6 : 3;
@@ -206,7 +209,7 @@ async function main() {
   // on 2026-10-07 a manual recenter run from a laptop (no vol history there) opened a 7-bin
   // position that went out of range within hours. Broadcasting open/recenter without vol data
   // or an explicit width now refuses below; previews and status still work.
-  const halfWidth = explicitHalfWidth ?? resolveHalfWidth(sigmaDaily, st.binStep, FALLBACK_HALF_WIDTH);
+  const halfWidth = explicitHalfWidth ?? resolveHalfWidth(sigmaDaily, st.binStep, fallbackHalfWidth());
   const pinned = pinnedHalfWidth(); // DLMM_PIN_HALF_WIDTH: a deliberate width, never the silent fallback
   const widthIsFallback = explicitHalfWidth === null && pinned === null && !(sigmaDaily != null && sigmaDaily > 0);
   const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
@@ -264,7 +267,7 @@ async function main() {
   if (action === "open") {
     refuseFallbackWidth();
     if (pos.bins.length > 0) throw new Error("a position already exists — use `recenter`");
-    const txid = await doOpen(w, poolDef, st, xTok, yTok, Number(amount ?? TARGET_USD), yes, halfWidth);
+    const txid = await doOpen(w, poolDef, st, xTok, yTok, Number(amount ?? targetUsd()), yes, halfWidth);
     if (txid) {
       const s = await waitFor(txid);
       if (s === "success") {
@@ -342,7 +345,7 @@ async function main() {
   // 2) re-add two-sided centered on the CURRENT active bin (re-read — it moves)
   const st2 = (await readDlmmState(poolDef)) ?? st;
   console.log(`recenter step 2/2 — re-add centered on active ${st2.activeBinId}`);
-  const txid = await doOpen(w, poolDef, st2, xTok, yTok, TARGET_USD, yes, halfWidth);
+  const txid = await doOpen(w, poolDef, st2, xTok, yTok, targetUsd(), yes, halfWidth);
   if (txid) {
     const s = await waitFor(txid);
     if (s === "success") {
