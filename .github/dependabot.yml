@@ -1,0 +1,23 @@
+# Weekly dependency updates. Minor and patch bumps are grouped into one PR per directory so
+# they're cheap to review; majors arrive one at a time. CI runs the unit and contract suites
+# on every Dependabot PR before anything is merged.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: npm
+    directory: "/clarinet"
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
