@@ -155,12 +155,10 @@ fixed and disclosed in the documents above, including incidents. There has been 
 professional third-party audit. DeepStack trades only its owner's capital; nothing in this
 repository is an offer to manage anyone else's funds.
 
-## Background
+## Related
 
-DeepStack carries the execution discipline of a market-making bot that runs live on
-Dexalot (Avalanche) over to Bitcoin-native venues on Stacks. It composes with
-[FlashStack](https://github.com/mattglory/Flashstack), atomic flash loans for STX and
-sBTC. Development was supported by a Stacks Endowment grant.
+DeepStack composes with [FlashStack](https://github.com/mattglory/Flashstack), atomic flash
+loans for STX and sBTC. Development was supported by a Stacks Endowment grant.
 
 ## License
 
