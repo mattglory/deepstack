@@ -43,7 +43,7 @@ import { publishMetrics, isPublishConfigured } from "./publish.js";
 import { withRpc } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
-import { createSupervisor, type Supervisor } from "./supervise.js";
+import { createSupervisor, briefError, type Supervisor } from "./supervise.js";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
 // and flushed once per tick in step(). See src/m1/journal.ts.
@@ -192,7 +192,7 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
 
     return { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx, ...bin };
   } catch (err) {
-    console.warn(`  [dlmm-value] read failed, reusing last known values (dlmm ${last.dlmmValueY.toFixed(2)}, free-y ${last.freeUsdcxValueY.toFixed(2)}): ${(err as Error).message}`);
+    console.warn(`  [dlmm-value] read failed, reusing last known values (dlmm ${last.dlmmValueY.toFixed(2)}, free-y ${last.freeUsdcxValueY.toFixed(2)}): ${briefError((err as Error).message)}`);
     return last;
   }
 }

@@ -27,6 +27,7 @@ import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, r
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
+import { briefError } from "./supervise.js";
 import { realizedVolDaily } from "./lvr.js";
 
 // Realised daily vol of the DLMM pair's OWN underlying price — deliberately NOT the sBTC-STX
@@ -315,8 +316,10 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     pos = await readUserPosition(poolDef, w.address);
   } catch (err) {
     return {
-      action: "skip", reason: `read failed before any broadcast: ${(err as Error).message}`,
-      activeBin: -1, posLo: null, posHi: null, posX: 0, posY: 0, halfWidth: cfg.halfWidth,
+      action: "skip", reason: `read failed before any broadcast: ${briefError((err as Error).message)}`,
+      // The configured width, not the fallback: the pool's bin step is unknown here, so this is
+      // the pin if set (it was logging "±25 (pinned)" with a ±50 pin, 2026-10-27).
+      activeBin: -1, posLo: null, posHi: null, posX: 0, posY: 0, halfWidth: (() => { try { return pinnedHalfWidth(); } catch { return null; } })() ?? cfg.halfWidth,
       executed: false, skipped: true,
     };
   }
