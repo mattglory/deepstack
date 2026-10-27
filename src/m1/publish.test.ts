@@ -13,6 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.METRICS_PATH = join(tmpdir(), `deepstack-publish-test-${process.pid}.json`);
+// Same for the owner-flow file (metrics.ts CAPITAL_FLOWS_PATH): on the live box journal/ holds the
+// real flows, and the publisher merges them in, so without this the suite read live data and
+// failed there only (2026-10-27).
+process.env.CAPITAL_FLOWS_PATH = join(tmpdir(), `deepstack-publish-flows-${process.pid}.json`);
 const { publishMetrics, isPublishConfigured } = await import("./publish.js");
 const { METRICS_PATH } = await import("./metrics.js");
 
