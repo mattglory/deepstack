@@ -379,3 +379,22 @@ export function nextFlashCounters(current: FlashCounters, outcome: { executed: b
     attempts: outcome.executed ? current.attempts + 1 : current.attempts,
   };
 }
+
+
+// ---------------------------------------------------------------------------------------------
+// Keep native STX for fees, and skip trades smaller than their own cost (2026-10-27).
+//
+// The XYK LP and rebalance rules sized themselves from ALL free inventory. When STX is one of
+// the pair's tokens, that includes the gas the agent needs for every transaction: on 2026-10-27
+// they moved the ~150 STX kept for fees into the XYK position and left 0.04 STX, enough for no
+// further transaction. The same day the rebalancer decided a 0.019 STX swap, far below the
+// 0.05 STX fee it would pay. tradableInventory() removes a fee reserve from the native side;
+// worthTrading() rejects trades worth less than a floor (both in y units).
+export function tradableInventory(inv: Inventory, yIsNativeStx: boolean, reserveYBase: bigint, xIsNativeStx = false): Inventory {
+  const sub = (v: bigint) => (v > reserveYBase ? v - reserveYBase : 0n);
+  return { xBase: xIsNativeStx ? sub(inv.xBase) : inv.xBase, yBase: yIsNativeStx ? sub(inv.yBase) : inv.yBase };
+}
+
+export function worthTrading(valueY: number, minValueY: number): boolean {
+  return valueY >= minValueY;
+}

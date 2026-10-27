@@ -21,7 +21,7 @@ import {
   buildWithdrawLiquidity,
   type BuiltTx,
 } from "./actions.js";
-import { decide, decideLp, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
+import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
@@ -52,6 +52,11 @@ let rebalDefer = 0; // consecutive cycles a required rebalance was deferred for 
 let lastRegime: Regime = "calm"; // latest allocation regime, for the per-cycle haven check
 
 const FEE_USTX = 50_000n;
+// Native STX kept back for transaction fees; neither XYK rule may spend it (see tradableInventory).
+// Read when used, not at load: .env is loaded later, in main().
+const stxFeeReserveUstx = () => BigInt(Math.round(Number(process.env.STX_FEE_RESERVE ?? 50) * 1e6));
+// Smallest rebalance worth making, in y units (STX on sbtc-stx): below this the fee outweighs it.
+const minTradeValueY = () => Number(process.env.MIN_TRADE_VALUE_Y ?? 5);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const lpH = (b: bigint) => Number(b) / 1e6;
 
@@ -390,11 +395,15 @@ async function act(
     feeMicroStx: FEE_USTX,
   };
 
+  // Free inventory minus the native-STX fee reserve: neither rule below may spend the gas the
+  // agent needs for its next transactions (tradableInventory, agent.ts).
+  const inv = tradableInventory(s.inv, !!y.native, stxFeeReserveUstx(), !!x.native);
+
   // 1) LP allocation (earns the pool fee) — only if enabled.
   if (params.targetLpFraction > 0) {
     const lp = decideLp(
       s.portfolioY, s.lpBalanceBase, s.lpValueY,
-      s.inv.xBase, s.inv.yBase, s.midXinY, x.decimals, y.decimals, params,
+      inv.xBase, inv.yBase, s.midXinY, x.decimals, y.decimals, params,
     );
     if (lp.action !== "none") {
       // Exit-liquidity guard: bounded share of the pool, or no growth. See agent.ts.
@@ -454,10 +463,16 @@ async function act(
   const rbParams = exp.active ? { ...params, rebalanceBandBps: exp.bandBps } : params;
 
   // 2) Rebalance free inventory via swap.
-  const d = decide(s.inv, s.midXinY, x.decimals, y.decimals, rbParams);
+  const d = decide(inv, s.midXinY, x.decimals, y.decimals, rbParams);
   tickJournal.rebalance = { action: d.action, reason: d.reason };
   if (d.action === "none") {
     console.log(`  rebalance: HOLD — ${d.reason}`);
+    return false;
+  }
+  const tradeValueY = d.action === "swap-y-for-x" ? Number(d.amountBase) / 10 ** y.decimals : (Number(d.amountBase) / 10 ** x.decimals) * s.midXinY;
+  if (!worthTrading(tradeValueY, minTradeValueY())) {
+    console.log(`  rebalance: HOLD — trade worth ${tradeValueY.toFixed(4)} ${y.symbol} is below the ${minTradeValueY()} ${y.symbol} minimum (not worth its fee)`);
+    tickJournal.rebalance = { action: "none", reason: "below minimum trade size" };
     return false;
   }
   const amt =
