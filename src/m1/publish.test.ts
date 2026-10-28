@@ -17,6 +17,7 @@ process.env.METRICS_PATH = join(tmpdir(), `deepstack-publish-test-${process.pid}
 // real flows, and the publisher merges them in, so without this the suite read live data and
 // failed there only (2026-10-27).
 process.env.CAPITAL_FLOWS_PATH = join(tmpdir(), `deepstack-publish-flows-${process.pid}.json`);
+process.env.WALLET_MIGRATIONS_PATH = join(tmpdir(), `deepstack-publish-migrations-${process.pid}.json`);
 const { publishMetrics, isPublishConfigured } = await import("./publish.js");
 const { METRICS_PATH } = await import("./metrics.js");
 

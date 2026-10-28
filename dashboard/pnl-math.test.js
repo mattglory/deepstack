@@ -156,3 +156,19 @@ test("withdrawals are added back before comparing with HODL", () => {
   assert.equal(ilAdjustedReturn(m, after), 0); // flat, not -76.5%
   assert.equal(ilAdjustedReturn({ pilotBaseline: m.pilotBaseline }, after), -76.5); // what it showed before
 });
+
+test("agentWallets: follows recorded rotations back from the current wallet only", async () => {
+  const { agentWallets } = await import("./pnl-math.js");
+  const A = "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60";
+  const B = "SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9";
+  const C = "SP000000000000000000002Q6VF78";
+  assert.deepEqual(agentWallets(null, A), { current: A, all: [A], past: [] });
+  const m = { wallet: B, walletMigrations: [{ t: "2026-11-05T09:00:00Z", from: A, to: B, txids: [] }] };
+  assert.deepEqual(agentWallets(m, A).all, [B, A]);
+  assert.equal(agentWallets(m, A).past[0].until, "2026-11-05T09:00:00Z");
+  // An entry that doesn't lead to the current wallet adds nothing.
+  const stray = { wallet: B, walletMigrations: [{ t: "x", from: C, to: A }] };
+  assert.deepEqual(agentWallets(stray, A).all, [B]);
+  // Garbage in the telemetry falls back to the configured address.
+  assert.equal(agentWallets({ wallet: "<script>" }, A).current, A);
+});

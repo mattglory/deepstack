@@ -18,6 +18,10 @@ export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json"
 // whole-file write (review of #20, 2026-10-23). journal/ survives deploys. The agent copies the
 // list into metrics.json on each sample so the dashboard keeps reading one file.
 export const CAPITAL_FLOWS_PATH = process.env.CAPITAL_FLOWS_PATH ?? "journal/capital-flows.json";
+// Agent wallet changes (key rotation), written only by rotate-key-cli. A recorded migration lets
+// the history continue on the new address instead of starting a fresh file; an unrecorded wallet
+// change still starts fresh, since that is a different agent.
+export const WALLET_MIGRATIONS_PATH = process.env.WALLET_MIGRATIONS_PATH ?? "journal/wallet-migrations.json";
 
 // Which commit produced these numbers — otherwise the only way to know is to ask the
 // operator (found via external review, 2026-09: a status message cited a stale commit
@@ -76,6 +80,9 @@ export interface MetricsSample {
 // Added 2026-10-22 after two owner withdrawals (65 STX on 10-14, 700 STX on 10-22) showed up as
 // losses on the dashboard's HODL comparison and as drawdown in the agent's own risk checks.
 export interface CapitalFlow { t: string; txid: string; stx: number; note?: string }
+// The same capital moved from one agent address to another. The transfers are not capital flows:
+// nothing entered or left the operation, it changed address.
+export interface WalletMigration { t: string; from: string; to: string; txids: string[]; note?: string }
 
 export interface MetricsFile {
   pair: string;
@@ -128,6 +135,7 @@ export interface MetricsFile {
   };
   samples: MetricsSample[];
   capitalFlows?: CapitalFlow[];
+  walletMigrations?: WalletMigration[];
   updated: string;
   deployedCommit?: string; // short git hash running when `updated` was written
 }
@@ -222,6 +230,34 @@ export function addCapitalFlow(f: CapitalFlow): "added" | "exists" {
   return "added";
 }
 
+export function loadWalletMigrations(): WalletMigration[] {
+  try {
+    if (!existsSync(WALLET_MIGRATIONS_PATH)) return [];
+    const v = JSON.parse(readFileSync(WALLET_MIGRATIONS_PATH, "utf8"));
+    return Array.isArray(v) ? (v as WalletMigration[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Records a migration once (deduplicated by from/to), atomically. Never touches metrics.json. */
+export function addWalletMigration(mg: WalletMigration): "added" | "exists" {
+  const list = loadWalletMigrations();
+  if (list.some((x) => x.from === mg.from && x.to === mg.to)) return "exists";
+  list.push(mg);
+  list.sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
+  mkdirSync(dirname(WALLET_MIGRATIONS_PATH), { recursive: true });
+  const tmp = `${WALLET_MIGRATIONS_PATH}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(list, null, 2));
+  renameSync(tmp, WALLET_MIGRATIONS_PATH);
+  return "added";
+}
+
+/** True when a recorded migration moved the agent from `from` to `to`. */
+export function isRecordedMigration(migrations: WalletMigration[], from: string, to: string): boolean {
+  return migrations.some((x) => x.from === from && x.to === to);
+}
+
 export function recordSample(
   pair: string,
   wallet: string,
@@ -230,6 +266,11 @@ export function recordSample(
 ): void {
   try {
     let m = load();
+    const migrations = loadWalletMigrations();
+    // Same capital on a new key: keep the history and carry on under the new address.
+    if (m && m.pair === pair && m.wallet !== wallet && isRecordedMigration(migrations, m.wallet, wallet)) {
+      m.wallet = wallet;
+    }
     // Start a fresh file when absent or the pair/wallet changed (new pilot context).
     if (!m || m.pair !== pair || m.wallet !== wallet) {
       m = {
@@ -269,6 +310,7 @@ export function recordSample(
     // Carry the owner-flow list (its own file) into metrics.json for the dashboard.
     const flows = loadCapitalFlows();
     if (flows.length) m.capitalFlows = flows;
+    if (migrations.length) m.walletMigrations = migrations;
     m.updated = s.t;
     m.deployedCommit = deployedCommit();
     mkdirSync(dirname(METRICS_PATH), { recursive: true });

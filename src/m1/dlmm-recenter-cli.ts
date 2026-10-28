@@ -39,6 +39,7 @@
 //   npm run m1:dlmm-recenter -- open 40 --yes-mainnet
 //   npm run m1:dlmm-recenter -- recenter --yes-mainnet
 //   npm run m1:dlmm-recenter -- withdraw --yes-mainnet
+//   npm run m1:dlmm-recenter -- withdraw --readd-later --yes-mainnet   # key rotation: re-add later via force-recenter
 
 import { fetchNonce } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
@@ -54,12 +55,13 @@ import {
   type PoolRefs,
   type BinWithdraw,
 } from "./dlmm-write.js";
-import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, divergenceBps } from "./dlmm-recenter.js";
+import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, divergenceBps, sumWithdrawResult } from "./dlmm-recenter.js";
+import { loadPending, savePending } from "./dlmm-pending-state.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.) AND
 // for half-width sizing (dlmmSigmaDaily/resolveHalfWidth) — see their doc comments there for
 // why this CLI no longer has its own, disconnected fixed-width default.
-import { resolveToken, ftBalance, priceOfToken, dlmmSigmaDaily, resolveHalfWidth, pinnedHalfWidth, recenterOnce, type TokenMeta } from "./dlmm-recenter-exec.js";
+import { resolveToken, ftBalance, priceOfToken, dlmmSigmaDaily, resolveHalfWidth, pinnedHalfWidth, recenterOnce, waitForTxResult, type TokenMeta } from "./dlmm-recenter-exec.js";
 import { setDlmmBasis } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 
@@ -171,7 +173,7 @@ async function doOpen(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMe
 
 // Withdraw every bin in the current position. Returns true once the withdraw has confirmed
 // (or immediately in preview mode, where nothing is broadcast).
-async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<typeof readDlmmState>>, pos: Awaited<ReturnType<typeof readUserPosition>>, yes: boolean): Promise<boolean> {
+async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<typeof readDlmmState>>, pos: Awaited<ReturnType<typeof readUserPosition>>, yes: boolean, readdLater = false): Promise<boolean> {
   if (!st) throw new Error(`could not read pool state for ${poolDef.key}`);
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
@@ -187,8 +189,21 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
   const nonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const r = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce });
   if (!r.txid) throw new Error("withdraw broadcast returned no txid");
-  const s = await waitFor(r.txid);
-  return s === "success";
+  const res = await waitForTxResult(r.txid, (m) => console.log(m));
+  if (res.status !== "success") return false;
+  if (readdLater) {
+    // Record exactly what came back as a pending re-add, the same state the agent's own recenter
+    // writes, so a later force-recenter (or the agent's next cycle) rebalances and re-adds it.
+    // Used for a key rotation: the tokens move to the new wallet and are re-added from there.
+    const got = sumWithdrawResult(res.repr ?? "") ?? { x: pos.totalX, y: pos.totalY };
+    savePending({
+      pair: poolDef.key, xBase: got.x, yBase: got.y,
+      before: { x: Number(pos.totalX) / xUnit, y: Number(pos.totalY) / yUnit },
+      t: new Date().toISOString(), abortedSwaps: 0,
+    });
+    console.log(`  recorded a pending re-add of ${Number(got.x) / xUnit} ${xTok.asset || "STX"} + ${Number(got.y) / yUnit} ${yTok.asset}`);
+  }
+  return true;
 }
 
 async function main() {
@@ -299,8 +314,11 @@ async function main() {
   }
 
   if (action === "force-recenter") {
-    if (pos.bins.length === 0) throw new Error("no position to recenter (a pending re-add, if any, resumes on the agent's next cycle)");
+    const pending = loadPending();
+    const resume = pos.bins.length === 0 && pending?.pair === PAIR;
+    if (pos.bins.length === 0 && !resume) throw new Error("no position to recenter and no pending re-add");
     refuseFallbackWidth();
+    if (!yes && resume) { console.log(`preview: would resume the pending re-add of ${Number(pending!.xBase) / xUnit} ${xTok.asset || "STX"} + ${Number(pending!.yBase) / yUnit} ${yTok.asset} at ±${halfWidth} around active ${st.activeBinId} (rebalancing swaps first if needed). Pause the agent first, then re-run with --yes-mainnet.`); return; }
     if (!yes) { console.log(`preview: would withdraw ${pos.bins.length} bins and re-add ±${halfWidth} around active ${st.activeBinId} through the agent's recenter path. Pause the agent first (touch /opt/deepstack/KILL) so the two never send at once, then re-run with --yes-mainnet.`); return; }
     const r = await recenterOnce(w, { pair: PAIR, halfWidth, targetUsd: targetUsd(), sigmaDaily, force: true }, true, (m) => console.log(m));
     console.log(`\nresult: ${r.action} — ${r.reason}${r.executed ? " ✓" : ""}${r.alert ? " (ALERT: pending re-add saved)" : ""}`);
@@ -339,7 +357,7 @@ async function main() {
 
   if (action === "withdraw") {
     if (pos.bins.length === 0) throw new Error("no position to withdraw");
-    const ok = await doWithdraw(w, poolDef, st, pos, yes);
+    const ok = await doWithdraw(w, poolDef, st, pos, yes, process.argv.includes("--readd-later"));
     if (yes) { if (ok) console.log("\n✅ withdrawn."); else { console.log("\n⚠ withdraw did not confirm."); process.exitCode = 1; } }
     else console.log("\n⚠ preview only — re-run with --yes-mainnet (pause the agent first: touch /opt/deepstack/KILL).");
     return;

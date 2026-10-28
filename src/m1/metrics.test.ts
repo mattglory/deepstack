@@ -15,6 +15,7 @@ import { join } from "node:path";
 
 process.env.METRICS_PATH = join(tmpdir(), `deepstack-metrics-test-${process.pid}.json`);
 process.env.CAPITAL_FLOWS_PATH = join(tmpdir(), `deepstack-flows-test-${process.pid}.json`);
+process.env.WALLET_MIGRATIONS_PATH = join(tmpdir(), `deepstack-migrations-test-${process.pid}.json`);
 const { recordSample, adjustLpBasis, markPilotStart, METRICS_PATH } = await import("./metrics.js");
 
 const sample = (lpValueY: number, mid = 400_000) => ({
@@ -28,7 +29,7 @@ const dlmmSample = (t: string, dlmmValueY: number, mid = 400_000) => ({
 const readBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).lpBasis;
 const readDlmmBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).dlmmBasis;
 
-beforeEach(() => { rmSync(METRICS_PATH, { force: true }); rmSync(process.env.CAPITAL_FLOWS_PATH!, { force: true }); });
+beforeEach(() => { rmSync(METRICS_PATH, { force: true }); rmSync(process.env.CAPITAL_FLOWS_PATH!, { force: true }); rmSync(process.env.WALLET_MIGRATIONS_PATH!, { force: true }); });
 
 test("basis: auto-initialises 50/50 at current mid for a pre-tracking position", () => {
   recordSample("sbtc-stx", "SPX", 1800, sample(200));
@@ -185,7 +186,7 @@ test("dlmmBasis: a same-cycle recenter (no intervening zero SAMPLE) does not res
 });
 
 // --- capital flows (owner deposits/withdrawals), 2026-10-22 ---
-const { withdrawnStx, currentDrawdown, addCapitalFlow, loadCapitalFlows } = await import("./metrics.js");
+const { withdrawnStx, currentDrawdown, addCapitalFlow, loadCapitalFlows, addWalletMigration, loadWalletMigrations } = await import("./metrics.js");
 
 test("withdrawnStx: sums withdrawals in (after, upTo], deposits net against them", () => {
   const flows = [
@@ -233,4 +234,30 @@ test("capital flows recorded in metrics.json before the file existed are kept", 
   assert.equal(addCapitalFlow({ t: "2026-10-27T08:47:21Z", txid: "new", stx: 3300 }), "added");
   assert.deepEqual(loadCapitalFlows().map((f) => f.txid), ["old", "new"]);
   assert.equal(addCapitalFlow({ t: "2026-10-14T12:24:12Z", txid: "old", stx: -65 }), "exists");
+});
+
+test("wallet change: a recorded migration keeps the history; an unrecorded one starts fresh", () => {
+  const s = (t: string) => ({ t, mid: 400_000, ext: null, xBase: "0", yBase: "0", lpValueY: 0, portfolioY: 1000, safe: true });
+  recordSample("sbtc-stx", "SPOLD", 1800, s("2026-11-05T08:00:00Z"));
+  recordSample("sbtc-stx", "SPOLD", 1800, s("2026-11-05T08:30:00Z"));
+  const started = JSON.parse(readFileSync(METRICS_PATH, "utf8")).startedAt;
+
+  // Unrecorded change: a different agent, so a fresh file.
+  recordSample("sbtc-stx", "SPOTHER", 1800, s("2026-11-05T09:00:00Z"));
+  assert.equal(JSON.parse(readFileSync(METRICS_PATH, "utf8")).samples.length, 1);
+
+  // Back to the old wallet (fresh again), then a recorded rotation to the new one.
+  rmSync(METRICS_PATH, { force: true });
+  recordSample("sbtc-stx", "SPOLD", 1800, s("2026-11-05T08:00:00Z"));
+  recordSample("sbtc-stx", "SPOLD", 1800, s("2026-11-05T08:30:00Z"));
+  const mg = { t: "2026-11-05T09:10:00Z", from: "SPOLD", to: "SPNEW", txids: ["a", "b"] };
+  assert.equal(addWalletMigration(mg), "added");
+  assert.equal(addWalletMigration(mg), "exists");
+  recordSample("sbtc-stx", "SPNEW", 1800, s("2026-11-05T10:00:00Z"));
+  const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  assert.equal(m.wallet, "SPNEW");
+  assert.equal(m.samples.length, 3);
+  assert.equal(m.startedAt, started);
+  assert.deepEqual(m.walletMigrations.map((x: { to: string }) => x.to), ["SPNEW"]);
+  assert.deepEqual(loadWalletMigrations()[0].txids, ["a", "b"]);
 });

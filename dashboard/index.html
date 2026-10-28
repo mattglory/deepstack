@@ -137,7 +137,7 @@
     </div>
 
     <script type="module">
-      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo } from "./pnl-math.js";
+      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets } from "./pnl-math.js";
       const CFG = {
         wallet: "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
         api: "https://api.mainnet.hiro.so",
@@ -173,6 +173,10 @@
       };
       const tstr = (s) => (s ? new Date(s * 1000).toISOString().slice(0, 16).replace("T", " ") : "—");
       const $ = (id) => document.getElementById(id);
+      // The agent's addresses. CFG.wallet until the telemetry loads; after a key rotation the
+      // telemetry names the new wallet, and the earlier ones stay in the activity history.
+      let wallets = agentWallets(null, CFG.wallet);
+      const isAgent = (addr) => wallets.all.includes(addr);
 
       async function getJson(p) { const r = await fetch(CFG.api + p); if (!r.ok) throw new Error(p + " → " + r.status); return r.json(); }
       // A Bitflow swap emits TWO sBTC transfers: the trade principal and a tiny protocol-fee
@@ -181,7 +185,7 @@
       const sbtcLeg = (t) => Math.max(0, ...(t.ft_transfers || []).filter((x) => x.asset_identifier === CFG.sbtcAsset).map((x) => Number(x.amount)));
       // Directional sBTC leg for LP rows: what the WALLET sent (add) or received (withdraw).
       const sbtcDir = (t, dir) => Math.max(0, ...(t.ft_transfers || [])
-        .filter((x) => x.asset_identifier === CFG.sbtcAsset && (dir === "in" ? x.recipient === CFG.wallet : x.sender === CFG.wallet))
+        .filter((x) => x.asset_identifier === CFG.sbtcAsset && (dir === "in" ? isAgent(x.recipient) : isAgent(x.sender)))
         .map((x) => Number(x.amount)));
       // A DLMM "-multi" call spans several bins, each with its own transfer — SUM them,
       // don't take the max (max is right for a single-bin XYK row, where a second, tiny
@@ -190,7 +194,7 @@
       // rendering below never showed at all (found via external review, 2026-09: DLMM
       // rows rendered "deposited X sBTC + 0 STX" — the pool is sBTC-USDCx, not sBTC-STX).
       const assetSumDir = (t, assetId, dir) => (t.ft_transfers || [])
-        .filter((x) => x.asset_identifier === assetId && (dir === "in" ? x.recipient === CFG.wallet : x.sender === CFG.wallet))
+        .filter((x) => x.asset_identifier === assetId && (dir === "in" ? isAgent(x.recipient) : isAgent(x.sender)))
         .reduce((sum, x) => sum + Number(x.amount), 0);
       const uUSDCX = (n) => Number(n) / 1e6;
 
@@ -466,6 +470,7 @@
       }
 
       function renderPilot(m) {
+        wallets = agentWallets(m, CFG.wallet);
         if (m && m.lpBasis) agentLpBasis = m.lpBasis;
         if (m && m.dlmmBasis) agentDlmmBasis = m.dlmmBasis;
         if (m && m.pilotStartedAt) agentPilotStart = m.pilotStartedAt;
@@ -597,15 +602,24 @@
 
       async function load() {
         try {
-          const a = CFG.wallet;
+          const a = wallets.current;
           $("addrLink").textContent = a.slice(0, 6) + "…" + a.slice(-4);
           $("addrLink").href = `https://explorer.hiro.so/address/${a}?chain=mainnet`;
-          const [bal, tt] = await Promise.all([
+          const prev = wallets.past[0];
+          $("addrLink").title = prev ? `Agent wallet since ${prev.until.slice(0, 10)} (key rotation); earlier activity from ${prev.address} is included below` : "Agent wallet";
+          // Balances are the current wallet's; activity covers every agent wallet, newest first.
+          const merge = (lists) => {
+            const byId = new Map();
+            for (const r of lists.flat()) byId.set(r.tx.tx_id, r);
+            return [...byId.values()].sort((x, y) => (y.tx.burn_block_time || 0) - (x.tx.burn_block_time || 0));
+          };
+          const [bal, ...tts] = await Promise.all([
             getJson(`/extended/v1/address/${a}/balances`),
-            getJson(`/extended/v1/address/${a}/transactions_with_transfers?limit=50`),
+            ...wallets.all.map((w) => getJson(`/extended/v1/address/${w}/transactions_with_transfers?limit=50`)),
           ]);
-          const pilotTxs = agentPilotStart ? await fetchAllSince(a, agentPilotStart) : null;
-          render(bal, tt.results || [], pilotTxs);
+          const txs = merge(tts.map((tt) => tt.results || [])).slice(0, 50);
+          const pilotTxs = agentPilotStart ? merge(await Promise.all(wallets.all.map((w) => fetchAllSince(w, agentPilotStart)))) : null;
+          render(bal, txs, pilotTxs);
           $("status").innerHTML = `updated ${new Date().toUTCString().slice(17, 25)} UTC`;
         } catch (e) { $("status").textContent = "error: " + e.message; }
       }

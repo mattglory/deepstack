@@ -24,3 +24,8 @@ export function organicApr(args: {
   yLegUsdRate?: number;
   minDays?: number;
 }): { netY: number | null; apr: number | null; days: number };
+
+export function agentWallets(
+  m: unknown,
+  fallback: string,
+): { current: string; all: string[]; past: { address: string; until: string }[] };
