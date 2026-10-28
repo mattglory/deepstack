@@ -14,3 +14,11 @@ test("pending re-add: round-trips bigints, clears, and treats junk as none", () 
   clearPending(p);
   assert.equal(loadPending(p), null);
 });
+
+test("pending re-add: an unconfirmed swap's txid survives a restart", () => {
+  const p = join(tmpdir(), `deepstack-pending-swap-${process.pid}.json`);
+  const v = { pair: "sbtc-usdcx", xBase: 1n, yBase: 2n, before: { x: 0, y: 0 }, t: "t", abortedSwaps: 0, pendingSwap: { txid: "0xabc", direction: "y-for-x" as const } };
+  savePending(v, p);
+  assert.deepEqual(loadPending(p), v);
+  clearPending(p);
+});

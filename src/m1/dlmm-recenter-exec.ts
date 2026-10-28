@@ -159,6 +159,21 @@ export async function waitForTx(txid: string, log: (s: string) => void): Promise
   return (await waitForTxResult(txid, log)).status;
 }
 
+/** One status read, no waiting: "pending", "success", an abort status, or "unknown" on a read error. */
+export async function txStatusOnce(txid: string): Promise<{ status: string; repr?: string }> {
+  try {
+    const j = await withRpc((baseUrl) =>
+      hiroFetch(baseUrl)(`${baseUrl}/extended/v1/tx/${txid}`).then((res) => {
+        if (!res.ok) throw new Error(`tx status fetch failed: ${res.status}`);
+        return res.json() as Promise<{ tx_status?: string; tx_result?: { repr?: string } }>;
+      }),
+    );
+    return { status: j.tx_status ?? "unknown", repr: j.tx_result?.repr };
+  } catch {
+    return { status: "unknown" };
+  }
+}
+
 /** Like waitForTx, plus the Clarity result repr (swap in/out, withdraw amounts). */
 export async function waitForTxResult(txid: string, log: (s: string) => void): Promise<{ status: string; repr?: string }> {
   log(`  ${txid} — confirming…`);
@@ -494,6 +509,21 @@ async function readdPending(
     log(`  ⚠ re-add not finished: ${reason}. Tokens stay withdrawn (pending re-add saved); retrying next cycle.`);
     return { ...base, executed: false, skipped: true, alert: true, reason: `re-add pending: ${reason}` };
   };
+  // A swap from an earlier cycle that hadn't confirmed: settle it before planning anything.
+  if (pending.pendingSwap) {
+    const prev = await txStatusOnce(pending.pendingSwap.txid);
+    if (prev.status === "pending" || prev.status === "unknown") return waitResult(`earlier rebalance swap ${pending.pendingSwap.txid} still unconfirmed`);
+    const fillPrev = prev.status === "success" ? parseSwapResult(prev.repr) : null;
+    if (fillPrev) {
+      if (pending.pendingSwap.direction === "x-for-y") { pending.xBase -= fillPrev.in; pending.yBase += fillPrev.out; }
+      else { pending.yBase -= fillPrev.in; pending.xBase += fillPrev.out; }
+      pending.abortedSwaps = 0;
+    } else {
+      pending.abortedSwaps += 1;
+    }
+    delete pending.pendingSwap;
+    savePending(pending);
+  }
   if (pending.abortedSwaps >= READD_MAX_ABORTED_SWAPS) {
     return waitResult(`${pending.abortedSwaps} rebalance swaps failed in a row; not retrying until a human checks (delete ${pendingStatePath()} to abandon)`);
   }
@@ -527,7 +557,10 @@ async function readdPending(
     log(`  rebalance swap ${i + 1}: ${step.direction} ${Number(step.amountIn) / 10 ** inTok.decimals} ${inTok.asset || "STX"} (min out ${step.minOut})`);
     const snonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
     const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, feeMicroStx: FEE_USTX, nonce: snonce });
+    if (sr.txid) { pending.pendingSwap = { txid: sr.txid, direction: step.direction }; savePending(pending); }
     const sres = sr.txid ? await waitForTxResult(sr.txid, log) : { status: "no-txid" as string, repr: undefined };
+    if (sres.status === "timeout") return waitResult(`rebalance swap ${sr.txid} not confirmed yet; it will be settled next cycle`);
+    delete pending.pendingSwap;
     const fill = sres.status === "success" ? parseSwapResult(sres.repr) : null;
     if (!fill) {
       pending.abortedSwaps += 1;
