@@ -89,3 +89,23 @@ export function organicApr({ currentValueY, basisXQty, basisYQty, basisT, mid, y
   const apr = hodlLegs > 0 && days >= minDays ? (netY / hodlLegs) * (365 / days) * 100 : null;
   return { netY, apr, days };
 }
+
+// The agent's addresses: the current one from the telemetry (falling back to the page's
+// configured address), plus every earlier one reached by following recorded key rotations
+// (m.walletMigrations, written by rotate-key-cli) back from it. Only a chain that ends at the
+// current wallet counts, so a stray entry can never add an unrelated address to the activity view.
+const STACKS_ADDR = /^S[PM][0-9A-Z]{28,41}$/;
+export function agentWallets(m, fallback) {
+  const current = m && STACKS_ADDR.test(m.wallet ?? "") ? m.wallet : fallback;
+  const migrations = (m?.walletMigrations ?? []).filter((x) => STACKS_ADDR.test(x?.from ?? "") && STACKS_ADDR.test(x?.to ?? ""));
+  const all = [current], past = [];
+  let cur = current;
+  for (;;) {
+    const mg = migrations.find((x) => x.to === cur && !all.includes(x.from));
+    if (!mg) break;
+    all.push(mg.from);
+    past.push({ address: mg.from, until: mg.t });
+    cur = mg.from;
+  }
+  return { current, all, past };
+}

@@ -33,12 +33,31 @@ still worth a plan rather than assuming it'll never need to move.
   Revisit if this moves from a fixed-term pilot to a standing deployment.
 - **Triggered:** rotate immediately on any suspected VPS compromise, any operator
   access change you can't fully account for, or any sign the key material left this box.
-- **Procedure:** (1) generate a new wallet offline; (2) `touch KILL` on the VPS to pause
-  the agent; (3) withdraw every LP/DLMM position back to loose tokens in the old wallet
-  (`m1:dlmm-recenter -- withdraw --yes-mainnet`, and the XYK equivalent); (4) transfer
-  everything to the new address; (5) update `STACKS_PRIVATE_KEY` in `.env` on the VPS;
-  (6) confirm the old address reads zero balance on-chain; (7) remove the kill file and
-  restart.
+- **Procedure** (`npm run m1:rotate-key`, run on the VPS in `/opt/deepstack`; the new key is
+  generated there and never displayed or copied anywhere else):
+  1. `touch KILL` and `systemctl stop deepstack-agent`. Stopped, not only paused: a paused
+     agent still records a sample every cycle, and one taken mid-move would chart the
+     transfers as a loss.
+  2. Withdraw the concentrated position, saving it as a pending re-add:
+     `DLMM_PAIR=sbtc-usdcx npm run m1:dlmm-recenter -- withdraw --readd-later --yes-mainnet`.
+  3. `npm run m1:rotate-key -- new` writes the new key to `.env.rotation` (owner-only) and
+     prints only its address. `-- plan` shows what will move and anything that blocks it.
+  4. `-- move --yes-mainnet` (type the new address's last 6 characters): the XYK LP token,
+     sBTC and USDCx are each sent with a deny-mode, exact-amount post-condition and confirmed
+     before the next; STX goes last. The XYK position moves as a token, so it is never unwound.
+     Anything not on the list (address-poisoning dust) is left behind. Safe to re-run after an
+     interruption: it moves whatever is left.
+  5. `-- switch --yes-mainnet` checks the old wallet is drained, puts the new key in `.env`
+     (old copy kept as `.env.pre-rotation`), records the migration in
+     `journal/wallet-migrations.json` and removes `.env.rotation`. The metrics and dashboard
+     then continue the same history on the new address.
+  6. Re-add the concentrated position from the new wallet, at the width in `DLMM_PIN_HALF_WIDTH`:
+     `DLMM_PAIR=sbtc-usdcx npm run m1:dlmm-recenter -- force-recenter --yes-mainnet` resumes the
+     pending re-add (rebalancing swaps first if the two sides no longer match, as in any
+     recenter). Then `systemctl start deepstack-agent` and `rm KILL`. After its first healthy report,
+     `npm run m1:rotate-key -- --remove-backup`.
+  7. Update the address in the README and dashboard, and anywhere the wallet is registered
+     (for example a liquidity campaign).
 
 ## 2. Provision
 

@@ -15,7 +15,7 @@
 //   METRICS_GIST_TOKEN  — classic PAT, `gist` scope ONLY
 
 import { readFileSync } from "node:fs";
-import { METRICS_PATH, loadCapitalFlows } from "./metrics.js";
+import { METRICS_PATH, loadCapitalFlows, loadWalletMigrations } from "./metrics.js";
 
 type Fetch = typeof fetch;
 
@@ -43,6 +43,8 @@ export async function publishMetrics(doFetch: Fetch = fetch): Promise<boolean> {
     const parsed = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
     const flows = loadCapitalFlows();
     if (flows.length) parsed.capitalFlows = flows;
+    const migrations = loadWalletMigrations();
+    if (migrations.length) parsed.walletMigrations = migrations;
     const content = JSON.stringify(parsed);
     const res = await doFetch(`https://api.github.com/gists/${id}`, {
       method: "PATCH",

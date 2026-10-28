@@ -23,10 +23,12 @@ if [ -d "$SRC/.git" ]; then git -C "$SRC" pull --ff-only; else git clone "$REPO"
 # runtime/secret state so updates never clobber .env, journal, or telemetry.
 # KILL (the kill switch) is runtime state too: before 2026-10-27 --delete removed it, so a deploy
 # made while the agent was deliberately paused silently resumed it.
+# '.env*' (not just .env): every .env variant is server-only secret state, and .env.rotation holds
+# the new key between `m1:rotate-key -- new` and `switch`; deleting it mid-rotation would lose funds.
 mkdir -p "$APP"
 rsync -a --delete \
   --exclude .git --exclude node_modules \
-  --exclude .env --exclude journal --exclude dashboard/metrics.json --exclude KILL \
+  --exclude '.env*' --exclude journal --exclude dashboard/metrics.json --exclude KILL \
   "$SRC"/ "$APP"/
 # $APP has no .git (excluded above), so the running process can't `git rev-parse` its own
 # commit — stamp it here instead. Read by src/m1/metrics.ts's deployedCommit(), surfaced
