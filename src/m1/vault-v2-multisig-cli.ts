@@ -31,6 +31,11 @@
 // `sign` decodes and prints the transaction and needs the function name typed back before it
 // signs; each signature file records the transaction's pre-sign hash, and `broadcast` ignores
 // any signature that doesn't match (stale files from an earlier run).
+//
+// Each signing device sets MS_VAULT itself; never copy it from the machine that built the
+// transaction, or a tampered build could name a different vault (review 2026-10-28). For calls
+// that hand a role to an address (admin, strategy, guardian, fee recipient), the signer also
+// types the last 6 characters of that address.
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, appendFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
@@ -162,11 +167,21 @@ function describe(tx: ReturnType<typeof deserializeTransaction>): { contractId: 
   return { contractId, fn, text };
 }
 
-async function confirmTyped(expected: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await rl.question(`Type the function name (${expected}) to sign it, anything else cancels: `)).trim();
+const PRINCIPAL_FUNCTIONS = new Set(["queue-admin-change", "queue-strategy", "queue-guardian", "queue-fee-recipient"]);
+
+async function confirmTyped(expected: string, principal: string | null): Promise<boolean> {
+  // One line iterator for both answers: rl.question() twice drops a line that arrives early.
+  const rl = createInterface({ input: process.stdin });
+  const lines = rl[Symbol.asyncIterator]();
+  const ask = async (q: string) => { process.stdout.write(q); const r = await lines.next(); return r.done ? "" : String(r.value).trim(); };
+  let ok = (await ask(`Type the function name (${expected}) to sign it, anything else cancels: `)) === expected;
+  if (ok && principal) {
+    console.log(`\n  this hands a role to: ${principal}`);
+    ok = (await ask(`Type the LAST 6 characters of that address: `)) === principal.slice(-6);
+  }
   rl.close();
-  return answer === expected;
+  console.log("");
+  return ok;
 }
 
 async function sign(file: string, keyN: string, confirm = true): Promise<void> {
@@ -182,7 +197,9 @@ async function sign(file: string, keyN: string, confirm = true): Promise<void> {
   checkAllowed(d.contractId, d.fn);
   if (tx.postConditionMode !== PostConditionMode.Deny) throw new Error("refusing: not deny mode");
   console.log(`About to sign with key ${keyN}:\n${d.text}`);
-  if (confirm && !(await confirmTyped(d.fn))) throw new Error("cancelled: nothing signed");
+  const p = tx.payload as any;
+  const principal = PRINCIPAL_FUNCTIONS.has(d.fn) && p.functionArgs?.[0] ? cvToString(p.functionArgs[0]) : null;
+  if (confirm && !(await confirmTyped(d.fn, principal))) throw new Error("cancelled: nothing signed");
   const preSignHash = tx.signBegin();
   // Non-sequential: every signer signs the same initial hash, so this signature is valid on its
   // own and can be combined with the others in any order.

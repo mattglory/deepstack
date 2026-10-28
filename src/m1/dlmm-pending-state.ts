@@ -15,6 +15,10 @@ export interface PendingReadd {
   before: { x: number; y: number }; // position legs before the withdraw, for the basis adjustment
   t: string; // when the withdraw confirmed
   abortedSwaps: number; // consecutive swaps that failed on-chain; stops retrying at the limit
+  // A rebalance swap broadcast but not yet confirmed when the cycle moved on. Checked before the
+  // next step, so a late confirmation is applied to the amounts rather than planned around
+  // (review 2026-10-28, point 3).
+  pendingSwap?: { txid: string; direction: "x-for-y" | "y-for-x" };
 }
 
 export function pendingStatePath(): string {
@@ -30,6 +34,7 @@ export function loadPending(path = pendingStatePath()): PendingReadd | null {
       pair: j.pair, xBase: BigInt(j.xBase), yBase: BigInt(j.yBase),
       before: { x: Number(j.before?.x ?? 0), y: Number(j.before?.y ?? 0) },
       t: String(j.t), abortedSwaps: Number(j.abortedSwaps ?? 0),
+      ...(j.pendingSwap?.txid ? { pendingSwap: { txid: String(j.pendingSwap.txid), direction: j.pendingSwap.direction === "y-for-x" ? "y-for-x" : "x-for-y" } } : {}),
     };
   } catch {
     return null;
