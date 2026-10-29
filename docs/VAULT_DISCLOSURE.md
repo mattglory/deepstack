@@ -78,6 +78,9 @@ without paying any fee. Tracking the high point per share is part of the planned
 
 ## Independent review, October 2026
 
+Note (2026-10-29): the reviewer has since joined DeepStack as a co-founder. The review was
+independent when it was done; reviews from now on come from outside the team.
+
 An external reviewer examined both contracts on 2026-10-07 and added 30 tests that demonstrate
 each finding. The reviewer's conclusion: the code is clean in the narrow sense, but the vault is not ready
 for outside depositors. The main findings, in plain terms:
