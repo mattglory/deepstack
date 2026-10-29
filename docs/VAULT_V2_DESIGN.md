@@ -55,7 +55,8 @@ unpause, queue/confirm) with the chosen setup on testnet before any mainnet depl
 **Recommended key holders [decided]:** key 1 on a hardware wallet held by the owner, key 2 on
 a second hardware wallet stored in a different location, key 3 a recovery key held offline by
 a trusted person who is not the reviewer, so the review stays independent. No admin key on
-the VPS.
+the VPS. (2026-10-29: the reviewer has joined as a co-founder, so the key 3 holder is to be
+re-decided, and independent review now has to come from outside the team.)
 
 **Strategy wallet: dedicated [review D5].** The strategy address holds only vault capital,
 never the agent's own trading funds. Its on-chain balance then shows what the strategy
@@ -306,7 +307,8 @@ signatures are not needed every day.
    Done 2026-10-10 (section 10).
 5. Mainnet v2 with the owner's own capital: one real gain round trip and one real loss round
    trip, docs updated.
-6. Independent re-review before any outside deposit.
+6. Re-review by someone outside the team (the original reviewer is now a co-founder) before any
+   outside deposit.
 
 ## 10. Owner decisions (2026-10-10)
 

@@ -107,7 +107,8 @@ so plainly, alongside the professional audit status of v3 itself.
    that adds and withdraws one bin as itself).
 2. A tiny mainnet proof with the owner's own funds: the contract adds, rebalances and
    withdraws.
-3. Full design review with the independent reviewer, then test-first Clarity, as for v2.
+3. Full design review (the original reviewer is now a co-founder, so an outside reviewer as
+   well), then test-first Clarity, as for v2.
 4. Professional audit before any outside deposit.
 
 v2 continues meanwhile: mainnet with the owner's own capital (one gain and one loss round

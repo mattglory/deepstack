@@ -104,7 +104,7 @@ incidents and their fixes. Live figures are on the [dashboard](https://dashboard
 
 | | Status |
 |---|---|
-| **v1** | Retired. Paused and fully wound down in October 2026 after an independent review |
+| **v1** | Retired. Paused and fully wound down in October 2026 after an external review |
 | **v2** | Epoch-based deposit vault with a performance fee over a high-water mark and a 2-of-3 multisig admin. Fully exercised on testnet ([docs/VAULT_V2_TESTNET.md](docs/VAULT_V2_TESTNET.md)); not open to outside deposits |
 | **v3** | Design stage: a vault that owns its position, so deposits never leave the contract |
 
@@ -150,9 +150,10 @@ can read balances. It only signs and broadcasts with an explicit double opt-in
 
 ## Review and disclosure
 
-The code and contracts have had an independent external review, and its findings are
-fixed and disclosed in the documents above, including incidents. There has been no
-professional third-party audit. DeepStack trades only its owner's capital; nothing in this
+The code and contracts were reviewed in October 2026 by an external reviewer, who has since
+joined DeepStack as a co-founder. The findings are fixed and disclosed in the documents above,
+including incidents. Further reviews, and a professional third-party audit, will come from
+outside the team before any outside deposit; there has been no professional audit yet. DeepStack trades only its owner's capital; nothing in this
 repository is an offer to manage anyone else's funds.
 
 ## Related
