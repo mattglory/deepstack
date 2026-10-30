@@ -30,6 +30,7 @@ import { scanCrossPools } from "./crosspool.js";
 import { scanStstxGap } from "./ststx-gap.js";
 import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmVol, pinnedHalfWidth } from "./dlmm-recenter-exec.js";
 import { readUserPosition } from "./dlmm-position.js";
+import { loadDeposit, feesEarned } from "./dlmm-fees.js";
 import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
@@ -105,6 +106,8 @@ interface Snapshot {
   usdPerStx: number;
   dlmmActiveBin?: number;
   dlmmBinStep?: number;
+  dlmmFeesUsdcx?: number;
+  dlmmFeesSince?: string;
   portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
@@ -162,7 +165,7 @@ function lazyInitFromDisk(): void {
   }
 }
 
-async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<{ dlmmValueY: number; freeUsdcxValueY: number; usdPerStx: number; activeBin?: number; binStep?: number }> {
+async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Promise<{ dlmmValueY: number; freeUsdcxValueY: number; usdPerStx: number; activeBin?: number; binStep?: number; feesUsdcx?: number; feesSince?: string }> {
   const pairKey = process.env.DLMM_OBSERVE_PAIR;
   if (!pairKey) return { dlmmValueY: 0, freeUsdcxValueY: 0, usdPerStx: 0 };
   lazyInitFromDisk();
@@ -190,7 +193,15 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     const freeYBase = await ftBalance(w.address, `${yTok.principal}::${yTok.asset}`);
     lastFreeUsdcxValueY = Number(freeYBase) / 10 ** yTok.decimals / usdPerStx;
 
-    return { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx, ...bin };
+    // Fees actually earned, from the recorded deposit and this read of the bins (dlmm-fees.ts).
+    let fees: { feesUsdcx?: number; feesSince?: string } = {};
+    const dep = loadDeposit();
+    if (dep && dep.pool === pairKey && dep.owner === w.address) {
+      const f = feesEarned(dep, pos.bins);
+      if (f) fees = { feesUsdcx: +(Number(f.feesY) / 10 ** yTok.decimals).toFixed(4), feesSince: dep.t };
+    }
+
+    return { dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY, usdPerStx: lastUsdPerStx, ...bin, ...fees };
   } catch (err) {
     console.warn(`  [dlmm-value] read failed, reusing last known values (dlmm ${last.dlmmValueY.toFixed(2)}, free-y ${last.freeUsdcxValueY.toFixed(2)}): ${briefError((err as Error).message)}`);
     return last;
@@ -215,7 +226,7 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     lpValueY = (Number(q.xOut) / 10 ** cfg.x.decimals) * pool.midXinY + Number(q.yOut) / 10 ** cfg.y.decimals;
   }
   const freeValueY = xH * pool.midXinY + yH;
-  const { dlmmValueY, freeUsdcxValueY, usdPerStx, activeBin: dlmmActiveBin, binStep: dlmmBinStep } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
+  const { dlmmValueY, freeUsdcxValueY, usdPerStx, activeBin: dlmmActiveBin, binStep: dlmmBinStep, feesUsdcx: dlmmFeesUsdcx, feesSince: dlmmFeesSince } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
   const portfolioY = freeValueY + lpValueY + dlmmValueY + freeUsdcxValueY;
   const yFraction = freeValueY > 0 ? yH / freeValueY : 0;
   return {
@@ -231,6 +242,8 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     usdPerStx,
     dlmmActiveBin,
     dlmmBinStep,
+    dlmmFeesUsdcx,
+    dlmmFeesSince,
     portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
@@ -279,7 +292,7 @@ async function act(
   console.log(
     `  free: ${s.xHuman} ${x.symbol} + ${s.yHuman} ${y.symbol} | ` +
       `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueY.toFixed(2)} ${y.symbol}) | ` +
-      `DLMM: ~${s.dlmmValueY.toFixed(2)} ${y.symbol} | free-USDCx: ~${s.freeUsdcxValueY.toFixed(2)} ${y.symbol} | ` +
+      `DLMM: ~${s.dlmmValueY.toFixed(2)} ${y.symbol}${s.dlmmFeesUsdcx != null ? ` (fees earned ${s.dlmmFeesUsdcx.toFixed(2)} USDCx)` : ""} | free-USDCx: ~${s.freeUsdcxValueY.toFixed(2)} ${y.symbol} | ` +
       `portfolio ~${s.portfolioY.toFixed(2)} ${y.symbol}`,
   );
 
@@ -377,11 +390,12 @@ async function act(
     stxUsd: s.usdPerStx || undefined,
     dlmmActiveBin: s.dlmmActiveBin,
     dlmmBinStep: s.dlmmBinStep,
+    dlmmFeesUsdcx: s.dlmmFeesUsdcx,
     portfolioY: s.portfolioY,
     safe: safety.safe,
     poolX: s.xReserve,
     poolY: s.yReserve,
-  });
+  }, { dlmmFeesSince: s.dlmmFeesSince });
   if (!safety.safe) {
     console.log(`  ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no trading this cycle)`);
     return false;

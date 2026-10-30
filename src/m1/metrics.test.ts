@@ -261,3 +261,16 @@ test("wallet change: a recorded migration keeps the history; an unrecorded one s
   assert.deepEqual(m.walletMigrations.map((x: { to: string }) => x.to), ["SPNEW"]);
   assert.deepEqual(loadWalletMigrations()[0].txids, ["a", "b"]);
 });
+
+test("dlmm fees: the latest on-chain figure is kept at the top; dropped when there is no position", () => {
+  const s = (t: string, dlmmValueY: number, dlmmFeesUsdcx?: number) => ({ t, mid: 400_000, ext: null, xBase: "0", yBase: "0", lpValueY: 0, dlmmValueY, dlmmFeesUsdcx, portfolioY: 1000, safe: true });
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-30T10:00:00Z", 500, 12.5), { dlmmFeesSince: "2026-10-27T11:07:16Z" });
+  let m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  assert.deepEqual(m.dlmmFees, { usdcx: 12.5, since: "2026-10-27T11:07:16Z", t: "2026-10-30T10:00:00Z" });
+  assert.equal(m.samples[0].dlmmFeesUsdcx, 12.5);
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-30T10:30:00Z", 500)); // a read without a figure keeps the last
+  assert.equal(JSON.parse(readFileSync(METRICS_PATH, "utf8")).dlmmFees.usdcx, 12.5);
+  recordSample("sbtc-stx", "SPX", 1800, s("2026-10-30T11:00:00Z", 0)); // position withdrawn
+  m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+  assert.equal(m.dlmmFees, undefined);
+});

@@ -187,6 +187,21 @@ export async function readBinLiquidityStates(
 }
 
 /**
+ * Each bin's price (y per x in base units, scaled by 1e8: the core's get-bin-price). A bin's price
+ * never changes, so callers read it once and keep it. THROWS if any bin can't be read.
+ */
+export async function readBinPrices(coreAddress: string, initialPrice: bigint, binStep: number, bins: number[]): Promise<Map<number, bigint>> {
+  const out = new Map<number, bigint>();
+  for (const signedBin of bins) {
+    const pr = await callCoreRead(coreAddress, "get-bin-price", [Cl.uint(initialPrice), Cl.uint(binStep), Cl.int(signedBin)]);
+    const price = pr?.value?.value;
+    if (price == null) throw new Error(`could not read the price of bin ${signedBin}`);
+    out.set(signedBin, BigInt(price));
+  }
+  return out;
+}
+
+/**
  * The core's live minimum-bin-shares / minimum-burnt-shares data-vars — read, never hardcoded,
  * since they're admin-settable and expectedDlp() must match whatever the core enforces today.
  */

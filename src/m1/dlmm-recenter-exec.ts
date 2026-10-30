@@ -29,6 +29,8 @@ import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
 import { briefError } from "./supervise.js";
 import { loadPending, savePending, clearPending, pendingStatePath, type PendingReadd } from "./dlmm-pending-state.js";
+import { clearDeposit } from "./dlmm-fees.js";
+import { recordDepositFromTx } from "./dlmm-fees-record.js";
 import { realizedVolDaily } from "./lvr.js";
 
 // Realised daily vol of the DLMM pair's OWN underlying price — deliberately NOT the sBTC-STX
@@ -442,6 +444,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     const addTxid = await executeAdd(w, poolDef, st, xTok, yTok, effCfg, log);
     const s = await waitForTx(addTxid, log);
     if (s === "success") {
+      await recordDepositFromTx(addTxid, w.address, cfg.pair, log);
       // Explicit basis reset, not left to recordSample()'s passive detection — see
       // setDlmmBasis's own doc comment for why. Re-read the confirmed position rather than
       // reuse the pre-broadcast target: the actual deposited legs can differ slightly from
@@ -490,6 +493,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     t: new Date().toISOString(), abortedSwaps: 0,
   };
   savePending(pending);
+  clearDeposit(); // the bins are gone; the re-add records its own deposit
   log(`  withdrew ${Number(got.x) / xu} ${xTok.asset || "STX"} + ${Number(got.y) / yu} ${yTok.asset}; recorded as a pending re-add`);
   const res = await readdPending(w, poolDef, st, xTok, yTok, effCfg, pending, base, log);
   return { ...res, withdrawTxid: wr.txid };
@@ -581,6 +585,7 @@ async function readdPending(
   const outcome = recenterSequenceOutcome("success", as);
   if (!outcome.executed) return { ...waitResult(`re-add ${as}`), addTxid };
   clearPending();
+  await recordDepositFromTx(addTxid, w.address, cfg.pair, log);
   // Capital moved by the resize goes into the basis, not the P&L (adjustBasisForRecenter).
   try {
     const after = await readUserPosition(poolDef, w.address);
