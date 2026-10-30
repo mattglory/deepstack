@@ -321,11 +321,19 @@
           net === null ? `—<div class="sub2">no basis yet</div>`
           : apr === null ? `<span style="color:var(--muted)">measuring</span><div class="sub2">${days.toFixed(1)}d of ≥3d window</div>`
           : `<span style="color:${apr >= 0 ? "var(--ok)" : "var(--bad)"}">${apr >= 0 ? "+" : ""}${fmt(apr, 1)}%</span><div class="sub2">net of IL · ${days.toFixed(0)}d observed</div>`;
+        // Fees alone, measured from the bins on chain (src/m1/dlmm-fees.ts), not an estimate.
+        const dlmmFeesHtml = (f) => {
+          if (!f || typeof f.usdcx !== "number") return `—<div class="sub2">no deposit record yet</div>`;
+          const days = (Date.parse(f.t) - Date.parse(f.since)) / 86400000;
+          const perDay = days >= 0.5 ? ` · ~$${fmt(f.usdcx / days, 2)}/day` : "";
+          return `$${fmt(f.usdcx, 2)}<div class="sub2">since ${new Date(f.since).toISOString().slice(0, 10)}${perDay}</div>`;
+        };
         $("econ").innerHTML =
           small("LP P&L (fees − IL)", lpNet === null ? `—<div class="sub2">no LP basis yet</div>` : signed(lpNet)) +
           small("LP APR (annualised)", aprHtml(lpNet, lpApr, lpDays)) +
           small("DLMM P&L (fees − IL)", dlmmNet === null ? `—<div class="sub2">no DLMM basis yet</div>` : signed(dlmmNet)) +
           small("DLMM APR (annualised)", aprHtml(dlmmNet, dlmmApr, dlmmDays)) +
+          small("DLMM fees earned (on-chain)", dlmmFeesHtml(agentDlmmFees)) +
           small("Fees paid", `${fmt(uSTX(netFees), 3)} STX`) +
           small(agentPilotStart ? "Net (pilot)" : "Net", signed(net)) +
           small("LP position", `${fmt(lp, 6)}<div class="sub2">~${fmt(agentLpValueY, 1)} STX</div>`) +
@@ -333,7 +341,8 @@
         $("econNote").innerHTML =
           "Rebalancing swaps <b>pay</b> the pool fee — they manage inventory, they don't earn. " +
           "The LP and DLMM positions each earn a share of pool fees, shown here as value vs cost basis — " +
-          "fees <b>net of impermanent loss</b>, tracked from the agent's telemetry. No guaranteed yield.";
+          "fees <b>net of impermanent loss</b>, tracked from the agent's telemetry. " +
+          "DLMM fees earned are the fees alone, measured from the position's bins on chain. No guaranteed yield.";
 
         // table
         $("rows").innerHTML = acts.length
@@ -363,6 +372,7 @@
       let agentLpBasis = null; // deposited leg quantities {xQty, yQty, t} (agent-tracked)
       let agentDlmmValueY = 0; // agent's latest DLMM position valuation (in STX)
       let agentDlmmBasis = null; // deposited leg quantities {xQty (sBTC), yQty (USDCx), t}
+      let agentDlmmFees = null; // {usdcx, since, t}: fees earned, measured on chain by the agent
       let agentStxUsd = 0; // USD per STX, as used to value the DLMM position's USDCx leg
       let agentPilotStart = null; // ISO time the official pilot window opened (scopes Net)
       let agentMid = 0; // agent's latest on-chain mid, for valuing the basis legs
@@ -473,6 +483,7 @@
         wallets = agentWallets(m, CFG.wallet);
         if (m && m.lpBasis) agentLpBasis = m.lpBasis;
         if (m && m.dlmmBasis) agentDlmmBasis = m.dlmmBasis;
+        agentDlmmFees = m && m.dlmmFees ? m.dlmmFees : null;
         if (m && m.pilotStartedAt) agentPilotStart = m.pilotStartedAt;
         const tiles = $("pilotTiles"), note = $("pilotNote"), wrap = $("midWrap");
         if (!m || !m.samples || m.samples.length === 0) {
