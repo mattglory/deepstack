@@ -44,3 +44,13 @@ test("fmtUnits", () => {
   assert.equal(fmtUnits(2_842_800_000n, 6), "2842.8");
   assert.equal(fmtUnits(0n, 6), "0");
 });
+
+test("testnet rehearsal uses its own asset list; mainnet is unchanged", async () => {
+  const { rotationAssets, TESTNET_ROTATION_ASSETS } = await import("./key-rotation.js");
+  assert.equal(rotationAssets("mainnet"), ROTATION_ASSETS);
+  assert.equal(rotationAssets("testnet"), TESTNET_ROTATION_ASSETS);
+  const ds = TESTNET_ROTATION_ASSETS[0].id;
+  const p = planRotation({ stx: 10_000_000n, stxLocked: 0n, ft: { [ds]: 5n, [SBTC]: 1n } }, ROTATION_FEE_USTX, TESTNET_ROTATION_ASSETS);
+  assert.deepEqual(p.tokens.map((t) => t.asset.id), [ds]);
+  assert.deepEqual(p.ignored, [SBTC]); // a mainnet asset id on testnet is just "unknown"
+});

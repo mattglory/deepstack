@@ -12,6 +12,8 @@
 //   npm run m1:rotate-key -- switch --yes-mainnet     # old wallet drained → .env uses the new key; migration recorded
 //   npm run m1:rotate-key -- --remove-backup          # after the agent is confirmed healthy on the new key
 //
+// Add --testnet (with STACKS_NETWORK=testnet in .env) to rehearse the whole sequence on testnet.
+//
 // Guards:
 // - Never prints a key. The new key is written to an owner-only file and nowhere else.
 // - The agent must be stopped (systemctl), not just paused: a paused agent still records a sample
@@ -39,11 +41,12 @@ import { hiroHeaders } from "./rpc.js";
 import { loadPending } from "./dlmm-pending-state.js";
 import { addWalletMigration } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
-import { parseBalances, planRotation, isDrained, fmtUnits, ROTATION_FEE_USTX, type WalletBalances } from "./key-rotation.js";
+import { parseBalances, planRotation, isDrained, fmtUnits, rotationAssets, ROTATION_FEE_USTX, type WalletBalances } from "./key-rotation.js";
 
 const argv = process.argv.slice(2);
 const cmd = argv.find((a) => !a.startsWith("--")) ?? "plan";
 const yes = argv.includes("--yes-mainnet");
+const testnet = argv.includes("--testnet");
 const envPath = ".env";
 const rotationPath = ".env.rotation";
 const backupPath = ".env.pre-rotation";
@@ -124,8 +127,8 @@ async function confirmTyped(address: string): Promise<void> {
   if (typed !== address.slice(-6)) throw new Error("cancelled: nothing sent");
 }
 
-function printPlan(old: WalletBalances, fresh: WalletBalances, from: string, to: string): ReturnType<typeof planRotation> {
-  const p = planRotation(old);
+function printPlan(old: WalletBalances, fresh: WalletBalances, from: string, to: string, assets: ReturnType<typeof rotationAssets>): ReturnType<typeof planRotation> {
+  const p = planRotation(old, ROTATION_FEE_USTX, assets);
   console.log(`from ${from} (current agent)`);
   console.log(`to   ${to} (new key)`);
   for (const t of p.tokens) console.log(`  move ${fmtUnits(t.amount, t.asset.decimals)} ${t.asset.label}`);
@@ -150,13 +153,16 @@ async function main(): Promise<void> {
     return void console.log(`removed ${backupPath}`);
   }
   const w = await getWallet(); // loads .env
-  if (w.network !== "mainnet") throw new Error("this command is for the mainnet agent wallet");
+  if (testnet ? w.network !== "testnet" : w.network !== "mainnet") {
+    throw new Error(testnet ? "--testnet needs STACKS_NETWORK=testnet in .env" : "this command is for the mainnet agent wallet (rehearse with --testnet)");
+  }
+  const assets = rotationAssets(w.network);
 
   if (cmd === "new") {
     if (existsSync(rotationPath)) throw new Error(`refusing: ${rotationPath} already exists (one rotation at a time)`);
     const key = randomPrivateKey();
     writePrivate(rotationPath, `NEW_STACKS_PRIVATE_KEY=${key}\n`);
-    const address = getAddressFromPrivateKey(key, "mainnet");
+    const address = getAddressFromPrivateKey(key, w.network);
     console.log(`new key written to ${rotationPath} (owner-only). Its address: ${address}`);
     console.log("next: npm run m1:rotate-key -- plan");
     return;
@@ -164,18 +170,22 @@ async function main(): Promise<void> {
 
   const key = newKey();
   if (!key) throw new Error(`no new key yet: run \`npm run m1:rotate-key -- new\` first`);
-  const to = getAddressFromPrivateKey(key, "mainnet");
+  const to = getAddressFromPrivateKey(key, w.network);
   if (to === w.address) throw new Error("the new key is the current key; nothing to rotate");
 
   if (cmd === "plan") {
-    printPlan(await balances(w), await balances({ address: to, network: w.network }), w.address, to);
+    printPlan(await balances(w), await balances({ address: to, network: w.network }), w.address, to, assets);
     notePending();
     return;
   }
 
   if (cmd === "move") {
     const old = await balances(w);
-    const p = printPlan(old, await balances({ address: to, network: w.network }), w.address, to);
+    // A re-run after a completed move: say so plainly instead of reporting a fee shortfall.
+    if (isDrained(old, ROTATION_FEE_USTX, assets) && !Object.keys(old.ft).some((id) => /\.dlmm-pool-/.test(id))) {
+      return void console.log(`nothing left to move from ${w.address}. next: npm run m1:rotate-key -- switch --yes-mainnet`);
+    }
+    const p = printPlan(old, await balances({ address: to, network: w.network }), w.address, to, assets);
     notePending();
     if (p.blockers.length) throw new Error("refusing: resolve the BLOCKED items first; nothing sent");
     if (!yes) return void console.log("\n(preview — not sent; stop the agent, then add --yes-mainnet)");
@@ -226,7 +236,7 @@ async function main(): Promise<void> {
 
   if (cmd === "switch") {
     const old = await balances(w);
-    if (!isDrained(old)) throw new Error("refusing: the current agent wallet still holds funds; run move first");
+    if (!isDrained(old, ROTATION_FEE_USTX, assets)) throw new Error("refusing: the current agent wallet still holds funds; run move first");
     const fresh = await balances({ address: to, network: w.network });
     if (fresh.stx === 0n) throw new Error("refusing: the new address holds no STX; nothing seems to have arrived");
     console.log(`old ${w.address}: drained (${fmtUnits(old.stx, 6)} STX dust)`);
@@ -244,7 +254,7 @@ async function main(): Promise<void> {
     try { chownSync(tmp, orig.uid, orig.gid); } catch { /* not root */ }
     renameSync(tmp, envPath);
     const check = /^STACKS_PRIVATE_KEY=(.*)$/m.exec(readFileSync(envPath, "utf8"))?.[1]?.trim() ?? "";
-    if (getAddressFromPrivateKey(check, "mainnet") !== to) {
+    if (getAddressFromPrivateKey(check, w.network) !== to) {
       copyFileSync(backupPath, envPath);
       throw new Error("verification failed; the original .env was restored");
     }
