@@ -58,6 +58,13 @@ still worth a plan rather than assuming it'll never need to move.
      `npm run m1:rotate-key -- --remove-backup`.
   7. Update the address in the README and dashboard, and anywhere the wallet is registered
      (for example a liquidity campaign).
+- **Rehearsed on testnet (2026-10-30)** with `--testnet` (STACKS_NETWORK=testnet in `.env`),
+  using a fresh funded test wallet and the vault v2 test share token in place of sBTC/USDCx:
+  `move` refused without KILL and on a wrong confirmation; with both, it moved 5 dsSTX2
+  (`0xaac5bb09…`) then 9.8 STX (`0x7c4695ff…`), each confirmed. `switch` put the new key in
+  `.env` (owner-only), recorded the migration with both txids and removed `.env.rotation`; the
+  next recorded sample, signed by the new key, continued the same history (3 samples, same
+  start). `--remove-backup` then removed `.env.pre-rotation`.
 
 ## 2. Provision
 

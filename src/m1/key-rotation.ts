@@ -40,6 +40,21 @@ export const ROTATION_ASSETS: readonly RotationAsset[] = [
   },
 ];
 
+// Testnet rehearsal only: the vault v2 share token from the testnet dry run, a SIP-010 token
+// with the same `transfer` signature, so the token path is exercised before mainnet.
+export const TESTNET_ROTATION_ASSETS: readonly RotationAsset[] = [
+  {
+    id: "ST2ZBFNYZASTNQHSQSDV2NC04Y0513GVV5SHK3W5A.deepstack-vault-v2-token::deepstack-vault-v2-shares",
+    contract: "ST2ZBFNYZASTNQHSQSDV2NC04Y0513GVV5SHK3W5A.deepstack-vault-v2-token",
+    label: "dsSTX2 (testnet)",
+    decimals: 9,
+  },
+];
+
+export function rotationAssets(network: "mainnet" | "testnet"): readonly RotationAsset[] {
+  return network === "mainnet" ? ROTATION_ASSETS : TESTNET_ROTATION_ASSETS;
+}
+
 export interface WalletBalances {
   stx: bigint; // micro-STX, total
   stxLocked: bigint;
@@ -71,10 +86,10 @@ export function parseBalances(j: {
   return { stx: BigInt(j.stx?.balance ?? "0"), stxLocked: BigInt(j.stx?.locked ?? "0"), ft };
 }
 
-export function planRotation(old: WalletBalances, fee = ROTATION_FEE_USTX): RotationPlan {
+export function planRotation(old: WalletBalances, fee = ROTATION_FEE_USTX, assets: readonly RotationAsset[] = ROTATION_ASSETS): RotationPlan {
   const blockers: string[] = [];
-  const known = new Set(ROTATION_ASSETS.map((a) => a.id));
-  const tokens = ROTATION_ASSETS.filter((a) => (old.ft[a.id] ?? 0n) > 0n).map((a) => ({ asset: a, amount: old.ft[a.id] }));
+  const known = new Set(assets.map((a) => a.id));
+  const tokens = assets.filter((a) => (old.ft[a.id] ?? 0n) > 0n).map((a) => ({ asset: a, amount: old.ft[a.id] }));
   const ignored = Object.keys(old.ft).filter((id) => !known.has(id));
 
   for (const id of ignored) {
@@ -94,8 +109,8 @@ export function planRotation(old: WalletBalances, fee = ROTATION_FEE_USTX): Rota
  * The old wallet is done when no known asset or DLMM position remains and what STX is left is
  * no more than dust (by default one fee's worth).
  */
-export function isDrained(old: WalletBalances, dust = ROTATION_FEE_USTX): boolean {
-  if (ROTATION_ASSETS.some((a) => (old.ft[a.id] ?? 0n) > 0n)) return false;
+export function isDrained(old: WalletBalances, dust = ROTATION_FEE_USTX, assets: readonly RotationAsset[] = ROTATION_ASSETS): boolean {
+  if (assets.some((a) => (old.ft[a.id] ?? 0n) > 0n)) return false;
   if (Object.keys(old.ft).some((id) => /\.dlmm-pool-[^:]+::pool-token$/.test(id))) return false;
   return old.stx <= dust;
 }
