@@ -158,8 +158,9 @@ repository is an offer to manage anyone else's funds.
 
 ## Related
 
-DeepStack composes with [FlashStack](https://github.com/mattglory/Flashstack), atomic flash
-loans for STX and sBTC. Development was supported by a Stacks Endowment grant.
+DeepStack was built alongside [FlashStack](https://github.com/mattglory/Flashstack), atomic flash
+loans for STX and sBTC. The autonomous flash-rebalance route is paused (see
+[docs/FLASH_REBALANCE.md](docs/FLASH_REBALANCE.md)). Development was supported by a Stacks Endowment grant.
 
 ## License
 

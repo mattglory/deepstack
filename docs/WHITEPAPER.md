@@ -5,6 +5,12 @@
 **Repository:** https://github.com/mattglory/deepstack ·
 **Live dashboard:** https://dashboard-two-alpha-t9c0vbn07m.vercel.app
 
+> **Revision note (2026-11-01).** The autonomous FlashStack flash-rebalance route has been
+> paused since October 2026: the deployed receiver repays the loan from the agent's own STX, so
+> it adds no capacity ([FLASH_REBALANCE.md](FLASH_REBALANCE.md)). Where this paper calls
+> flash-composability "proven" or an edge, read it as demonstrated once on-chain and not active
+> today. Concentrated liquidity, described below as roadmap, has been live since August 2026.
+>
 > **Revision note (2026-07-23).** DeepStack treats live measurement as ground truth, and
 > that discipline applies to this paper too. Three things verified since v1.0 update the
 > competitive and capability sections (§4, §7, §9–§11) — the vision and scope are unchanged,
