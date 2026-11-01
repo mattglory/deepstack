@@ -57,6 +57,8 @@ import {
 } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, divergenceBps, sumWithdrawResult } from "./dlmm-recenter.js";
 import { loadPending, savePending } from "./dlmm-pending-state.js";
+import { clearDeposit } from "./dlmm-fees.js";
+import { recordDepositFromTx } from "./dlmm-fees-record.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.) AND
 // for half-width sizing (dlmmSigmaDaily/resolveHalfWidth) — see their doc comments there for
@@ -191,6 +193,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
   if (!r.txid) throw new Error("withdraw broadcast returned no txid");
   const res = await waitForTxResult(r.txid, (m) => console.log(m));
   if (res.status !== "success") return false;
+  clearDeposit(); // the bins are gone; the next add records its own deposit
   if (readdLater) {
     // Record exactly what came back as a pending re-add, the same state the agent's own recenter
     // writes, so a later force-recenter (or the agent's next cycle) rebalances and re-adds it.
@@ -289,6 +292,7 @@ async function main() {
     if (txid) {
       const s = await waitFor(txid);
       if (s === "success") {
+        await recordDepositFromTx(txid, w.address, PAIR, (m) => console.log(m));
         console.log("\n✅ position opened.");
         // Explicit basis reset — see metrics.ts's setDlmmBasis doc comment. A manual
         // withdraw-then-reopen (exactly what this command does for a deliberate resize)
@@ -380,6 +384,7 @@ async function main() {
   if (txid) {
     const s = await waitFor(txid);
     if (s === "success") {
+      await recordDepositFromTx(txid, w.address, PAIR, (m) => console.log(m));
       console.log("\n✅ recenter complete.");
       // Same explicit basis reset `open` already does, and for the same reason (see its
       // comment above) -- `recenter` withdraws then re-adds too, and missing this here

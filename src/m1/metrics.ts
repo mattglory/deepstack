@@ -66,6 +66,7 @@ export interface MetricsSample {
   stxUsd?: number; // USD per STX used to value the DLMM position's non-STX leg this tick
   dlmmActiveBin?: number; // DLMM pool's active bin this tick (absent when the read failed) — the vol source for range width
   dlmmBinStep?: number; // that pool's bin step in bps, so a bin series is never mixed across pools
+  dlmmFeesUsdcx?: number; // fees the DLMM position has earned since its deposit, from chain data (dlmm-fees.ts)
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
   // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y
@@ -136,6 +137,8 @@ export interface MetricsFile {
   samples: MetricsSample[];
   capitalFlows?: CapitalFlow[];
   walletMigrations?: WalletMigration[];
+  // Latest on-chain fee figure for the current DLMM position (dlmm-fees.ts), with its deposit time.
+  dlmmFees?: { usdcx: number; since: string; t: string };
   updated: string;
   deployedCommit?: string; // short git hash running when `updated` was written
 }
@@ -263,6 +266,7 @@ export function recordSample(
   wallet: string,
   intervalSec: number,
   s: MetricsSample,
+  extra: { dlmmFeesSince?: string } = {},
 ): void {
   try {
     let m = load();
@@ -311,6 +315,8 @@ export function recordSample(
     const flows = loadCapitalFlows();
     if (flows.length) m.capitalFlows = flows;
     if (migrations.length) m.walletMigrations = migrations;
+    if (s.dlmmFeesUsdcx != null && extra.dlmmFeesSince) m.dlmmFees = { usdcx: s.dlmmFeesUsdcx, since: extra.dlmmFeesSince, t: s.t };
+    else if (!((s.dlmmValueY ?? 0) > 0)) delete m.dlmmFees; // no position: no fee figure
     m.updated = s.t;
     m.deployedCommit = deployedCommit();
     mkdirSync(dirname(METRICS_PATH), { recursive: true });
