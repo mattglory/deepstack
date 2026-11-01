@@ -2,12 +2,12 @@
 
 > **Autonomous liquidity infrastructure for Bitcoin DeFi.**
 > An AI-tuned, safety-first market-making agent providing active liquidity across venues,
-> uniquely composable with FlashStack's atomic flash-loans, and built toward a trust-minimised
+> designed to compose with FlashStack's atomic flash-loans, and built toward a trust-minimised
 > vault — with reach extending from AMM liquidity today to concentrated liquidity,
 > order-book/perps quoting, and multichain as those venues mature.
 > Stacks now has first-party keepers (Bitflow) and independent AI market-making agents
-> (aibtcdev / K9Dreamer); DeepStack's edge is the flash-composability, the fail-closed
-> safety layer, and cross-venue independence none of them combine. See [COMPETITIVE.md](COMPETITIVE.md).
+> (aibtcdev / K9Dreamer); DeepStack's edge is the fail-closed safety layer, measured
+> accounting and cross-venue independence, heading to a trust-minimised vault. See [COMPETITIVE.md](COMPETITIVE.md).
 >
 > *(Updated 2026-07-23 with newly verified information — see the whitepaper's revision note.
 > Scope unchanged; claims staged more precisely as shipped / roadmap / gated.)*
@@ -15,6 +15,9 @@
 > on it; vault status and the custody gap to the Steer model are stated below. The sBTC figure
 > is the on-chain total supply of `SM3VDXK3…sbtc-token` read on 2026-10-19 (2,489.16 sBTC),
 > valued at that day's BTC price; it replaces an earlier, larger figure that was out of date.)*
+> *(Updated 2026-11-01: the FlashStack flash-rebalance route has been paused since October 2026
+> (see [FLASH_REBALANCE.md](FLASH_REBALANCE.md)), so it is described as a design direction here,
+> not a current capability.)*
 
 ## The problem
 
@@ -22,8 +25,8 @@ Stacks holds about **2,490 sBTC (roughly $205M)**, yet on-chain trading depth is
 a few venues. Automated liquidity now exists — Bitflow's HODLMM Keepers (auto-rebalancing
 concentrated-LP, live Mar 2026) and independent AI agents on the aibtcdev network (K9Dreamer
 et al.) market-making HODLMM with public receipts. What none of them combine is what Bitcoin
-DeFi still lacks: an operator that pairs **atomic flash-composable rebalancing (FlashStack)**
-with a **fail-closed safety architecture** and genuine **cross-venue/multichain independence**,
+DeFi still lacks: an operator that pairs a **fail-closed safety architecture**, designed to compose with
+**atomic flash-loan rebalancing (FlashStack)** once that route adds real capacity, and genuine **cross-venue/multichain independence**,
 built toward a **trust-minimised vault** — and that extends into order-book/perps quoting
 (gated today on venue security — the Velar exploit) as safe venues mature. Depth is the
 bottleneck; DeepStack's job is to supply it safely, composably, and where no one else is.
@@ -121,6 +124,6 @@ capital to an operator.
 
 We are not claiming to *be* Steer, nor to be the only automated-liquidity agent on Stacks —
 first-party keepers and independent AI market-makers already exist and do good work. We are
-building the **flash-composable, safety-first, cross-venue** version heading toward a vault —
+building the **safety-first, cross-venue** version heading toward a trust-minimised vault —
 the combination none of them offer — for a market with about $205M of sBTC and depth that is
 still measurably thin. That gap is real, and it is the one DeepStack is built to close.
