@@ -15,6 +15,7 @@
 // re-add (funds sit safely in the wallet as loose tokens — no half-built position).
 
 import { isKilled } from "./kill.js";
+import { assertFresh } from "./safety.js";
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
@@ -132,21 +133,24 @@ export async function ftBalance(addr: string, assetId: string): Promise<bigint> 
 
 // Single-source third-party price feeds — no Stacks RPC failover applies (not a Hiro-shaped
 // API, and there's only one configured source), but still bounded so a hung request can't
-// block a recenter cycle indefinitely.
+// block a recenter cycle indefinitely. A price older than EXTERNAL_PRICE_MAX_AGE_SECS (safety.ts,
+// default 15 min) is refused like a missing one (C5 / DSA-11): DefiLlama's own timestamp.
 const PRICE_FETCH_TIMEOUT_MS = 10_000;
 
+async function llamaPrice(id: string, what: string): Promise<number> {
+  const j = await (await fetch(`https://coins.llama.fi/prices/current/coingecko:${id}`, { signal: AbortSignal.timeout(PRICE_FETCH_TIMEOUT_MS) })).json();
+  const c = j?.coins?.[`coingecko:${id}`];
+  if (!(c?.price > 0)) throw new Error(`could not read ${what} price`);
+  assertFresh(Number(c.timestamp), `${what} price (DefiLlama)`);
+  return c.price;
+}
+
 export async function stxPriceUsd(): Promise<number> {
-  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:blockstack", { signal: AbortSignal.timeout(PRICE_FETCH_TIMEOUT_MS) })).json();
-  const p = j?.coins?.["coingecko:blockstack"]?.price;
-  if (!(p > 0)) throw new Error("could not read STX price");
-  return p;
+  return llamaPrice("blockstack", "STX");
 }
 
 export async function btcPriceUsd(): Promise<number> {
-  const j = await (await fetch("https://coins.llama.fi/prices/current/coingecko:bitcoin", { signal: AbortSignal.timeout(PRICE_FETCH_TIMEOUT_MS) })).json();
-  const p = j?.coins?.["coingecko:bitcoin"]?.price;
-  if (!(p > 0)) throw new Error("could not read BTC price");
-  return p;
+  return llamaPrice("bitcoin", "BTC");
 }
 
 /** USD price of a pool's X token: STX facade -> STX, sBTC -> BTC, a stablecoin -> $1. */
@@ -254,7 +258,7 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   // was also capping every future autonomous recenter of the position at $250, not just a
   // one-off manual open (found 2026-09-30 sizing a deliberate $600 position — the position
   // would have shrunk back to $250 the moment it next needed a genuine recenter).
-  const cap = cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
+  const cap = maxTargetUsd(cfg);
   if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) throw new Error(`target must be >0 and ≤ ${cap}`);
   const xPrice = await priceOfToken(xTok);
   const nativeStx = (await getStxBalance(w.address, w.network)).microStx;
@@ -303,6 +307,10 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
   if (!r.txid) throw new Error("add broadcast returned no txid");
   return r.txid;
+}
+
+function maxTargetUsd(cfg: RecenterConfig): number {
+  return cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
 }
 
 // Scale an explicit re-add down proportionally if it would exceed the configured ceiling (USD).
@@ -431,6 +439,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // the point of it, so the comparison that matters is against the liquidity actually competing
   // in that range, not the pool's total value across every price the pool has ever touched.
   // Separate default from XYK's 2% (DLMM_MAX_POOL_SHARE_BPS, default 10%) for that reason.
+  let poolPrice!: number; // Y per X at the active bin, human units; reused by the reference check below
   {
     const [depth, activeBinState] = await Promise.all([
       readLocalDepth(poolDef, st.activeBinId, halfWidth),
@@ -440,6 +449,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     ]);
     if (!activeBinState) return { ...base, reason: "could not read active-bin price for pool-share check", skipped: true };
     const priceYPerX = (Number(activeBinState.binPrice) / 1e8) * 10 ** (xTok.decimals - yTok.decimals);
+    poolPrice = priceYPerX;
     const localPoolValueY =
       (Number(depth.xTotal) / 10 ** xTok.decimals) * priceYPerX + Number(depth.yTotal) / 10 ** yTok.decimals;
     const capBps = Number(process.env.DLMM_MAX_POOL_SHARE_BPS ?? 1000);
@@ -449,6 +459,27 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
         reason: `skip — local pool-share cap (target $${cfg.targetUsd} vs ~$${localPoolValueY.toFixed(0)} local depth, cap ${capBps / 100}%)`,
         skipped: true,
       };
+    }
+  }
+
+  // Reference check of the pool's own price before anything is sized from it or withdrawn
+  // (C5 / DSA-11). The open used to size and add, and the recenter used to withdraw, with no
+  // pool-vs-reference comparison at all; only the re-add's rebalance swaps had one
+  // (nextReaddStep). Same bound as those swaps (DLMM_REBALANCE_MAX_DIVERGENCE_BPS, default 300)
+  // and the same reference (priceOfToken). Fails closed: no broadcast, alert set, and the reason
+  // is journalled with the result. A skip, not a failed attempt (nothing was sent).
+  {
+    let refPrice: number;
+    try {
+      refPrice = (await priceOfToken(xTok)) / (await priceOfToken(yTok));
+    } catch (err) {
+      log(`  [dlmm] ⛔ reference price unavailable (${briefError((err as Error).message)}) — no DLMM ${dec.action} this cycle`);
+      return { ...base, reason: `reference price unavailable before ${dec.action}: ${briefError((err as Error).message)}`, skipped: true, alert: true };
+    }
+    const div = divergenceBps(poolPrice, refPrice);
+    if (!(div <= REBALANCE_MAX_DIVERGENCE_BPS)) {
+      log(`  [dlmm] ⛔ active-bin price ${poolPrice} is ${div}bps from the reference ${refPrice} (max ${REBALANCE_MAX_DIVERGENCE_BPS}) — no DLMM ${dec.action} this cycle`);
+      return { ...base, reason: `active-bin price ${div}bps from the reference (max ${REBALANCE_MAX_DIVERGENCE_BPS}bps) — ${dec.action} not started`, skipped: true, alert: true };
     }
   }
 
@@ -485,6 +516,13 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // fails outright, not if it succeeds at a bad price).
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  // The re-add refuses a target above the ceiling (executeAdd), so refuse it here, before the
+  // withdraw: otherwise the position is pulled out, swapped, and left loose (found by the B5
+  // fault harness). A config error for a human, so a skip with an alert, not a failed attempt.
+  const cap = maxTargetUsd(cfg);
+  if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) {
+    return { ...base, reason: `target $${cfg.targetUsd} must be >0 and ≤ DLMM_MAX_TARGET_USD $${cap} — recenter not started`, skipped: true, alert: true };
+  }
   log(`  recenter 1/3 — withdraw ${pos.bins.length} bins`);
   // Re-checked immediately before each broadcast of the sequence (C8 / DSA-27), not only once
   // per cycle: an operator halt engaged mid-recenter stops before the next transaction.

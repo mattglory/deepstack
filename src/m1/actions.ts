@@ -28,6 +28,7 @@ import {
   getWithdrawQuote,
   minusSlippage,
   plusSlippage,
+  floorMinOutByReference,
 } from "./quotes.js";
 
 export interface BuildOpts {
@@ -37,6 +38,9 @@ export interface BuildOpts {
   broadcast?: boolean;
   feeMicroStx?: bigint;
   nonce?: bigint;
+  // External reference mid (y per x, safety.ts getExternalMid). When set, swap min-outs are
+  // floored by it (quotes.ts floorMinOutByReference): they can only get stricter.
+  refMidXinY?: number;
 }
 
 export interface BuiltTx {
@@ -157,7 +161,8 @@ export async function buildSwapXForY(xAmount: bigint, opts: BuildOpts = {}): Pro
   const { x, y } = activePool();
   const slip = opts.slippageBps ?? 100;
   const dy = await getSwapXForYQuote(xAmount);
-  const minDy = minusSlippage(dy, slip);
+  const minDy = opts.refMidXinY === undefined ? minusSlippage(dy, slip)
+    : floorMinOutByReference(minusSlippage(dy, slip), "x-for-y", xAmount, opts.refMidXinY, x.decimals, y.decimals, slip);
 
   return finalize(
     "swap-x-for-y",
@@ -182,7 +187,8 @@ export async function buildSwapYForX(yAmount: bigint, opts: BuildOpts = {}): Pro
   const { x, y } = activePool();
   const slip = opts.slippageBps ?? 100;
   const dx = await getSwapYForXQuote(yAmount);
-  const minDx = minusSlippage(dx, slip);
+  const minDx = opts.refMidXinY === undefined ? minusSlippage(dx, slip)
+    : floorMinOutByReference(minusSlippage(dx, slip), "y-for-x", yAmount, opts.refMidXinY, x.decimals, y.decimals, slip);
 
   return finalize(
     "swap-y-for-x",

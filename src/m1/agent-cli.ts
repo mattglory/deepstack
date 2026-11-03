@@ -417,6 +417,7 @@ async function act(
     broadcast: true,
     slippageBps: params.slippageBps,
     feeMicroStx: FEE_USTX,
+    refMidXinY: s.externalMid ?? undefined, // floors swap min-outs by the reference (C5)
   };
 
   // Free inventory minus the native-STX fee reserve: neither rule below may spend the gas the
