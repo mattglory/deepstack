@@ -84,22 +84,35 @@ It creates the `deepstack` service user, installs Node 22 LTS + git, switches ss
 key-only, enables the ssh-only firewall, and turns on unattended security updates.
 Read `deploy/provision.sh` before piping to bash — it's 50 lines on purpose.
 
-## 3. Install
+## 3. Install, update and roll back
+
+Deploy a **specific, reviewed commit**: one that is on `main` and whose CI passed. Fetch the
+script from that same commit, read it, then run it as root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mattglory/deepstack/main/deploy/install.sh | bash
+SHA=<full 40-character commit sha from main>
+curl -fsSLo install.sh https://raw.githubusercontent.com/mattglory/deepstack/$SHA/deploy/install.sh
+less install.sh
+bash install.sh $SHA             # build + activate; does NOT restart
+bash install.sh $SHA --restart   # same, then restart the agent and show its log
+bash install.sh --status         # current / previous release, kill switch, service
+bash install.sh --rollback --restart
 ```
 
-`deploy/install.sh` clones/updates the repo into `/opt/deepstack`, installs deps, runs the
-full test suite + typecheck (a red suite aborts the install), and installs — but does NOT
-enable — the systemd unit. Re-running it later is the update path: it never touches
-`.env`, `journal/`, or the telemetry file.
+**What it does (hardened 2026-11, assessment DSA-03 / DSA-23):**
+- **Refuses** a commit that is not on `origin/main`, or whose `test` and `contract-test` checks did not pass.
+- **Builds** the release in `/opt/deepstack-releases/<sha>`:
+  - as the unprivileged `deepstack-build` user, who cannot read `.env`;
+  - with `npm ci --ignore-scripts`, so the lockfile is enforced and no install script runs as root;
+  - runs **no tests on the host** (CI is the gate). It only smoke-checks that the TypeScript runtime loads.
+- **Activates** the release into `/opt/deepstack`. Code is root-owned and only readable by the agent's user. `journal/` and `dashboard/` stay writable by the agent, and `journal/` is created up front. It never touches `.env*`, `journal/`, `KILL` or `dashboard/metrics.json`.
+- **Keeps** the previous release for `--rollback`, and the last 5 builds.
+- **Logs** every deploy and rollback to `/var/log/deepstack-deploys.log`, which doubles as the deploy log in `docs/CHANGE_MANAGEMENT.md`.
+- **Restarts** only with `--restart`. Without it, the running agent keeps its old code until you restart, and the script says so.
 
-**`journal/` won't exist yet.** It's gitignored — local runtime evidence, not something a
-clone ships with. The agent creates it itself on its first tick (`mkdirSync` in
-`journal.ts`), so any command below that reads `journal/...` (verification, `grep`, `tail`)
-only works after the agent has actually run at least once. This is expected, not a broken
-step — see §6 for the order these actually happen in.
+**Emergency only:** `DEEPSTACK_SKIP_CI_CHECK="<reason>" bash install.sh $SHA`. The reason is logged.
+
+**First install on a box set up before 2026-11:** the first run changes `/opt/deepstack` ownership. The directory becomes root-owned (group `deepstack`, 0750), and the code root-owned. `.env` is left as it is (owned by `deepstack`, 0600).
 
 ## 4. Secrets
 
