@@ -462,7 +462,7 @@ lands. This covers two changes queued together that would merge roles only once 
 
 These are cheap on-chain checks. They do not replace the deploy procedure that closes the
 front-running window itself: deploy and initialize back to back from a fresh key, then
-verify (the deploy tooling, roadmap C10).
+verify (`docs/VAULT_V2_DEPLOY_RUNBOOK.md`, roadmap C10).
 
 Tests: five negative initialize cases and one positive case in `vault-v2-preinit.test.ts`;
 queue-time and land-time cases in `vault-v2-assessment.test.ts`.

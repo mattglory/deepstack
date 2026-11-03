@@ -1,14 +1,23 @@
 // Vault v2 operations: deploy and drive contracts/deepstack-vault-v2.clar and its token.
 //
-// Network: --testnet loads .env.testnet (gitignored, test keys only) before anything else.
-// Without it the normal .env is used. Any mainnet broadcast still requires --yes-mainnet.
-// Strategy-only calls (return, recover) sign with STRATEGY_PRIVATE_KEY; everything else with
-// STACKS_PRIVATE_KEY (the deployer, and the admin until initialize hands that role on).
+// Network: every command needs exactly one of --testnet / --mainnet, and it must match the
+// network the environment resolves to (STACKS_NETWORK) and the node's /v2/info network_id,
+// which is checked before any broadcast. --testnet loads .env.testnet (gitignored, test keys
+// only) before anything else. Any mainnet broadcast still requires --yes-mainnet.
+// Strategy-only calls (return, recover, accept-strategy) sign with STRATEGY_PRIVATE_KEY;
+// everything else with STACKS_PRIVATE_KEY (the deployer, or an operator key on testnet).
+//
+// Deploying (roadmap C10, docs/VAULT_V2_DEPLOY_RUNBOOK.md): from a clean checkout and a FRESH
+// deployer key, never the agent key. All four roles are explicit; there are no defaults.
+//   ROLES="--admin=SN... --strategy=ST... --guardian=ST... --fee-recipient=ST..."
+//   npm run m1:vault-v2 -- plan --testnet $ROLES                    # prints the plan and its sha256
+//   npm run m1:vault-v2 -- deploy --testnet $ROLES --commit=<HEAD>  # trait (testnet), token, vault, link, initialize
+//   npm run m1:vault-v2 -- deploy --mainnet $ROLES --commit=<HEAD> --yes-mainnet --plan-sha=<sha from plan>
+//   npm run m1:vault-v2 -- verify --testnet --record=deployments/v2-testnet-<date>.json
+//   npm run m1:vault-v2 -- initialize --testnet $ROLES              # only if a deploy stopped before initialize
 //
 //   npm run m1:vault-v2 -- status --testnet
 //   npm run m1:vault-v2 -- status --testnet --env=.env.testnet-ms   # a second rehearsal deployment
-//   npm run m1:vault-v2 -- deploy --testnet             # token, then vault, then the one-time link
-//   npm run m1:vault-v2 -- initialize --testnet [admin strategy guardian fee-recipient]
 //   npm run m1:vault-v2 -- deposit 100 --testnet
 //   npm run m1:vault-v2 -- request <shares|all> --testnet
 //   npm run m1:vault-v2 -- claim <request-id> --testnet
@@ -27,26 +36,25 @@
 //   npm run m1:vault-v2 -- accept-strategy --testnet    # signed by the proposed strategy (STRATEGY_PRIVATE_KEY)
 //   npm run m1:vault-v2 -- send-test-stx <address> <stx> --testnet   # testnet only
 //
-// Contract calls here use Allow mode: this is operator tooling. Deny-mode post-conditions are
-// exercised by the deposit site, which is what the testnet claim test (M2) must prove.
+// Post-conditions (DSA-26): deposit, sweep, return and recover run in Deny mode with the exact
+// STX amount; calls that move nothing run in Deny mode with none. Claims, cancels and requests
+// move an amount the contract computes and stay in Allow mode (operator tooling; the deposit
+// site covers those paths in deny mode, M2).
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import {
-  makeContractDeploy, makeContractCall, makeSTXTokenTransfer, broadcastTransaction,
+  makeContractCall, makeSTXTokenTransfer, broadcastTransaction,
   fetchCallReadOnlyFunction, fetchNonce, cvToJSON, Cl, ClarityValue, PostConditionMode,
   getAddressFromPrivateKey,
 } from "@stacks/transactions";
 import { loadDotenv, getWallet, apiBase, type Network } from "./wallet.js";
 import { hiroHeaders } from "./rpc.js";
-
-const VAULT = "deepstack-vault-v2";
-const TOKEN = "deepstack-vault-v2-token";
-const VAULT_PATH = "contracts/deepstack-vault-v2.clar";
-const TOKEN_PATH = "contracts/deepstack-vault-v2-token.clar";
-const CALL_FEE = 50_000n;
-const DEPLOY_FEE = 600_000n;
-const TRAIT_TESTNET = "sip-010-trait-ft-standard-v-1-1";
-const TRAIT_TESTNET_PATH = "contracts/testnet/sip-010-trait-ft-standard-v-1-1.clar"; // the v2 vault is ~27 KB; sized with margin, as for v1
+import {
+  VAULT, TOKEN, CALL_FEE, HOT_ADMIN_OVERRIDE, networkFromFlags, assertNodeNetwork, validatePrincipals,
+  gitState, sourcesAt, buildPlan, planText, planSha, checkProceed, buildDeployTxs, broadcastAll,
+  verifyDeployment, recordPath, deploymentRecord, postConditionsFor, type DeployPlan,
+} from "./vault-v2-deploy.js";
 
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith("--")));
@@ -57,6 +65,8 @@ const envFlag = [...flags].find((f) => f.startsWith("--env="));
 if (envFlag) loadDotenv(envFlag.slice("--env=".length));
 if (flags.has("--testnet")) loadDotenv(".env.testnet");
 
+const flagVal = (name: string) => [...flags].find((f) => f.startsWith(`--${name}=`))?.slice(name.length + 3);
+const git = (args: string[]) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const ustx = (stx: string) => {
   const n = Number(stx);
@@ -95,11 +105,14 @@ async function waitForTx(network: Network, txid: string): Promise<boolean> {
 async function main() {
   const cmd = pos[0];
   const w = await getWallet();
-  const network = w.network;
-  if (network === "mainnet" && !flags.has("--yes-mainnet") && !["status"].includes(cmd ?? "")) {
+  const network = networkFromFlags(flags, w.network);
+  const readOnlyCmds = ["status", "plan", "verify"];
+  if (network === "mainnet" && !flags.has("--yes-mainnet") && !readOnlyCmds.includes(cmd ?? "")) {
     console.log("refusing: this would broadcast on MAINNET. Add --yes-mainnet, or use --testnet.");
     process.exit(1);
   }
+  // The node must be on the chosen network before anything is planned or broadcast.
+  await assertNodeNetwork(network, (p) => api(network, p));
   const strategyKey = process.env.STRATEGY_PRIVATE_KEY?.trim();
   const strategyAddr = strategyKey ? getAddressFromPrivateKey(strategyKey, network) : null;
   const vaultId = `${w.address}.${VAULT}`;
@@ -113,12 +126,14 @@ async function main() {
       }),
     );
 
-  const send = async (fn: string, args: ClarityValue[], key = w.key) => {
+  const send = async (fn: string, args: ClarityValue[], key = w.key, amount: bigint | null = null) => {
     const sender = getAddressFromPrivateKey(key, network);
     const nonce = await fetchNonce({ address: sender, network, client: { baseUrl: apiBase(network) } });
+    const pcs = postConditionsFor(fn, amount, { vaultId, sender });
     const tx = await makeContractCall({
       contractAddress: w.address, contractName: VAULT, functionName: fn, functionArgs: args,
-      senderKey: key, network, fee: CALL_FEE, nonce, postConditionMode: PostConditionMode.Allow,
+      senderKey: key, network, fee: CALL_FEE, nonce,
+      postConditionMode: pcs?.mode ?? PostConditionMode.Allow, postConditions: pcs?.postConditions ?? [],
     });
     const res = await broadcastTransaction({ transaction: tx, network });
     if (!("txid" in res)) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
@@ -148,55 +163,90 @@ async function main() {
     return;
   }
 
-  if (cmd === "deploy") {
-    // The token implements the mainnet SIP-010 trait (SM1793...), which does not exist on
-    // testnet. On testnet only, deploy a verbatim copy of that trait from the operator first and
-    // point the token at it. The mainnet sources are never modified.
-    const MAINNET_TRAIT = "'SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.sip-010-trait-ft-standard-v-1-1";
-    const plan: [string, string][] = network === "testnet"
-      ? [[TRAIT_TESTNET, TRAIT_TESTNET_PATH], [TOKEN, TOKEN_PATH], [VAULT, VAULT_PATH]]
-      : [[TOKEN, TOKEN_PATH], [VAULT, VAULT_PATH]];
-    const skip = new Set(pos.slice(1)); // e.g. "deploy sip-010-trait-ft-standard-v-1-1" to resume after a partial run
-    for (const [name, path] of plan) {
-      if (skip.has(name)) { console.log(`skipping ${name} (already deployed)`); continue; }
-      let codeBody = readFileSync(path, "utf8");
-      if (network === "testnet" && name === TOKEN) {
-        if (!codeBody.includes(MAINNET_TRAIT)) throw new Error("token no longer references the expected trait");
-        codeBody = codeBody.replace(MAINNET_TRAIT, `.${TRAIT_TESTNET}`);
-      }
-      const nonce = await fetchNonce({ address: w.address, network, client: { baseUrl: apiBase(network) } });
-      const tx = await makeContractDeploy({
-        contractName: name, codeBody, clarityVersion: 3, senderKey: w.key, network,
-        fee: DEPLOY_FEE, nonce, postConditionMode: PostConditionMode.Deny,
-      });
-      const res = await broadcastTransaction({ transaction: tx, network });
-      if (!("txid" in res)) throw new Error(`deploy ${name} failed: ${JSON.stringify(res)}`);
-      console.log(`deploy ${name} (${codeBody.length} bytes): txid ${res.txid}`);
-      if (!(await waitForTx(network, res.txid))) throw new Error(`deploy ${name} did not succeed`);
-    }
-    const nonce = await fetchNonce({ address: w.address, network, client: { baseUrl: apiBase(network) } });
-    const link = await makeContractCall({
-      contractAddress: w.address, contractName: TOKEN, functionName: "set-vault-contract",
-      functionArgs: [Cl.contractPrincipal(w.address, VAULT)], senderKey: w.key, network,
-      fee: CALL_FEE, nonce, postConditionMode: PostConditionMode.Deny,
+  const principals = () => validatePrincipals(
+    { admin: flagVal("admin"), strategy: flagVal("strategy"), guardian: flagVal("guardian"), feeRecipient: flagVal("fee-recipient") },
+    { network, deployer: w.address, allowHotAdmin: flags.has(HOT_ADMIN_OVERRIDE) },
+  );
+  const callRead = async (contractName: string, fn: string, deployer: string) =>
+    fetchCallReadOnlyFunction({
+      contractAddress: deployer, contractName, functionName: fn, functionArgs: [],
+      network, senderAddress: deployer, client: { baseUrl: apiBase(network) },
     });
-    const res = await broadcastTransaction({ transaction: link, network });
-    if (!("txid" in res)) throw new Error(`link failed: ${JSON.stringify(res)}`);
-    console.log(`link token -> vault: txid ${res.txid}`);
-    await waitForTx(network, res.txid);
-    console.log("\nNEXT: initialize");
+  const writeRecord = (path: string, rec: unknown) => {
+    mkdirSync("deployments", { recursive: true });
+    writeFileSync(path, JSON.stringify(rec, null, 2) + "\n");
+    console.log(`record: ${path}`);
+  };
+
+  if (cmd === "plan" || cmd === "deploy") {
+    const roles = principals();
+    if (flags.has(HOT_ADMIN_OVERRIDE)) console.log(`WARNING: ${HOT_ADMIN_OVERRIDE} is set: the admin may be the agent hot wallet (testnet only)`);
+    const g = gitState(git);
+    const sources = sourcesAt(network, g.commit, git);
+    const startNonce = await fetchNonce({ address: w.address, network, client: { baseUrl: apiBase(network) } });
+    const plan = buildPlan({ network, deployer: w.address, git: g, sources, principals: roles, startNonce, hotWalletAdmin: flags.has(HOT_ADMIN_OVERRIDE) });
+    console.log(planText(plan));
+    console.log(`plan sha256: ${planSha(plan)}`);
+    if (!g.clean) {
+      console.log(`\nrefusing: the working tree is dirty:\n  ${g.dirty.join("\n  ")}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (cmd === "plan") {
+      console.log(`\nNEXT: deploy with the same roles and --commit=${g.commit}${network === "mainnet" ? ` --yes-mainnet --plan-sha=${planSha(plan)}` : ""}`);
+      return;
+    }
+    checkProceed(plan, g, { commit: flagVal("commit"), yesMainnet: flags.has("--yes-mainnet"), planSha: flagVal("plan-sha") });
+    const txs = await buildDeployTxs(plan, sources, w.key);
+    const path = existsSync(recordPath(network, new Date())) ? recordPath(network, new Date()).replace(/\.json$/, `-${Date.now()}.json`) : recordPath(network, new Date());
+    let txids: { label: string; txid: string }[] = [];
+    try {
+      txids = await broadcastAll(txs, (transaction) => broadcastTransaction({ transaction, network }));
+    } catch (e) {
+      txids = (e as any).done ?? [];
+      writeRecord(path, deploymentRecord(plan, txids, null, new Date()));
+      throw e;
+    }
+    for (const t of txids) console.log(`${t.label}: txid ${t.txid}`);
+    writeRecord(path, deploymentRecord(plan, txids, null, new Date()));
+    for (const t of txids) {
+      console.log(t.label);
+      if (!(await waitForTx(network, t.txid))) throw new Error(`${t.label} did not succeed; record kept at ${path}`);
+    }
+    const v = await verifyDeployment(plan, (p) => api(network, p), (c, f) => callRead(c, f, plan.deployer));
+    for (const c of v.checks) console.log(`${c.ok ? "ok  " : "FAIL"} ${c.name}: ${c.detail}`);
+    writeRecord(path, deploymentRecord(plan, txids, v, new Date()));
+    if (!v.ok) { console.log("VERIFY FAILED: do not announce or deposit"); process.exitCode = 1; }
+    return;
+  }
+
+  if (cmd === "verify") {
+    const path = flagVal("record");
+    if (!path) throw new Error("usage: verify --record=<deployments/...json>");
+    const rec = JSON.parse(readFileSync(path, "utf8")) as { plan: DeployPlan; txids: { label: string; txid: string }[] };
+    const plan = rec.plan;
+    if (plan.network !== network) throw new Error(`refusing: the record is for ${plan.network}`);
+    // The record's hashes must still be the pinned commit's files.
+    const atCommit = sourcesAt(network, plan.git.commit, git);
+    for (const c of plan.contracts) {
+      if (atCommit.find((s) => s.name === c.name)?.deployedSha256 !== c.deployedSha256) throw new Error(`record hash for ${c.name} is not commit ${plan.git.commit}'s file`);
+    }
+    const v = await verifyDeployment(plan, (p) => api(network, p), (c, f) => callRead(c, f, plan.deployer));
+    for (const c of v.checks) console.log(`${c.ok ? "ok  " : "FAIL"} ${c.name}: ${c.detail}`);
+    writeRecord(path, deploymentRecord(plan, rec.txids, v, new Date()));
+    if (!v.ok) process.exitCode = 1;
     return;
   }
 
   if (cmd === "initialize") {
-    const [admin, strategy, guardian, feeTo] = [pos[1] ?? w.address, pos[2] ?? strategyAddr, pos[3] ?? w.address, pos[4] ?? w.address];
-    if (!strategy) throw new Error("no strategy address: pass it, or set STRATEGY_PRIVATE_KEY");
-    console.log(`admin ${admin}\nstrategy ${strategy}\nguardian ${guardian}\nfee recipient ${feeTo}`);
-    await send("initialize", [Cl.principal(admin), Cl.principal(strategy), Cl.principal(guardian), Cl.principal(feeTo)]);
+    // Only to finish a deploy that stopped before its initialize; normally deploy runs it.
+    const r = principals();
+    console.log(`admin ${r.admin}\nstrategy ${r.strategy}\nguardian ${r.guardian}\nfee recipient ${r.feeRecipient}`);
+    await send("initialize", [Cl.principal(r.admin), Cl.principal(r.strategy), Cl.principal(r.guardian), Cl.principal(r.feeRecipient)]);
     return;
   }
 
-  if (cmd === "deposit") return void (await send("deposit", [Cl.uint(ustx(pos[1]))]));
+  if (cmd === "deposit") { const a = ustx(pos[1]); return void (await send("deposit", [Cl.uint(a)], w.key, a)); }
   if (cmd === "request") {
     let shares: bigint;
     if (pos[1] === "all") shares = BigInt((await ro("get-balance", [Cl.principal(w.address)], TOKEN)).value.value);
@@ -209,12 +259,12 @@ async function main() {
   if (cmd === "claim-deposit") return void (await send("claim-deposit", [Cl.uint(BigInt(pos[1]))]));
   if (cmd === "claim-epoch-withdrawal") return void (await send("claim-epoch-withdrawal", [Cl.uint(BigInt(pos[1]))]));
   if (cmd === "cancel-deposit" || cmd === "cancel-withdrawal") return void (await send(cmd, []));
-  if (cmd === "sweep") return void (await send("sweep", [Cl.uint(ustx(pos[1]))]));
+  if (cmd === "sweep") { const a = ustx(pos[1]); return void (await send("sweep", [Cl.uint(a)], w.key, a)); }
   if (cmd === "return") {
     const amt = pos[1] === "0" ? 0n : ustx(pos[1]);
-    return void (await send("return-from-strategy", [Cl.uint(amt)], asStrategy()));
+    return void (await send("return-from-strategy", [Cl.uint(amt)], asStrategy(), amt));
   }
-  if (cmd === "recover") return void (await send("recover-from-strategy", [Cl.uint(ustx(pos[1]))], asStrategy()));
+  if (cmd === "recover") { const a = ustx(pos[1]); return void (await send("recover-from-strategy", [Cl.uint(a)], asStrategy(), a)); }
   if (cmd === "settle-overdue") return void (await send("settle-overdue", []));
   if (["pause-deposits", "pause-sweeps", "unpause-deposits", "unpause-sweeps"].includes(cmd ?? "")) return void (await send(cmd!, []));
 
