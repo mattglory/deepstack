@@ -1,0 +1,6 @@
+# Reviewed false positives for the Secret scan job (gitleaks). One fingerprint per line, each with
+# the reason it is not a secret. Add entries only after looking at the flagged line.
+#
+# 2026-11-03: generic-api-key on `yToken: "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx"`, the
+# public USDCx token contract principal in a unit test (the rule keys on the field name "yToken").
+9510e649fdc6188a9142b4085a81095fdf4b048a:src/m1/dlmm-write.test.ts:generic-api-key:112
