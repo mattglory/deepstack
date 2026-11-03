@@ -53,7 +53,7 @@ test("both sources fresh and agreeing -> their mean; CoinGecko asked for last_up
   const m = await getExternalMid();
   assert.ok(m);
   assert.ok(Math.abs(m.midXinY - (100_000 / 0.3 + 100_400 / 0.3) / 2) < 1e-6);
-  assert.match(urls.find((u) => u.includes("coingecko.com"))!, /include_last_updated_at=true/);
+  assert.match(urls.find((u) => new URL(u).hostname.endsWith("coingecko.com"))!, /include_last_updated_at=true/);
   assert.equal(urls.find((u) => u.includes("llama"))!, "https://coins.llama.fi/prices/current/coingecko:bitcoin,coingecko:blockstack");
   assert.equal(journal.length, 0);
 });
