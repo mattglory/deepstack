@@ -33,7 +33,7 @@ export function evaluate(pcs: PostCondition[], mode: "allow" | "deny", moves: Mo
     if (ok === undefined) throw new Error(`testkit: unsupported condition ${pc.condition}`);
     if (!ok) return `${pc.address} sent ${s} of ${keyOf(pc)}, condition ${pc.condition} ${a}`;
   }
-  if (mode === "deny") for (const [k, v] of sent) if (v > 0n && !named.has(k)) return `${k.replace("|", " moved ")} but no condition names it (Deny)`;
+  if (mode === "deny") for (const [k, v] of sent) if (v > 0n && !named.has(k)) return `${k.replaceAll("|", " moved ")} but no condition names it (Deny)`;
   return null;
 }
 
