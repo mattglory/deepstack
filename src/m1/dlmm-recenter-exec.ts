@@ -254,7 +254,7 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   // was also capping every future autonomous recenter of the position at $250, not just a
   // one-off manual open (found 2026-09-30 sizing a deliberate $600 position — the position
   // would have shrunk back to $250 the moment it next needed a genuine recenter).
-  const cap = cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
+  const cap = maxTargetUsd(cfg);
   if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) throw new Error(`target must be >0 and ≤ ${cap}`);
   const xPrice = await priceOfToken(xTok);
   const nativeStx = (await getStxBalance(w.address, w.network)).microStx;
@@ -303,6 +303,10 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   const r = await executeDescriptor(desc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: pcs, feeMicroStx: FEE_USTX, nonce });
   if (!r.txid) throw new Error("add broadcast returned no txid");
   return r.txid;
+}
+
+function maxTargetUsd(cfg: RecenterConfig): number {
+  return cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
 }
 
 // Scale an explicit re-add down proportionally if it would exceed the configured ceiling (USD).
@@ -485,6 +489,13 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // fails outright, not if it succeeds at a bad price).
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  // The re-add refuses a target above the ceiling (executeAdd), so refuse it here, before the
+  // withdraw: otherwise the position is pulled out, swapped, and left loose (found by the B5
+  // fault harness). A config error for a human, so a skip with an alert, not a failed attempt.
+  const cap = maxTargetUsd(cfg);
+  if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) {
+    return { ...base, reason: `target $${cfg.targetUsd} must be >0 and ≤ DLMM_MAX_TARGET_USD $${cap} — recenter not started`, skipped: true, alert: true };
+  }
   log(`  recenter 1/3 — withdraw ${pos.bins.length} bins`);
   // Re-checked immediately before each broadcast of the sequence (C8 / DSA-27), not only once
   // per cycle: an operator halt engaged mid-recenter stops before the next transaction.

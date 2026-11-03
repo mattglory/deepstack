@@ -572,14 +572,23 @@ test("DLMM_MAX_TARGET_USD caps the re-add (TODAY'S behaviour): scaled down propo
   assert.equal(chain.sbtc, 500_000n - add.x);
 });
 
-test("a targetUsd above DLMM_MAX_TARGET_USD fails the re-add AFTER the withdraw (TODAY'S behaviour): throws, pending kept", async () => {
+// BUG found by this harness (B5): with DLMM_TARGET_USD above DLMM_MAX_TARGET_USD the recenter
+// withdrew the position and swapped, and only then did executeAdd refuse the target, so every
+// out-of-range recenter pulled the position out and left it loose, then failed the re-add each
+// cycle until the fail streak tripped. The open path already refused before broadcasting.
+test("a targetUsd above DLMM_MAX_TARGET_USD is refused BEFORE the withdraw: skipped with an alert, position untouched", async () => {
   delete process.env.DLMM_MAX_TARGET_USD;
   outOfRange(50_000_000n);
-  chain.plan = [ok, ok];
+  chain.plan = [ok, ok, ok];
   const r = await cycle(await load(), { cfg: { targetUsd: 300 } });
-  assert.match(r.error!.message, /target must be >0 and ≤ 250/);
-  assert.deepEqual(fns(), [WD, SWAP_YX]);
-  assert.notEqual(pending(), null);
+  assert.equal(r.error, undefined);
+  assert.deepEqual(fns(), [], "no withdraw");
+  assert.equal(r.res!.skipped, true);
+  assert.equal(r.res!.alert, true);
+  assert.match(r.res!.reason, /target \$300 .* DLMM_MAX_TARGET_USD \$250/);
+  assert.equal(chain.position.length, 7);
+  assert.equal(pending(), null);
+  assert.deepEqual(streakEffect(r), { attempted: false, executed: false, tickFailed: true });
 });
 
 // ---- resume edge cases ------------------------------------------------------------------------
