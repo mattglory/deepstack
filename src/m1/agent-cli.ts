@@ -665,7 +665,8 @@ export async function main() {
   // Lifetime XYK trade count behind --max-trades, persisted (risk-state.ts, C1 / DSA-07): a
   // restart used to start it at 0 and re-arm the whole budget. Unreadable file = budget
   // exhausted (observe-only). Operator reset: delete journal/xyk-trades.json.
-  let { trades } = loadXykTrades();
+  const xykLoad = loadXykTrades();
+  let { trades } = xykLoad;
   // Sep 21 2026: a bad min-dlp guard made every DLMM add abort, and nothing stopped the agent
   // retrying it every cycle — 15 failed broadcasts over ~7 hours before a human noticed and
   // killed it by hand. Root cause is now fixed (see dlmm-recenter-exec.ts's per-bin min-dlp),
@@ -682,12 +683,14 @@ export async function main() {
   // be exceeded just by restarting. A human clears dlmmFailStreak explicitly by deleting (or
   // editing) the state file — an ordinary restart no longer clears either counter. The
   // transition rules themselves (nextDlmmCounters, agent.ts) are unit-tested separately.
-  let { failStreak: dlmmFailStreak, recenters: dlmmRecenters } = loadDlmmCounters();
+  const dlmmLoad = loadDlmmCounters();
+  let { failStreak: dlmmFailStreak, recenters: dlmmRecenters } = dlmmLoad;
   const DLMM_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.DLMM_FAIL_STREAK_LIMIT ?? 2));
   // Same restart-survival discipline for the autonomous flash-rebalance path (OFF by default
   // via FLASH_LIVE) — a drift correction too large for the direct-swap cap uses FlashStack's
   // flash loan instead of a plain swap, gated by flashLiveGate() exactly like DLMM's gate.
-  let { failStreak: flashFailStreak, attempts: flashAttempts } = loadFlashCounters();
+  const flashLoad = loadFlashCounters();
+  let { failStreak: flashFailStreak, attempts: flashAttempts } = flashLoad;
   const FLASH_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.FLASH_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
   // Drawdown baseline for the 15% halt, persisted (risk-state.ts, C1 / DSA-07): a restart used to
@@ -712,6 +715,15 @@ export async function main() {
       console.log(`drawdown baseline: ${b.portfolioY} ${cfg.y.symbol} since ${b.t} (persisted)`);
     }
   }
+  // State files that fail closed and need a human to clear them. Unlike an ordinary safety halt
+  // (which clears itself when the condition passes), these never clear on their own, so every
+  // cycle journals "risk-state-unreadable" and pings the healthcheck "fail" until they are fixed.
+  const riskStateProblems = [
+    ...(xykLoad.corrupt ? ["XYK trade count unreadable (budget treated as exhausted)"] : []),
+    ...(baselineProblem ? [`drawdown baseline unusable: ${baselineProblem}`] : []),
+    ...(dlmmLoad.corrupt ? ["DLMM fail-streak state unreadable (treated as tripped)"] : []),
+    ...(flashLoad.corrupt ? ["flash fail-streak state unreadable (treated as tripped)"] : []),
+  ];
   if (baselineProblem) console.error(`⛔ DRAWDOWN BASELINE UNUSABLE — ${baselineProblem}. All trading halts until a human inspects and deletes ${drawdownBaselinePath()}.`);
   // Forward reference: the supervisor is created after step() below (it wraps step itself),
   // but step's own circuit-breaker check needs its live streak. Assigned once, right after
@@ -821,6 +833,7 @@ export async function main() {
         if (!flash.executed) flashFailedThisTick = true;
       }
     } finally {
+      if (riskStateProblems.length) Object.assign(tickJournal, { alert: "risk-state-unreadable", riskStateProblems });
       appendJournal(tickJournal); // one journal line per tick, whatever happened
       // Cross-pool spread observations (read-only) — the dataset that decides whether
       // atomic cross-venue arb is worth building. See crosspool.ts.
@@ -921,7 +934,7 @@ export async function main() {
       // root cause and would have surfaced here too, had this existed then. A good XYK cycle
       // still pings "ok" even when DLMM, flash, or publish fails — a signal to look, not a
       // claim the whole tick failed.
-      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed ? "fail" : "ok");
+      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed || riskStateProblems.length ? "fail" : "ok");
     }
   };
 

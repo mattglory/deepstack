@@ -355,3 +355,30 @@ test("C2 cycle watchdog: an over-long cycle pings fail + is journalled; no overl
   assert.deepEqual(rec.health.slice(3), ["ok"]);
   assert.equal(tickEntries().length, 2);
 });
+
+test("risk-state files that need a human (unreadable / unrelated wallet / corrupt breakers) halt AND alert: ping fail, journal risk-state-unreadable", async () => {
+  const OTHER = { portfolioY: 250, t: "2026-11-01T00:00:00.000Z", pair: "sbtc-stx", wallet: "SP000000000000000000002Q6VF78" };
+  const cases: [string, () => void][] = [
+    ["xyk trades unreadable", () => writeFileSync(statePath("XYK_TRADES_STATE_PATH"), "{ not json")],
+    ["baseline unreadable", () => writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), "{ not json")],
+    ["baseline for an unrelated wallet", () => writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), JSON.stringify(OTHER))],
+    ["dlmm failstreak corrupt", () => writeFileSync(statePath("DLMM_FAILSTREAK_STATE_PATH"), "{ not json")],
+    ["flash failstreak corrupt", () => writeFileSync(statePath("FLASH_FAILSTREAK_STATE_PATH"), "{ not json")],
+  ];
+  // In band, so no case would broadcast anyway (the halting itself is covered by the C1 tests;
+  // a corrupt DLMM/flash breaker file only shuts its own path).
+  for (const [name, breakIt] of cases) {
+    resetHarness(baseWorld());
+    breakIt();
+    await runAgent(LIVE);
+    assert.deepEqual(rec.health, ["fail"], name);
+    const t = onlyTick();
+    assert.equal(t.alert, "risk-state-unreadable", name);
+    assert.ok((t.riskStateProblems as string[]).length >= 1, name);
+  }
+  // Ordinary safety halts are unchanged: still "ok", no risk-state alert.
+  resetHarness({ ...outOfBandWorld(), externalMid: MID * 1.1 });
+  await runAgent(LIVE);
+  assert.deepEqual(rec.health, ["ok"]);
+  assert.equal(onlyTick().alert, undefined);
+});
