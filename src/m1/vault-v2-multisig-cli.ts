@@ -62,8 +62,8 @@ export const ADMIN_FUNCTIONS = new Set([
   "queue-max-tvl", "queue-fee-bps", "queue-max-deploy-bps", "queue-fee-recipient", "queue-strategy",
   "queue-guardian", "queue-admin-change", "queue-resume-sweeps",
   "confirm-max-tvl", "confirm-fee-bps", "confirm-max-deploy-bps", "confirm-fee-recipient",
-  "confirm-strategy", "confirm-guardian", "confirm-resume-sweeps", "accept-admin-change",
-]);
+  "confirm-guardian", "confirm-resume-sweeps", "accept-admin-change",
+]); // a strategy change is completed by the new strategy itself (accept-strategy-change), not the multisig
 
 function configuredVault(): string {
   const v = (flags.get("vault") ?? process.env.MS_VAULT ?? "").trim();
