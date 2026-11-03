@@ -7,7 +7,7 @@
 
 import {
   chain, resetChain, load, cycle, confirm, touchKill, clearKill, streakEffect, fns, positionAround,
-  PENDING_PATH, BTC_USD,
+  PENDING_PATH, BTC_USD, BIN_PRICE,
 } from "./dlmm-recenter-exec.harness.js";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -211,23 +211,13 @@ test("withdraw times out -> nothing pending; if it confirms later the next cycle
 test("withdraw confirmed but the result is unparsable -> falls back to the position read for the pending amounts", async () => {
   outOfRange(50_000_000n);
   chain.plan = [{ status: "success", repr: "(ok true)" }];
-  touchKillOnFirstSwapPlan();
+  chain.onPoll = (txid) => { if (chain.txs.get(txid)?.fn === WD) touchKill(); }; // stop after the withdraw
   const r = await cycle(await load());
   assert.equal(r.res!.alert, true);
   const p = pending()!;
   assert.equal(BigInt(p.xBase), 0n);
   assert.equal(BigInt(p.yBase), withdrawnY(50_000_000n));
 });
-
-// Engage KILL the first time the DefiLlama price is read (the swap-planning read inside the
-// re-add loop), i.e. after the withdraw has confirmed and the pending re-add is saved.
-function touchKillOnFirstSwapPlan() {
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-    if (String(input).includes("coins.llama.fi")) { touchKill(); globalThis.fetch = realFetch; }
-    return realFetch(input, init);
-  }) as typeof fetch;
-}
 
 test("KILL engaged while the withdraw confirms -> no swap or add broadcast; pending saved with the exact withdrawn amounts; resumes once cleared", async () => {
   outOfRange(50_000_000n);
@@ -465,7 +455,7 @@ test("KILL engaged between swaps -> the next swap is not broadcast; pending hold
 test("reference price down or pool diverged during the rebalance -> wait (alert), no swap", async () => {
   outOfRange(50_000_000n);
   chain.plan = [ok];
-  chain.btcUsd = null;
+  chain.onPoll = (txid) => { if (chain.txs.get(txid)?.fn === WD) chain.btcUsd = null; }; // goes down after the withdraw
   const r = await cycle(await load());
   assert.deepEqual(fns(), [WD]);
   assert.match(r.res!.reason, /reference price unavailable/);
@@ -625,4 +615,71 @@ test("a corrupt pending file reads as no pending (TODAY'S behaviour): an empty p
   chain.usdcx = 500_000_000n;
   const r = await cycle(await load(), { live: false });
   assert.equal(r.res!.action, "open");
+});
+
+// ---- C5 / DSA-11: the pool's active-bin price is reference-checked before open and withdraw --------
+
+const manipulated = (bps: bigint) => (BIN_PRICE * (10_000n + bps)) / 10_000n;
+
+test("manipulated active bin before an OPEN (5% above the reference) -> no add; skipped with an alert, reason journalled", async () => {
+  chain.sbtc = 1_000_000n;
+  chain.usdcx = 500_000_000n;
+  chain.binPrice = manipulated(500n);
+  chain.plan = [ok];
+  const r = await cycle(await load());
+  assert.deepEqual(fns(), []);
+  assert.equal(r.res!.action, "open");
+  assert.equal(r.res!.skipped, true);
+  assert.equal(r.res!.alert, true);
+  assert.match(r.res!.reason, /active-bin price 500bps from the reference \(max 300bps\) — open not started/);
+  assert.deepEqual(streakEffect(r), { attempted: false, executed: false, tickFailed: true });
+});
+
+test("manipulated active bin before a recenter WITHDRAW (5% below) -> position untouched, nothing pending", async () => {
+  outOfRange(50_000_000n);
+  chain.binPrice = manipulated(-500n);
+  chain.plan = [ok, ok, ok];
+  const r = await cycle(await load());
+  assert.deepEqual(fns(), [], "no withdraw");
+  assert.equal(r.res!.alert, true);
+  assert.match(r.res!.reason, /active-bin price 500bps from the reference .* recenter not started/);
+  assert.equal(chain.position.length, 7);
+  assert.equal(pending(), null);
+});
+
+test("active bin within the bound (2%) -> the recenter goes ahead", async () => {
+  outOfRange(50_000_000n);
+  chain.binPrice = manipulated(-200n);
+  chain.plan = [ok, ok, ok];
+  const r = await cycle(await load());
+  assert.equal(r.res!.executed, true);
+  assert.deepEqual(fns(), [WD, SWAP_YX, ADD]);
+});
+
+test("the bound is DLMM_REBALANCE_MAX_DIVERGENCE_BPS (read at load)", async () => {
+  process.env.DLMM_REBALANCE_MAX_DIVERGENCE_BPS = "600";
+  outOfRange(50_000_000n);
+  chain.binPrice = manipulated(-500n);
+  chain.plan = [ok, ok, ok];
+  const r = await cycle(await load()); // passes the pre-withdraw check; the rebalance's own 600 bps check too
+  assert.equal(r.res!.executed, true);
+  assert.deepEqual(fns(), [WD, SWAP_YX, ADD]);
+});
+
+test("reference price unavailable before a withdraw -> no withdraw; skipped with an alert", async () => {
+  outOfRange(50_000_000n);
+  chain.btcUsd = null;
+  const r = await cycle(await load());
+  assert.deepEqual(fns(), []);
+  assert.equal(r.res!.alert, true);
+  assert.match(r.res!.reason, /reference price unavailable before recenter/);
+});
+
+test("stale DefiLlama price (20 min) -> treated as unavailable: no open", async () => {
+  chain.sbtc = 1_000_000n;
+  chain.usdcx = 500_000_000n;
+  chain.priceAgeSecs = 20 * 60;
+  const r = await cycle(await load());
+  assert.deepEqual(fns(), []);
+  assert.match(r.res!.reason, /reference price unavailable before open: .*BTC price \(DefiLlama\): stale/);
 });
