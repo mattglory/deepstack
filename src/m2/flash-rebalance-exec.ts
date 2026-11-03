@@ -9,8 +9,8 @@
 // touches no key and no capital.
 
 import { isKilled } from "../m1/kill.js";
-import { fetchCallReadOnlyFunction, fetchNonce, makeContractCall, broadcastTransaction, cvToJSON, Cl, Pc, PostConditionMode } from "@stacks/transactions";
-import { withRpc, hiroFetch } from "../m1/rpc.js";
+import { fetchCallReadOnlyFunction, fetchNonce, makeContractCall, cvToJSON, Cl, Pc, PostConditionMode } from "@stacks/transactions";
+import { withRpc, hiroFetch, broadcastSigned } from "../m1/rpc.js";
 import { type Wallet, getStxBalance } from "../m1/wallet.js";
 import { getSwapYForXQuote, minusSlippage } from "../m1/quotes.js";
 import { checkNonceSafety } from "../m1/nonce-safety.js";
@@ -104,8 +104,10 @@ export async function armRebalance(
     nonce,
     postConditionMode: PostConditionMode.Deny, // arming moves no assets
   });
-  const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-  if (!("txid" in res)) throw new Error(`arm broadcast failed: ${JSON.stringify(res)}`);
+  // Configured endpoints + failover + timeout, same signed tx (C2). A rejection ALSO carries a
+  // txid, so the old `"txid" in res` check read a rejected broadcast as sent.
+  const res = await broadcastSigned(tx);
+  if ("error" in res) throw new Error(`arm broadcast failed: ${res.error}`);
   return { txid: res.txid, minDx, quotedDx };
 }
 
@@ -133,8 +135,10 @@ export async function executeFlashLoanRebalance(
     postConditionMode: PostConditionMode.Allow,
     postConditions: [Pc.principal(w.address).willSendLte(repayCap).ustx()],
   });
-  const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-  if (!("txid" in res)) throw new Error(`flash-loan broadcast failed: ${JSON.stringify(res)}`);
+  // Configured endpoints + failover + timeout, same signed tx (C2). A rejection ALSO carries a
+  // txid, so the old `"txid" in res` check read a rejected broadcast as sent.
+  const res = await broadcastSigned(tx);
+  if ("error" in res) throw new Error(`flash-loan broadcast failed: ${res.error}`);
   return { txid: res.txid, repayCap };
 }
 

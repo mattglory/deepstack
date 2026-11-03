@@ -18,6 +18,11 @@
 //   - global fetch is replaced by a fake that answers only the tx-status poll and throws on
 //     anything else, so an unmocked network path fails the test instead of going out.
 //
+// REAL-RPC mode (import ./agent-cli.harness-real-rpc.js first; C2 / DSA-08): rpc.ts, pool.ts /
+// stacks.ts and @stacks/transactions' broadcastTransaction stay REAL, so failover, per-attempt
+// timeouts/aborts and broadcast routing run as in production, over the fake fetch, which then
+// delegates to `world.net` (a per-test fake network).
+//
 // Import this module before anything else in a test file, then call loadAgent() for a fresh
 // agent-cli instance (its module-level state: tickJournal, rebalDefer, the DLMM value cache)
 // and runAgent() to drive main() for N cycles. One test file = one process, so the mocks never
@@ -28,6 +33,8 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const REAL_RPC = process.env.HARNESS_REAL_RPC === "1";
+
 // ---- environment: before any module under test is loaded (some read env at import) ----------
 export const TMP = mkdtempSync(join(tmpdir(), "deepstack-agent-harness-"));
 const ENV_KEYS_CLEARED = [
@@ -35,7 +42,7 @@ const ENV_KEYS_CLEARED = [
   "STACKS_PRIVATE_KEY", "STACKS_NETWORK", "FLASH_LIVE", "DLMM_LIVE", "DLMM_OBSERVE_PAIR", "TARGET_LP_FRACTION",
   "ALLOCATION_MODE", "EXPERIMENT_BAND_MODE", "MIN_TRADE_VALUE_Y", "STX_FEE_RESERVE", "EXEC_MIN_EDGE_BPS",
   "EXEC_MAX_DEFER", "MAX_CONSECUTIVE_FAILURES", "DLMM_FAIL_STREAK_LIMIT", "FLASH_FAIL_STREAK_LIMIT",
-  "DLMM_HALF_WIDTH", "DLMM_TARGET_USD", "DLMM_PIN_HALF_WIDTH", "MAX_POOL_SHARE_BPS",
+  "DLMM_HALF_WIDTH", "DLMM_TARGET_USD", "DLMM_PIN_HALF_WIDTH", "MAX_POOL_SHARE_BPS", "CYCLE_TIMEOUT_MS",
 ];
 const ENV_BASE: Record<string, string> = {
   APP_DIR: join(TMP, "app"),
@@ -113,6 +120,10 @@ export interface World {
   onCycle?: (cycle: number, w: World) => void;
   /** Called with the result of every decide() (rebalance decision), before act() continues. */
   afterDecide?: (d: { action: string; amountBase: bigint }) => void;
+  /** When set, the (faked) pool read of every cycle waits for it: a hung cycle (watchdog tests). */
+  hang?: Promise<void>;
+  /** REAL-RPC mode: the fake network every fetch is routed to. */
+  net?: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
 export const MID = 100_000;
@@ -165,25 +176,35 @@ mock.module("@stacks/transactions", {
       rec.contractCalls.push({ functionName: a.functionName, functionArgs: a.functionArgs, senderKey: a.senderKey, network: a.network });
       return realTx.makeContractCall(o); // signs with the throwaway key above; no network
     },
-    broadcastTransaction: async (o: unknown) => {
-      rec.broadcasts.push(o);
-      return world.wire.txid ? { txid: world.wire.txid } : { error: world.wire.error ?? "rejected" };
-    },
+    broadcastTransaction: REAL_RPC
+      ? async (o: Parameters<typeof realTx.broadcastTransaction>[0]) => {
+          rec.broadcasts.push(o);
+          return realTx.broadcastTransaction(o); // real: POSTs through o.client.fetch → fake network
+        }
+      : fakeBroadcast,
   },
 });
+async function fakeBroadcast(o: unknown) {
+  rec.broadcasts.push(o);
+  return world.wire.txid ? { txid: world.wire.txid } : { error: world.wire.error ?? "rejected" };
+}
 
-mock.module("./rpc.js", {
-  namedExports: {
-    withRpc: async <T>(fn: (base: string) => Promise<T>) => fn("https://rpc.invalid"),
-    hiroFetch: () => globalThis.fetch,
-    hiroHeaders: () => ({}),
-    endpoints: () => ["https://rpc.invalid"],
-    redactEndpoint: (s: string) => s,
-  },
-});
-const fakeFetch = (async (input: unknown) => {
+if (!REAL_RPC) {
+  mock.module("./rpc.js", {
+    namedExports: {
+      withRpc: async <T>(fn: (base: string) => Promise<T>) => fn("https://rpc.invalid"),
+      hiroFetch: () => globalThis.fetch,
+      hiroHeaders: () => ({}),
+      endpoints: () => ["https://rpc.invalid"],
+      redactEndpoint: (s: string) => s,
+      broadcastSigned: async (tx: unknown) => fakeBroadcast({ transaction: tx }),
+    },
+  });
+}
+const fakeFetch = (async (input: unknown, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input);
   rec.fetches.push(url);
+  if (world.net) return world.net(url, init);
   if (url.includes("/extended/v1/tx/")) return new Response(JSON.stringify({ tx_status: world.txStatus }), { status: 200 });
   throw new Error(`network disabled in agent-cli harness: ${url}`);
 }) as typeof fetch;
@@ -205,12 +226,13 @@ mock.module("./wallet.js", {
 });
 
 let cycle = 0;
-mock.module("../pool.js", {
+if (!REAL_RPC) mock.module("../pool.js", {
   namedExports: {
     midFromReserves: () => world.midXinY,
     getPoolState: async () => {
       world.onCycle?.(cycle, world);
       cycle++;
+      if (world.hang) await world.hang;
       return {
         poolSymbol: "sBTC-STX", xToken: "x", yToken: "y", xDecimals: 8, yDecimals: 6,
         xReserve: world.xReserve, yReserve: world.yReserve, providerFeeBps: world.feeBps, protocolFeeBps: 0,
@@ -374,6 +396,7 @@ export function resetHarness(w: World = baseWorld(), opts: { keepState?: boolean
 }
 
 export interface RunResult { error?: Error; settled: boolean }
+const TICK_MS = 5_000;
 
 /**
  * Run main() with the given CLI flags. Without --interval main() is one-shot and this waits for
@@ -381,20 +404,28 @@ export interface RunResult { error?: Error; settled: boolean }
  * exactly one healthcheck ping) and leaves the loop parked on its next sleep. setTimeout is
  * mocked so the 5 s tx-status polls and the interval sleeps run instantly.
  */
-export async function runAgent(args: string[], opts: { cycles?: number; agent?: { main: () => Promise<void> } } = {}): Promise<RunResult> {
+export async function runAgent(
+  args: string[],
+  // resume: do not start main() again; keep driving the loop an earlier looping runAgent() left
+  // parked, until `cycles` more healthcheck pings.
+  opts: { cycles?: number; agent?: { main: () => Promise<void> }; resume?: boolean } = {},
+): Promise<RunResult> {
+  // Mocked time advances TICK_MS per turn (not runAll, which would jump straight past the
+  // cycle watchdog to the last pending timer): every 5 s tx-status poll, 15 s RPC timeout and
+  // interval sleep fires in order, as it would in real time.
   const agent = opts.agent ?? (await loadAgent());
-  const looping = args.includes("--interval");
+  const looping = opts.resume || args.includes("--interval");
   const cycles = opts.cycles ?? 1;
   const argv = process.argv;
   const con = { log: console.log, warn: console.warn, error: console.error };
   const capture = (...a: unknown[]) => void rec.logs.push(a.map(String).join(" "));
   process.argv = [argv[0], argv[1], ...args]; // argv[1] stays the test file: flags() reads slice(2)
   console.log = console.warn = console.error = capture;
-  mock.timers.enable({ apis: ["setTimeout"] });
+  if (!opts.resume) mock.timers.enable({ apis: ["setTimeout"] });
   const healthAtStart = rec.health.length;
   const res: RunResult = { settled: false };
   try {
-    agent.main().then(
+    if (!opts.resume) agent.main().then(
       () => void (res.settled = true),
       (e: Error) => { res.settled = true; res.error = e; },
     );
@@ -405,7 +436,7 @@ export async function runAgent(args: string[], opts: { cycles?: number; agent?: 
         for (let j = 0; j < 20; j++) await new Promise((r) => setImmediate(r)); // let the cycle unwind to its sleep
         break;
       }
-      mock.timers.runAll();
+      mock.timers.tick(TICK_MS);
     }
     if (!res.settled && !looping) throw new Error("one-shot main() did not return");
     if (looping && rec.health.length - healthAtStart < cycles) throw new Error(`agent did not complete ${cycles} cycles`);

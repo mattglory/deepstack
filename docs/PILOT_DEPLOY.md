@@ -249,5 +249,12 @@ must move together, and mid-pilot is not the time.
 **~~No way to fail over to a backup RPC.~~ Resolved** — every agent read (Clarity
 read-onlys, balances, tx confirmation) now routes through `src/m1/rpc.ts`, which tries
 `STACKS_API` then each `STACKS_API_FALLBACKS` entry and sticks with whatever works.
+Since C2 this includes the per-cycle pool read and every live broadcast (XYK, DLMM, flash):
+the same signed transaction is resent to the next endpoint on a timeout or transport
+error, never re-signed. Each attempt is bounded by `RPC_TIMEOUT_MS` (default 15 s) and the
+hung request is aborted. A cycle still running after `CYCLE_TIMEOUT_MS` (default 45 min)
+pings the healthcheck "fail" and is journalled (`cycle-timeout`); it is left to finish,
+and no new cycle starts until it does (each skipped interval journals `cycle-skipped` and
+pings "fail" again).
 Remaining setup is operational: pick a second provider and put it in `.env` (see §4).
 With no fallback configured, behaviour is unchanged — one provider, one point of failure.

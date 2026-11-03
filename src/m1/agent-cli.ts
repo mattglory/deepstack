@@ -44,7 +44,7 @@ import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
 import { createSupervisor, briefError, type Supervisor } from "./supervise.js";
@@ -86,7 +86,7 @@ async function waitForTx(txid: string) {
     await sleep(5000);
     try {
       const j = await withRpc(async (base) => {
-        const r = await fetch(`${base}/extended/v1/tx/${txid}`);
+        const r = await hiroFetch(base)(`${base}/extended/v1/tx/${txid}`); // aborted on timeout (C2)
         if (!r.ok) throw new Error(`tx fetch → ${r.status}`);
         return (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
       });
@@ -937,7 +937,50 @@ export async function main() {
       console.error(`  ⚠ ${consecutive} consecutive failures — circuit breaker active, no new trades until one succeeds. Check RPC/network.`);
   });
   supervisorRef = supervisor; // step()'s circuit-breaker check reads this each cycle
-  const runStep = () => supervisor.run(step);
+
+  // Cycle watchdog (C2 / DSA-08). A cycle still running after CYCLE_TIMEOUT_MS is reported as
+  // failed (journal "cycle-timeout" + healthcheck fail), but NOT aborted: it may be mid broadcast
+  // sequence (a DLMM withdraw → swaps → re-add), and abandoning that loses the state the
+  // sequence persists as it goes. Instead no new cycle starts while it runs: every interval that
+  // finds it still in flight is skipped and pings fail again, so a hung agent stays loud.
+  //
+  // Default 45 min, from the code's own confirmation budgets: one cycle can legitimately do an
+  // XYK swap (waitForTx: 24 x 5 s = 2 min) or a flash rebalance (2 waits x 40 x 6 s = 8 min), and
+  // then a DLMM recenter (withdraw + up to READD_MAX_CHUNKS = 6 swaps + re-add = 8 waits x
+  // 40 x 6 s = 32 min) — 40 min of poll sleeps before any read time. A lower bound would flag
+  // healthy slow recenters. The --interval sleep starts after a cycle ends, so cycles longer than
+  // the interval never overlapped; the skip below keeps it that way after the watchdog fires.
+  const CYCLE_TIMEOUT_MS = Math.max(1, Number(process.env.CYCLE_TIMEOUT_MS ?? 45 * 60_000));
+  let inFlight: Promise<boolean> | null = null;
+  const runStep = async (): Promise<void> => {
+    if (inFlight) {
+      console.error("  ⛔ previous cycle still running (past the watchdog) — skipping this cycle");
+      appendJournal({ t: new Date().toISOString(), type: "cycle-skipped", reason: "previous cycle still running" });
+      await pingHealthcheck("fail");
+      return;
+    }
+    const started = Date.now();
+    const run = supervisor.run(step);
+    inFlight = run;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      run.then(() => false),
+      new Promise<boolean>((r) => (timer = setTimeout(() => r(true), CYCLE_TIMEOUT_MS))),
+    ]);
+    clearTimeout(timer);
+    if (!timedOut) {
+      inFlight = null;
+      return;
+    }
+    console.error(`  ⛔ CYCLE WATCHDOG — cycle still running after ${CYCLE_TIMEOUT_MS / 1000}s; reported as failed, left to finish, no new cycle until it does`);
+    appendJournal({ t: new Date().toISOString(), type: "cycle-timeout", timeoutMs: CYCLE_TIMEOUT_MS });
+    await pingHealthcheck("fail");
+    void run.then(() => {
+      inFlight = null;
+      console.error(`  cycle that passed the watchdog finished after ${Math.round((Date.now() - started) / 1000)}s`);
+      appendJournal({ t: new Date().toISOString(), type: "cycle-late-finish", ms: Date.now() - started });
+    });
+  };
 
   if (f.interval) {
     // Guarded from the first cycle: a blip at startup must not stop the pilot beginning.
