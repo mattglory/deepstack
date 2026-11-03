@@ -5,27 +5,31 @@
 // opt-in. Anything less is a DRY-RUN that returns what it WOULD do and touches no capital and no
 // key. This is the boundary between "built and simulated" and "real money."
 //
-// POST-CONDITIONS: Allow mode + strict INPUT-CAP post-conditions, matching the proven XYK path
-// (actions.ts). The caps bound only what LEAVES the wallet (willSendLte per token), so a
-// mis-encoded call can never overspend; the router's own internal transfers (LP mint, per-bin
-// moves, fee legs) are permitted. Deny mode was deliberately NOT used: a multi-bin write moves
-// assets in many legs, and Deny requires enumerating every one exactly or the tx aborts — the
-// same trap that aborted the first XYK swap (95b112e1). Callers MUST pass input-cap
-// post-conditions (see dlmm-write.buildInputCaps); broadcasting with none is refused.
+// POST-CONDITIONS: callers pass the wallet's COMPLETE outflow set (post-conditions.ts
+// walletOutflowConditions: each input capped, every other wallet asset "sends ≤ 0"; C3 / DSA-09).
+// Mode is Allow by default and Deny when the caller sets deny:true:
+//   - add / withdraw stay Allow. Every mint or burn of shares also burns the wallet's existing
+//     pool-token-id NFT tag for that bin, if it has one, and mints a new one (the pool's
+//     tag-pool-token-id; seen on every add/withdraw, e.g. 0x01bd77b5…, 0x235e157e…). Deny
+//     would need a condition naming each burned tag, and whether a tag exists for a new bin is
+//     not known before the call; one miss aborts the whole tx (the trap that aborted the first
+//     XYK swap, 0x95b112e1). The tags carry no value — the shares are the pool-token FT,
+//     which the wallet set guards — so Allow + the complete FT set loses nothing.
+//   - swaps run Deny: the only movements are the wallet's input to the pool and the pool's
+//     payout to the wallet (dlmm-core swap-x-for-y / swap-y-for-x; 0xc21c79c8…, 0x01e9b7f5…),
+//     so the caller adds "pool sends ≥ min-out" and nothing else can move.
+// Broadcasting with no post-conditions is refused unless allowNoInputCaps (manual CLI only).
 
 import { makeContractCall, PostConditionMode, type PostCondition } from "@stacks/transactions";
 import { broadcastSigned } from "./rpc.js";
 import type { CallDescriptor } from "./dlmm-write.js";
 
-// Allow the router's internal transfers; the wallet's spend is bounded by the input-cap
-// post-conditions the caller supplies (never Deny — see the header note).
-const MODE = PostConditionMode.Allow;
-
 export interface ExecuteOpts {
   live?: boolean; // gate 1 — must be explicitly true to broadcast
   yesMainnet?: boolean; // gate 2 — must be explicitly true to broadcast
   senderKey?: string; // signing key — only read on the broadcast path
-  postConditions?: PostCondition[]; // input caps on what leaves the wallet (Allow mode)
+  postConditions?: PostCondition[]; // the wallet's complete outflow set (see header)
+  deny?: boolean; // Deny mode — only for calls whose every movement the conditions cover (swaps)
   allowNoInputCaps?: boolean; // ONLY for receive-only writes (withdraw): the wallet spends nothing
   feeMicroStx?: bigint;
   nonce?: bigint;
@@ -71,7 +75,7 @@ export async function executeDescriptor(d: CallDescriptor, opts: ExecuteOpts = {
     fee: opts.feeMicroStx ?? 200_000n,
     ...(opts.nonce !== undefined ? { nonce: opts.nonce } : {}),
     postConditions: opts.postConditions ?? [],
-    postConditionMode: MODE, // Allow + input caps (see header)
+    postConditionMode: opts.deny ? PostConditionMode.Deny : PostConditionMode.Allow, // see header
   });
   // Configured endpoints, failover, per-attempt timeout; same signed tx on every attempt (C2).
   // A node rejection echoes a txid, so "error" decides — not the txid's presence.

@@ -9,9 +9,11 @@
 //   recenter  (active drifted)  -> withdraw ALL bins, then re-add centered on the NEW active bin
 // live===false is pure observe: it decides and returns, touches no key and no capital.
 //
-// SAFETY: Allow-mode input caps on every add (STX .ustx(), USDCx .ft with the resolved asset);
-// withdraw uses nominal min-out on the value side (min-sum>0 rule); a gas reserve is always
-// kept; target is hard-capped. If a withdraw does not confirm, the recenter aborts before the
+// SAFETY: every write carries the wallet's complete outflow set (post-conditions.ts; C3 / DSA-09):
+// add caps the two deposit tokens, withdraw caps the pool shares burned, a swap caps its input
+// and runs in Deny mode; every other wallet asset is "sends ≤ 0". Withdraw min-outs are per bin,
+// from the fresh position read (withdrawMinimums); a gas reserve is always kept; target is
+// hard-capped. If a withdraw does not confirm, the recenter aborts before the
 // re-add (funds sit safely in the wallet as loose tokens — no half-built position).
 
 import { isKilled } from "./kill.js";
@@ -23,7 +25,8 @@ import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, rea
 import { exceedsPoolShare } from "./agent.js";
 import { setDlmmBasis, loadHistory, loadVenueBases } from "./metrics.js";
 import { readUserPosition, type DlmmPosition } from "./dlmm-position.js";
-import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildInputCaps, buildSwapSimple, isNativeStxToken, type PoolRefs, type BinWithdraw } from "./dlmm-write.js";
+import { distributeAcrossRange, buildAddLiquidity, buildWithdrawLiquidity, buildSwapSimple, isNativeStxToken, dlmmTokenKey, withdrawMinimums, type PoolRefs } from "./dlmm-write.js";
+import { walletOutflowConditions, principalSendsGte, dlmmShareKey, dlmmPoolPrincipal } from "./post-conditions.js";
 import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, recenterSequenceOutcome, adjustBasisForRecenter, binSeriesVolDaily, planRebalanceSwap, divergenceBps, nextReaddStep, parseSwapResult, sumWithdrawResult } from "./dlmm-recenter.js";
 import { binRangeFromVol, type RangeOpts } from "./dlmm-position.js";
 import { executeDescriptor } from "./dlmm-execute.js";
@@ -296,10 +299,11 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   const desc = buildAddLiquidity({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, sized, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
   const sumX = deposits.reduce((s, d) => s + d.xAmount, 0n);
   const sumY = deposits.reduce((s, d) => s + d.yAmount, 0n);
-  const pcs = buildInputCaps(w.address, [
+  // Allow mode (see dlmm-execute.ts): the pool's share-tag NFTs are burned and re-minted.
+  const pcs = walletOutflowConditions(w.address, [
     // 2% headroom for the pool's liquidity fee; +0.3 STX only when X is native STX (the fee leg).
-    { token: xTok.principal, asset: xTok.asset, max: sumX + sumX / 50n + (xTok.native ? 300_000n : 0n) },
-    { token: yTok.principal, asset: yTok.asset, max: sumY + sumY / 50n },
+    { key: dlmmTokenKey(xTok.principal, xTok.asset), max: sumX + sumX / 50n + (xTok.native ? 300_000n : 0n) },
+    { key: dlmmTokenKey(yTok.principal, yTok.asset), max: sumY + sumY / 50n },
   ]);
   const xh = (Number(sumX) / 10 ** xTok.decimals).toFixed(xTok.decimals === 8 ? 6 : 3);
   log(`  add: ${xh} ${xTok.asset || "STX"} + ${(Number(sumY) / 10 ** yTok.decimals).toFixed(3)} ${yTok.asset} across ${deposits.length} bins [${deposits[0].signedBin}..${deposits[deposits.length - 1].signedBin}]`);
@@ -321,6 +325,13 @@ function capToTarget(a: { xBase: bigint; yBase: bigint }, xPriceUsd: number, xDe
   return { xBase: BigInt(Math.floor(Number(a.xBase) * f)), yBase: BigInt(Math.floor(Number(a.yBase) * f)), valueUsd: capUsd };
 }
 
+// Per-bin withdraw min-out tolerance (withdrawMinimums). A recenter only withdraws once the active
+// bin is more than the hysteresis outside the position (decideRecenter), so every bin withdrawn is
+// single-sided and its contents change only if the price re-enters it before the withdraw lands
+// (a full conversion that no tolerance would absorb) or by rounding (a base unit). 5% is
+// therefore wide for an honest fill, and still catches a pool or core paying out materially
+// less than the position just read.
+const WITHDRAW_MIN_OUT_TOLERANCE_BPS = Number(process.env.DLMM_WITHDRAW_MIN_OUT_TOLERANCE_BPS ?? 500);
 const REBALANCE_SLIPPAGE_BPS = Number(process.env.DLMM_REBALANCE_SLIPPAGE_BPS ?? 100);
 const REBALANCE_MAX_DIVERGENCE_BPS = Number(process.env.DLMM_REBALANCE_MAX_DIVERGENCE_BPS ?? 300);
 // Largest single rebalance swap, in Y units (USDCx). The attended conversions on 2026-10-27 went
@@ -508,14 +519,21 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   }
 
   // recenter: withdraw all, then re-add centered on the (re-read) active bin
-  // minX/minY = 1 is deliberately nominal, not real slippage protection (external review,
-  // 2026-09, security summary issue #9): this is the one place the agent accepts an
-  // arbitrarily bad fill on exit. Accepted as-is — bounded in practice by position size,
-  // and a tighter min-out here risks the withdraw itself reverting mid-recenter, which is
-  // worse (see the file header: a failed withdraw aborts before the re-add, but only if it
-  // fails outright, not if it succeeds at a bad price).
-  const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
+  // Min-outs: until C3 (DSA-09) every bin's minX/minY was a nominal 1 (external review, 2026-09,
+  // security summary issue #9), the one place the agent accepted an arbitrarily bad fill on
+  // exit, because a tighter min-out risks the withdraw itself reverting mid-recenter. Now each
+  // side of each bin must return at least (1 - DLMM_WITHDRAW_MIN_OUT_TOLERANCE_BPS) of what the
+  // fresh position read shows (still never below 1). The revert risk is kept small by the width
+  // (see WITHDRAW_MIN_OUT_TOLERANCE_BPS), and a revert is the safe failure: the sequence stops
+  // before the re-add with the position untouched (recenterSequenceOutcome), it counts as one
+  // failed attempt, and the next cycle re-reads the position and retries.
+  const withdrawals = withdrawMinimums(pos.bins, WITHDRAW_MIN_OUT_TOLERANCE_BPS);
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  // The only thing that leaves the wallet is the pool shares burned (the core's pool-burn), at
+  // most exactly the shares being withdrawn; sBTC/USDCx only come in. Allow mode: see dlmm-execute.ts.
+  const wpcs = walletOutflowConditions(w.address, [
+    { key: dlmmShareKey(poolDef.name), max: withdrawals.reduce((s, b) => s + b.amount, 0n) },
+  ]);
   // The re-add refuses a target above the ceiling (executeAdd), so refuse it here, before the
   // withdraw: otherwise the position is pulled out, swapped, and left loose (found by the B5
   // fault harness). A config error for a human, so a skip with an alert, not a failed attempt.
@@ -528,7 +546,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // per cycle: an operator halt engaged mid-recenter stops before the next transaction.
   if (!cfg.force && isKilled()) return { ...base, reason: "kill switch engaged — DLMM withdraw skipped", skipped: true };
   const wnonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
-  const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce: wnonce });
+  const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: wpcs, feeMicroStx: FEE_USTX, nonce: wnonce });
   if (!wr.txid) throw new Error("withdraw returned no txid");
   const wres = await waitForTxResult(wr.txid, log);
   // The sequencing rule itself (abort before re-add on anything but a successful withdraw)
@@ -611,13 +629,18 @@ async function readdPending(
 
     const inTok = step.direction === "x-for-y" ? xTok : yTok;
     const sdesc = buildSwapSimple({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, step.direction, step.amountIn, step.minOut, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
-    const spcs = buildInputCaps(w.address, [{ token: inTok.principal, asset: inTok.asset, max: step.amountIn }]);
+    const outTok = step.direction === "x-for-y" ? yTok : xTok;
+    // Deny mode: the wallet's input to the pool and the pool's payout are the only movements.
+    const spcs = [
+      ...walletOutflowConditions(w.address, [{ key: dlmmTokenKey(inTok.principal, inTok.asset), max: step.amountIn }]),
+      principalSendsGte(dlmmPoolPrincipal(poolDef.name), dlmmTokenKey(outTok.principal, outTok.asset), step.minOut),
+    ];
     log(`  rebalance swap ${i + 1}: ${step.direction} ${Number(step.amountIn) / 10 ** inTok.decimals} ${inTok.asset || "STX"} (min out ${step.minOut})`);
     // The pending re-add is already saved (after the withdraw, and after each settled swap), so
     // stopping here leaves it for a safe resume once KILL is cleared.
     if (!cfg.force && isKilled()) return waitResult("kill switch engaged before rebalance swap");
     const snonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
-    const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, feeMicroStx: FEE_USTX, nonce: snonce });
+    const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, deny: true, feeMicroStx: FEE_USTX, nonce: snonce });
     if (sr.txid) { pending.pendingSwap = { txid: sr.txid, direction: step.direction }; savePending(pending); }
     const sres = sr.txid ? await waitForTxResult(sr.txid, log) : { status: "no-txid" as string, repr: undefined };
     if (sres.status === "timeout") return waitResult(`rebalance swap ${sr.txid} not confirmed yet; it will be settled next cycle`);

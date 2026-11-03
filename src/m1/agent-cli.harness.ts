@@ -75,7 +75,7 @@ export function touchKill(): void {
 
 // ---- recorded calls -----------------------------------------------------------------------
 export interface BuildCall { fn: string; amount: bigint; opts: Record<string, unknown> }
-export interface ContractCall { functionName: string; functionArgs: unknown[]; senderKey: string; network: unknown }
+export interface ContractCall { functionName: string; functionArgs: unknown[]; senderKey: string; network: unknown; postConditionMode: unknown; postConditions: unknown[] }
 export interface Recorded {
   builds: BuildCall[]; // XYK builder entry points called by agent-cli (actions.ts)
   contractCalls: ContractCall[]; // what those builders signed (makeContractCall args)
@@ -173,7 +173,7 @@ mock.module("@stacks/transactions", {
     fetchNonce: async () => 7n,
     makeContractCall: async (o: Parameters<typeof realTx.makeContractCall>[0]) => {
       const a = o as unknown as ContractCall;
-      rec.contractCalls.push({ functionName: a.functionName, functionArgs: a.functionArgs, senderKey: a.senderKey, network: a.network });
+      rec.contractCalls.push({ functionName: a.functionName, functionArgs: a.functionArgs, senderKey: a.senderKey, network: a.network, postConditionMode: a.postConditionMode, postConditions: a.postConditions });
       return realTx.makeContractCall(o); // signs with the throwaway key above; no network
     },
     broadcastTransaction: REAL_RPC

@@ -9,7 +9,8 @@ import {
 } from "./agent-cli.harness.js";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { Cl } from "@stacks/transactions";
+import { Cl, PostConditionMode, type PostCondition } from "@stacks/transactions";
+import { show, walletLines, XYK_POOL, SBTC } from "./post-conditions.testkit.js";
 import { minusSlippage } from "./quotes.js";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 
@@ -120,6 +121,12 @@ test("out of band, live gates open: exactly one capped swap with the expected mi
   assert.deepEqual(c.functionArgs[3], Cl.uint(SWAP_CAP_Y));
   assert.deepEqual(c.functionArgs[4], Cl.uint(minusSlippage(world.swapYForXQuote, 100)));
   assert.deepEqual(c.functionArgs[4], Cl.uint(48_510n));
+  // C3 / DSA-09: Deny, the STX input capped, every other wallet asset ≤ 0, the pool's sBTC payout ≥ min-dx.
+  assert.equal(c.postConditionMode, PostConditionMode.Deny);
+  assert.deepEqual(show(c.postConditions as PostCondition[]), [
+    ...walletLines(WALLET.address, [["STX", SWAP_CAP_Y]]),
+    `${XYK_POOL} gte 48510 ${SBTC}`,
+  ]);
 
   assert.equal(rec.broadcasts.length, 1);
   assert.deepEqual(rec.fetches, ["https://rpc.invalid/extended/v1/tx/0xfeedbeef"], "confirmation polled");

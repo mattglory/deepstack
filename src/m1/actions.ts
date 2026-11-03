@@ -3,15 +3,27 @@
 // SAFETY: default mode is DRY-RUN — build + sign with an ephemeral key, no broadcast.
 // Broadcasting requires broadcast:true AND a real senderKey. Post-conditions bound
 // what the SENDER sends (input caps, so it can never overspend); the contract's on-chain
-// min-* args bound what is received. Mode is Allow so the pool's internal transfers
-// (output leg, protocol fee, LP mint) don't trip a Deny abort. Post-conditions branch on
-// token.native (native STX -> .ustx(), SIP-010 -> .ft()), so this works for ANY pair.
+// min-* args bound what is received. Post-conditions branch on token.native (native STX ->
+// .ustx(), SIP-010 -> .ft()), so this works for ANY pair.
+//
+// MODE: Deny (C3 / DSA-09), with the COMPLETE set of movements each call makes, derived from
+// xyk-core-v-1-2 and confirmed on real agent transactions (src/m1/fixtures/agent-asset-flows.json):
+//   swap-x-for-y   wallet sends x (to the pool + protocol fee address, both inside the x cap);
+//                  the POOL sends y to the wallet (0xc685ec3e…)
+//   swap-y-for-x   the mirror (0x093e7748…)
+//   add-liquidity  wallet sends x and y; the LP token is minted (a mint has no sender) (0x60a90885…)
+//   withdraw       wallet burns LP (a burn counts as the wallet sending it); the POOL sends x and
+//                  y to the wallet (0x15610400…, 0x8f16fa78…)
+// Every other wallet asset gets "sends ≤ 0" (post-conditions.ts), and Deny forbids anything
+// unlisted, NFTs included. The pool's payout is covered by "pool sends ≥ min-out", the same
+// bound the core already asserts (dy >= min-dy, x/y-amount >= min-x/min-y), so it adds no new
+// way to fail. The first ever XYK swap (0x95b112e1) aborted in Deny mode because that
+// condition named xyk-core instead of the pool contract that actually pays.
 
 import {
   makeContractCall,
   fetchNonce,
   Cl,
-  Pc,
   PostConditionMode,
   getAddressFromPrivateKey,
   randomPrivateKey,
@@ -20,6 +32,7 @@ import {
   type PostCondition,
 } from "@stacks/transactions";
 import { CORE, activePool, contractId, tokenId, type Token } from "./contracts.js";
+import { STX, walletOutflowConditions, principalSendsGte, type AssetKey } from "./post-conditions.js";
 import { withRpc, hiroFetch, broadcastSigned } from "./rpc.js";
 import {
   getAddLiquidityQuote,
@@ -64,16 +77,15 @@ const traitArgs = () => {
 
 const human = (amount: bigint, decimals: number) => Number(amount) / 10 ** decimals;
 
-// "sender sends ≤ amount of token" — native STX vs SIP-010 FT.
-function sendCapPC(sender: string, amount: bigint, t: Token): PostCondition {
-  return t.native
-    ? Pc.principal(sender).willSendLte(amount).ustx()
-    : Pc.principal(sender).willSendLte(amount).ft(tokenId(t), t.asset!);
-}
+// The post-condition asset key of a pair token — native STX vs SIP-010 FT.
+const keyOf = (t: Token): AssetKey => (t.native ? STX : `${tokenId(t)}::${t.asset!}`);
+// The pool contract's payout to the wallet (Deny mode must cover it).
+const poolPaysPC = (min: bigint, t: Token) => principalSendsGte(contractId(activePool().pool), keyOf(t), min);
+const GUARD_NOTE = "every other wallet asset: sends ≤ 0; Deny mode forbids any unlisted movement";
 const humanLeg = (amount: bigint, t: Token) =>
   `${human(amount, t.decimals)} ${t.symbol}${t.native ? " (native)" : ""}`;
 
-const MODE = PostConditionMode.Allow;
+const MODE = PostConditionMode.Deny;
 
 async function finalize(
   action: string,
@@ -137,10 +149,11 @@ export async function buildAddLiquidity(xAmount: bigint, opts: BuildOpts = {}): 
     "add-liquidity",
     [...traitArgs(), Cl.uint(xAmount), Cl.uint(minDlp)],
     (sender) => ({
-      conditions: [sendCapPC(sender, xAmount, x), sendCapPC(sender, maxY, y)],
+      conditions: walletOutflowConditions(sender, [{ key: keyOf(x), max: xAmount }, { key: keyOf(y), max: maxY }]),
       human: [
         `sender sends ≤ ${humanLeg(xAmount, x)}`,
         `sender sends ≤ ${humanLeg(maxY, y)}`,
+        GUARD_NOTE,
         `(LP received bounded on-chain by min-dlp=${minDlp})`,
       ],
     }),
@@ -169,8 +182,8 @@ export async function buildSwapXForY(xAmount: bigint, opts: BuildOpts = {}): Pro
     "swap-x-for-y",
     [...traitArgs(), Cl.uint(xAmount), Cl.uint(minDy)],
     (sender) => ({
-      conditions: [sendCapPC(sender, xAmount, x)],
-      human: [`sender sends ≤ ${humanLeg(xAmount, x)}`, `(${y.symbol} received bounded on-chain by min-dy=${minDy})`],
+      conditions: [...walletOutflowConditions(sender, [{ key: keyOf(x), max: xAmount }]), poolPaysPC(minDy, y)],
+      human: [`sender sends ≤ ${humanLeg(xAmount, x)}`, GUARD_NOTE, `pool sends ≥ ${minDy} ${y.symbol} base (= on-chain min-dy)`],
     }),
     () => ({
       [`xAmount_${x.symbol}`]: `${human(xAmount, x.decimals)} (${xAmount} base)`,
@@ -195,8 +208,8 @@ export async function buildSwapYForX(yAmount: bigint, opts: BuildOpts = {}): Pro
     "swap-y-for-x",
     [...traitArgs(), Cl.uint(yAmount), Cl.uint(minDx)],
     (sender) => ({
-      conditions: [sendCapPC(sender, yAmount, y)],
-      human: [`sender sends ≤ ${humanLeg(yAmount, y)}`, `(${x.symbol} received bounded on-chain by min-dx=${minDx})`],
+      conditions: [...walletOutflowConditions(sender, [{ key: keyOf(y), max: yAmount }]), poolPaysPC(minDx, x)],
+      human: [`sender sends ≤ ${humanLeg(yAmount, y)}`, GUARD_NOTE, `pool sends ≥ ${minDx} ${x.symbol} base (= on-chain min-dx)`],
     }),
     () => ({
       [`yAmount_${y.symbol}`]: `${human(yAmount, y.decimals)} (${yAmount} base)`,
@@ -221,10 +234,15 @@ export async function buildWithdrawLiquidity(lpAmount: bigint, opts: BuildOpts =
     "withdraw-liquidity",
     [...traitArgs(), Cl.uint(lpAmount), Cl.uint(minX), Cl.uint(minY)],
     (sender) => ({
-      conditions: [Pc.principal(sender).willSendLte(lpAmount).ft(contractId(lp), lp.asset)],
+      conditions: [
+        ...walletOutflowConditions(sender, [{ key: `${contractId(lp)}::${lp.asset}`, max: lpAmount }]),
+        poolPaysPC(minX, x),
+        poolPaysPC(minY, y),
+      ],
       human: [
         `sender sends ≤ ${human(lpAmount, lp.decimals)} LP (${lp.asset})`,
-        `(${x.symbol}/${y.symbol} received bounded on-chain by min-x=${minX}, min-y=${minY})`,
+        GUARD_NOTE,
+        `pool sends ≥ ${minX} ${x.symbol} base and ≥ ${minY} ${y.symbol} base (= on-chain min-x, min-y)`,
       ],
     }),
     () => ({
