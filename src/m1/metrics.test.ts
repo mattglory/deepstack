@@ -9,7 +9,7 @@
 
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -273,4 +273,44 @@ test("dlmm fees: the latest on-chain figure is kept at the top; dropped when the
   recordSample("sbtc-stx", "SPX", 1800, s("2026-10-30T11:00:00Z", 0)); // position withdrawn
   m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
   assert.equal(m.dlmmFees, undefined);
+});
+
+// C7 / DSA-13: a corrupt metrics.json used to be silently replaced by a fresh file, destroying
+// the pilot history (and with it the vol history and drawdown peak). It must be moved aside
+// (metrics.json.corrupt-<ts>) for a human to recover; recording then starts a fresh file so
+// the agent keeps running.
+const corruptCopies = () => {
+  const base = METRICS_PATH.split("/").pop()!;
+  return readdirSync(tmpdir()).filter((f) => f.startsWith(`${base}.corrupt-`)).map((f) => join(tmpdir(), f));
+};
+
+test("corrupt metrics.json: moved aside intact, never overwritten; recording starts fresh", () => {
+  for (const f of corruptCopies()) rmSync(f, { force: true });
+  writeFileSync(METRICS_PATH, '{"samples":[ HISTORY');
+  recordSample("sbtc-stx", "SPX", 1800, sample(0));
+  const aside = corruptCopies();
+  assert.equal(aside.length, 1);
+  assert.equal(readFileSync(aside[0], "utf8"), '{"samples":[ HISTORY');
+  assert.equal(JSON.parse(readFileSync(METRICS_PATH, "utf8")).samples.length, 1);
+  for (const f of aside) rmSync(f, { force: true });
+});
+
+test("corrupt metrics.json: readers do not throw and do not lose the file", async () => {
+  const { loadHistory, currentDrawdown } = await import("./metrics.js");
+  for (const f of corruptCopies()) rmSync(f, { force: true });
+  writeFileSync(METRICS_PATH, "not json");
+  assert.deepEqual(loadHistory(), []);
+  assert.equal(currentDrawdown(100), 0);
+  const aside = corruptCopies();
+  assert.equal(aside.length, 1);
+  assert.equal(readFileSync(aside[0], "utf8"), "not json");
+  for (const f of aside) rmSync(f, { force: true });
+});
+
+test("metrics writes are atomic: no temp file is left behind", () => {
+  recordSample("sbtc-stx", "SPX", 1800, sample(200));
+  adjustLpBasis({ kind: "withdraw", fraction: 0.5 });
+  const base = METRICS_PATH.split("/").pop()!;
+  assert.deepEqual(readdirSync(tmpdir()).filter((f) => f.startsWith(`${base}.tmp`)), []);
+  assert.ok(JSON.parse(readFileSync(METRICS_PATH, "utf8")).lpBasis);
 });
