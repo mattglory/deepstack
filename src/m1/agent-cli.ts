@@ -46,6 +46,8 @@ import { withRpc } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
 import { createSupervisor, briefError, type Supervisor } from "./supervise.js";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
 // and flushed once per tick in step(). See src/m1/journal.ts.
@@ -643,7 +645,7 @@ function applyAllocation(
   };
 }
 
-async function main() {
+export async function main() {
   const f = flags();
   const live = f.live && f.yesMainnet;
   const cfg = activePool();
@@ -918,7 +920,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("agent failed:", err.message);
-  process.exit(1);
-});
+// Start only when this file is the process entrypoint (`node --import tsx src/m1/agent-cli.ts`,
+// as in deploy/deepstack-agent.service), not when a test imports it. realpath because Node
+// resolves the entry module's URL through symlinks but leaves process.argv[1] as typed.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  main().catch((err) => {
+    console.error("agent failed:", err.message);
+    process.exit(1);
+  });
+}
