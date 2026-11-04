@@ -4,10 +4,15 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { writeFileSync, rmSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   experimentDecision,
   recordRebalance,
   freshState,
+  loadExperimentState,
+  saveExperimentState,
   type ExperimentConfig,
   type ExperimentState,
 } from "./experiment.js";
@@ -81,4 +86,39 @@ test("recordRebalance: increments count and accumulates fee cost", () => {
   const s2 = recordRebalance(s1, 1.0);
   assert.equal(s2.rebalances, 2);
   assert.equal(s2.costStx, 1.9123);
+});
+
+// C7 / DSA-13: the experiment's caps persist to a file "so a VPS restart cannot silently reset
+// the counters". A corrupt file used to read as a FRESH experiment (all caps reset, tight band
+// re-pinned). It must instead read as ENDED, which reverts to the vol band for good.
+const EXP_PATH = join(tmpdir(), `deepstack-experiment-test-${process.pid}.json`);
+
+test("loadExperimentState: a missing file is a fresh (not ended) experiment", () => {
+  rmSync(EXP_PATH, { force: true });
+  assert.deepEqual(loadExperimentState(EXP_PATH), freshState());
+});
+
+test("loadExperimentState: corrupt JSON fails closed to ENDED, and the decision reverts to the vol band", () => {
+  writeFileSync(EXP_PATH, "{ truncated");
+  const st = loadExperimentState(EXP_PATH);
+  assert.equal(st.ended, true);
+  assert.match(st.endReason!, /unreadable/);
+  const d = experimentDecision(CFG(), st, 416, NOW);
+  assert.equal(d.active, false);
+  assert.equal(d.bandBps, 416);
+});
+
+test("loadExperimentState: valid JSON that is not an object fails closed to ENDED", () => {
+  writeFileSync(EXP_PATH, "null");
+  assert.equal(loadExperimentState(EXP_PATH).ended, true);
+});
+
+test("saveExperimentState: atomic write round-trips and leaves no temp file", () => {
+  rmSync(EXP_PATH, { force: true });
+  const st: ExperimentState = { ...freshState(), startedAt: NOW, rebalances: 2, costStx: 1.5 };
+  saveExperimentState(EXP_PATH, st);
+  assert.deepEqual(loadExperimentState(EXP_PATH), st);
+  const base = EXP_PATH.split("/").pop()!;
+  assert.deepEqual(readdirSync(tmpdir()).filter((f) => f.startsWith(`${base}.tmp`)), []);
+  rmSync(EXP_PATH, { force: true });
 });
