@@ -31,7 +31,7 @@ import { scanStstxGap } from "./ststx-gap.js";
 import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmVol, pinnedHalfWidth } from "./dlmm-recenter-exec.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { loadDeposit, feesEarned } from "./dlmm-fees.js";
-import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, pinMismatch } from "./dlmm-read.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
 import { checkNonceSafety } from "./nonce-safety.js";
@@ -184,6 +184,11 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
       return last;
     }
     const [pos, xTok, yTok] = await Promise.all([readUserPosition(poolDef, w.address), resolveToken(st.xToken), resolveToken(st.yToken)]);
+    const mismatch = pinMismatch(poolDef, st, xTok, yTok); // C4: never value with RPC-substituted tokens/decimals
+    if (mismatch) {
+      console.warn(`  [dlmm-value] ⛔ pool does not match its pinned definition (${mismatch}) — skipping DLMM valuation this tick`);
+      return last;
+    }
     const usdPerStx = await stxPriceUsd();
     lastUsdPerStx = usdPerStx;
     const xValueY = (Number(pos.totalX) / 10 ** xTok.decimals) * midXinY;
