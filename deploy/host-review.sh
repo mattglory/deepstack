@@ -44,6 +44,11 @@ run ufw status verbose
 run ss -tulpn
 run sh -c "nft list ruleset 2>/dev/null | head -60"
 
+sec "outbound dependencies (who the host talks to)"
+run sh -c "ss -tnp state established 2>/dev/null | awk 'NR>1 {print \$4, \$NF}' | sort | uniq -c | sort -rn | head -30"
+run sh -c "resolvectl status 2>/dev/null | grep -E 'DNS Servers|Current DNS' || cat /etc/resolv.conf"
+run sh -c "grep -v '^\s*#' /etc/hosts | sed '/^\s*$/d'"
+
 sec "updates"
 run sh -c "apt list --upgradable 2>/dev/null | head -40"
 run cat /etc/apt/apt.conf.d/20auto-upgrades
@@ -57,6 +62,9 @@ run sh -c "systemctl cat $SERVICE | diff - $APP/deploy/deepstack-agent.service &
 run systemctl list-units --type=service --state=running --no-pager
 run sh -c "ps -eo user,pid,etime,cmd --sort=user | grep -v '\[' | head -60"
 run sh -c "crontab -l 2>/dev/null; ls -l /etc/cron.d; systemctl list-timers --no-pager | head -20"
+run sh -c "systemd-analyze security $SERVICE --no-pager 2>/dev/null | tail -25"
+command -v docker >/dev/null && { run docker ps -a --format '{{.Names}} {{.Image}} {{.Status}} {{.Ports}}'; run sh -c "docker info --format 'rootless={{.SecurityOptions}} live-restore={{.LiveRestoreEnabled}}' 2>/dev/null"; run sh -c "getent group docker"; } || echo "docker: not installed"
+echo "monitoring / log agents present:"; for a in node_exporter prometheus-node-exporter netdata telegraf promtail vector fluent-bit datadog-agent amazon-cloudwatch-agent google-cloud-ops-agent; do systemctl list-unit-files --no-pager 2>/dev/null | grep -q "^$a" && echo "  $a"; done; echo "  (end)"
 
 sec "app: code, deployed commit, secret file modes"
 run cat "$APP/.deployed-commit"
@@ -81,6 +89,7 @@ fi
 sec "disk, memory, logs, backups"
 run df -h /
 run free -m
+run sh -c "getent group adm systemd-journal"   # who can read every log, the agent's included
 run sh -c "journalctl --disk-usage; grep -Ei '^(SystemMaxUse|MaxRetentionSec|Storage)' /etc/systemd/journald.conf /etc/systemd/journald.conf.d/* 2>/dev/null"
 run sh -c "ls -la /var/backups 2>/dev/null | head"
 echo "provider snapshots / backups: check the hosting console (not visible from the host)"
