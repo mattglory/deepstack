@@ -46,4 +46,4 @@ apt-get install -y unattended-upgrades
 dpkg-reconfigure -f noninteractive unattended-upgrades
 
 echo
-echo "Provisioned. Next: bash install.sh   (see deploy/install.sh)"
+echo "Provisioned. Next: bash install.sh <commit-sha>   (see docs/PILOT_DEPLOY.md §3)"
