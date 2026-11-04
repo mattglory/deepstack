@@ -8,7 +8,7 @@
 //   3. honour venue pause flags, drawdown limits, and a manual kill-switch.
 // Fail-closed: if the external reference is missing, do not trade.
 
-import { existsSync } from "node:fs";
+import { isKilled } from "./kill.js";
 import { activePool } from "./contracts.js";
 
 export interface ExternalMid {
@@ -82,7 +82,7 @@ export interface SafetyResult {
 export function assessSafety(input: SafetyInput, params: SafetyParams): SafetyResult {
   const reasons: string[] = [];
 
-  if (process.env.KILL_SWITCH === "1" || existsSync("KILL")) {
+  if (isKilled()) {
     reasons.push("manual kill-switch engaged");
   }
   if (!input.poolActive) {
