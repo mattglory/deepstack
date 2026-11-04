@@ -118,6 +118,7 @@ Everything is read from the environment. The flags `--network`, `--addresses`, `
 | `WATCH_NOTIFY_MIN` | `HIGH` | lowest severity that triggers a notification |
 | `WATCH_RECOVERY_HOURS` | `24` | re-check window after a corrupt state file |
 | `WATCH_MAX_PAGES` | `3` | maximum tx pages (50 each) fetched per poll when catching up |
+| `WATCH_DRY_RUN` | – | `1` = no channel is a deliberate dry run. Without it, a watcher with no `SLACK_WEBHOOK_URL` / `WATCH_WEBHOOK_URL` reports itself unhealthy (exit 1, heartbeat `/fail`) and keeps its alerts in the outbox, so a mistyped variable cannot look healthy |
 
 Flags: `--once` runs a single poll. `--interval <sec>` sets the loop period (default 300,
 minimum 30). `--test-alert` sends a delivery check.
@@ -165,8 +166,12 @@ Use any host that is **not** the agent VPS and shares no credentials with it. It
 **cron** (every 5 minutes, which is shorter than the agent's 30-minute cycle):
 
 ```cron
-*/5 * * * * cd /opt/deepstack && SLACK_WEBHOOK_URL=… WATCH_HEARTBEAT_URL=… OWNER_ALLOWLIST=… npm run -s watch:wallet -- --once >> /var/log/deepstack-watcher.log 2>&1
+*/5 * * * * cd /opt/deepstack && set -a && . /etc/deepstack-watcher.env && set +a && npm run -s watch:wallet -- --once >> /var/log/deepstack-watcher.log 2>&1
 ```
+
+Keep the webhook and heartbeat URLs in `/etc/deepstack-watcher.env` (mode 600), not on the
+command line: a value written into the crontab line is visible in `ps` and to anyone who can
+read the crontab.
 
 **systemd timer** (a long-running loop works too: `npm run watch:wallet -- --interval 300`):
 
@@ -175,7 +180,8 @@ Use any host that is **not** the agent VPS and shares no credentials with it. It
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/deepstack
-EnvironmentFile=/etc/deepstack-watcher.env   # webhook URLs, OWNER_ALLOWLIST; chmod 600
+# webhook URLs, OWNER_ALLOWLIST; chmod 600 (systemd has no trailing comments: keep this on its own line)
+EnvironmentFile=/etc/deepstack-watcher.env
 ExecStart=/usr/bin/npm run -s watch:wallet -- --once
 SuccessExitStatus=2
 

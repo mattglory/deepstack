@@ -25,6 +25,9 @@ export interface WatchConfig {
   notifyMin: Severity;
   recoveryHours: number;
   maxPages: number;
+  // No alert channel is a failure, not a quiet success, unless dry-run was asked for explicitly
+  // (WATCH_DRY_RUN=1): a mistyped SLACK_WEBHOOK_URL must not leave the heartbeat green.
+  dryRunAllowed: boolean;
 }
 
 const list = (s: string | undefined) => (s ?? "").split(",").map((x) => x.trim()).filter(Boolean);
@@ -59,6 +62,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     notifyMin,
     recoveryHours: num(env.WATCH_RECOVERY_HOURS, 24),
     maxPages: num(env.WATCH_MAX_PAGES, 3),
+    dryRunAllowed: env.WATCH_DRY_RUN === "1",
   };
 }
 
@@ -135,15 +139,17 @@ export async function runPoll(c: WatchConfig, doFetch: Fetch = fetch, log: (s: s
   const notifiable = all.filter((a) => SEVERITY_RANK[a.severity] >= SEVERITY_RANK[c.notifyMin] || ALWAYS_NOTIFY.has(a.rule));
   let notified = false;
   let dryRun = !c.channels.slack && !c.channels.webhook;
-  let deliveryFailed = false;
+  const unconfigured = dryRun && !c.dryRunAllowed;
+  if (unconfigured) log("  [watch] ⛔ no alert channel configured (SLACK_WEBHOOK_URL / WATCH_WEBHOOK_URL): reported as unhealthy. Set WATCH_DRY_RUN=1 only for a deliberate dry run");
+  let deliveryFailed = unconfigured;
   if (notifiable.length) {
     // INFO rides along (summarised) once there is something worth sending.
     const d = await deliver(all, c.network, c.channels, doFetch, log);
     dryRun = d.dryRun;
     notified = d.delivered;
     for (const f of d.failures) log(`  [watch] delivery failed: ${f}`);
-    deliveryFailed = d.failures.length > 0;
-    state.outbox = d.delivered ? [] : notifiable;
+    deliveryFailed = unconfigured || d.failures.length > 0;
+    state.outbox = d.delivered && !unconfigured ? [] : notifiable; // undelivered alerts wait for a channel
   } else {
     state.outbox = [];
   }
@@ -165,5 +171,9 @@ export async function sendTestAlert(c: WatchConfig, doFetch: Fetch = fetch, log:
     if (c.channels.webhook) log(`  webhook: ${d.failures.some((f) => f.startsWith("webhook")) ? "FAILED" : "sent"}`);
   }
   if (c.channels.heartbeat) log(`  heartbeat: ${(await heartbeat("ok", c.channels, doFetch)) ? "ok" : "FAILED"}`);
+  if (d.dryRun && !c.dryRunAllowed) {
+    log("  ⛔ no alert channel configured: nothing was delivered (set WATCH_DRY_RUN=1 for a deliberate dry run)");
+    return false;
+  }
   return d.failures.length === 0;
 }

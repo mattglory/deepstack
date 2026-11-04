@@ -69,7 +69,7 @@ test("state: corrupt or wrong-network file is moved aside, never overwritten", (
 });
 
 test("poll: first run baselines, second run is quiet, heartbeat ok each time", async () => {
-  const { c, statePath } = setup({ WATCH_HEARTBEAT_URL: BEAT });
+  const { c, statePath } = setup({ WATCH_HEARTBEAT_URL: BEAT, WATCH_DRY_RUN: "1" });
   const h = harness();
   const r1 = await runPoll(c, h.f, quiet);
   assert.equal(r1.healthy, true);
@@ -145,6 +145,20 @@ test("delivery: DRY-RUN prints clearly marked output when no channel is configur
   assert.equal(d.dryRun, true);
   assert.match(out.join("\n"), /^--- DRY-RUN/);
   assert.deepEqual(Object.keys(jsonPayload([a], "mainnet")), ["source", "network", "severity", "alerts"]);
+});
+
+test("no alert channel and no WATCH_DRY_RUN: unhealthy, heartbeat /fail, alerts kept in the outbox (assessment R3-5)", async () => {
+  const { c } = setup({ WATCH_HEARTBEAT_URL: BEAT, WATCH_NOTIFY_MIN: "INFO" });
+  const h = harness();
+  const out: string[] = [];
+  const r = await runPoll(c, h.f, (s) => out.push(s));
+  assert.equal(r.healthy, false);
+  assert.deepEqual(h.beats, ["fail"]);
+  assert.deepEqual(h.posts, []);
+  assert.deepEqual(r.state.outbox.map((a) => a.rule), ["baseline"]); // retried once a channel exists
+  assert.match(out.join("\n"), /no alert channel configured/);
+  // --test-alert reports failure too
+  assert.equal(await sendTestAlert(c, h.f, quiet), false);
 });
 
 test("--test-alert: one INFO message through each configured channel plus a heartbeat", async () => {
