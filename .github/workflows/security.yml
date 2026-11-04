@@ -8,13 +8,17 @@ on:
   schedule:
     - cron: "0 9 * * 1" # Mondays 09:00 UTC, so new advisories surface without a code change
 
+# Least privilege by default; the CodeQL job widens only what it needs (DSA-24).
+permissions:
+  contents: read
+
 jobs:
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
       # Can fail, deliberately: a check that cannot go red is not evidence of anything.
@@ -33,8 +37,26 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: github/codeql-action/init@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           languages: javascript-typescript
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # scan the whole history, not just the tip
+      # gitleaks binary pinned by version AND sha256 (from the release's published digest), so a
+      # replaced release asset fails the job instead of running (DSA-24).
+      - name: Install gitleaks 8.30.1 (checksum-verified)
+        run: |
+          curl -sSfL -o gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+      # --redact: findings never print the secret itself into the public Actions log.
+      - name: Scan full git history
+        run: ./gitleaks git --redact --verbose --exit-code 1 .
