@@ -35,7 +35,8 @@
     "m1:key-backup-verify": "tsx src/m1/key-backup-verify-cli.ts",
     "m1:dlmm-fees": "tsx src/m1/dlmm-fees-cli.ts",
     "m1:dlmm-width": "tsx src/m1/dlmm-width-cli.ts",
-    "m1:allocator": "tsx src/m1/allocator-cli.ts"
+    "m1:allocator": "tsx src/m1/allocator-cli.ts",
+    "watch:wallet": "tsx src/watcher/cli.ts"
   },
   "dependencies": {
     "@stacks/transactions": "^7.6.0",
