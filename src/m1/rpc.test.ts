@@ -5,7 +5,7 @@
 
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { withRpc, endpoints } from "./rpc.js";
+import { withRpc, endpoints, hiroHeaders, hiroFetch, redactEndpoint } from "./rpc.js";
 
 const PRIMARY = "https://api.mainnet.hiro.so";
 
@@ -84,4 +84,110 @@ test("withRpc: no fallback + a hanging endpoint rejects with a timeout, not fore
     withRpc(() => new Promise(() => {}), 20),
     /timed out after 20ms/,
   );
+});
+
+// C8 / DSA-25 (assessment A4 F-09): endpoint URLs can carry a provider token in the path or
+// query (QuickNode style); they must never reach logs/journal. The Hiro API key must only go to
+// a real hiro.so host, and plain-http endpoints are refused.
+const SECRET_FALLBACK = "https://x.quiknode.pro/SECRET-TOKEN/?key=SECRET2";
+
+test("redactEndpoint: keeps scheme+host, drops path and query", () => {
+  assert.equal(redactEndpoint(SECRET_FALLBACK), "https://x.quiknode.pro/…");
+  assert.equal(redactEndpoint("https://api.mainnet.hiro.so"), "https://api.mainnet.hiro.so");
+  assert.equal(redactEndpoint("not a url SECRET"), "<invalid endpoint>");
+});
+
+test("withRpc: a timeout error does not contain the endpoint's path/query", async () => {
+  process.env.STACKS_API_FALLBACKS = SECRET_FALLBACK;
+  await assert.rejects(withRpc(() => new Promise(() => {}), 10), (e: Error) => {
+    assert.match(e.message, /timed out/);
+    assert.doesNotMatch(e.message, /SECRET/);
+    return true;
+  });
+});
+
+test("withRpc: the failover warning does not contain the endpoint's path/query", async () => {
+  process.env.STACKS_API_FALLBACKS = SECRET_FALLBACK;
+  const warned: string[] = [];
+  const orig = console.warn;
+  console.warn = (...a: unknown[]) => { warned.push(a.join(" ")); };
+  try {
+    // Whichever endpoint is tried first fails; the other answers -> one "switched" warning.
+    let first: string | null = null;
+    await withRpc(async (b) => {
+      if (first === null) first = b;
+      if (b === first) throw new Error("down");
+      return "ok";
+    });
+  } finally {
+    console.warn = orig;
+  }
+  assert.ok(warned.some((w) => /switched/.test(w)));
+  assert.ok(warned.every((w) => !/SECRET/.test(w)), warned.join("\n"));
+});
+
+test("hiroHeaders: key attached only to a real hiro.so hostname", () => {
+  const saved = process.env.HIRO_API_KEY;
+  process.env.HIRO_API_KEY = "k";
+  try {
+    assert.deepEqual(hiroHeaders("https://api.mainnet.hiro.so"), { "x-api-key": "k" });
+    assert.deepEqual(hiroHeaders("https://api.hiro.so"), { "x-api-key": "k" });
+    assert.deepEqual(hiroHeaders("https://api.hiro.so.attacker.tld"), {});
+    assert.deepEqual(hiroHeaders("https://attacker.tld/api.hiro.so"), {});
+    assert.deepEqual(hiroHeaders("https://attacker.tld/?h=x.hiro.so"), {});
+    assert.deepEqual(hiroHeaders("https://evilhiro.so"), {});
+    assert.deepEqual(hiroHeaders("http://api.mainnet.hiro.so"), {}); // never over plain http
+  } finally {
+    if (saved === undefined) delete process.env.HIRO_API_KEY;
+    else process.env.HIRO_API_KEY = saved;
+  }
+});
+
+test("endpoints: a non-https endpoint is refused", () => {
+  process.env.STACKS_API_FALLBACKS = "http://plain.example";
+  assert.throws(() => endpoints(), /https/);
+  process.env.STACKS_API_FALLBACKS = "ftp://x.example";
+  assert.throws(() => endpoints(), /https/);
+});
+
+test("withRpc: an endpoint's own error that echoes its URL is scrubbed before it propagates", async () => {
+  process.env.STACKS_API_FALLBACKS = SECRET_FALLBACK;
+  // Pin the sticky endpoint to the primary so the secret endpoint is tried LAST (its error is the one surfaced).
+  await withRpc(async (b) => { if (b !== PRIMARY) throw new Error("x"); return 1; });
+  await assert.rejects(withRpc(async (b) => { throw new Error(`Attempted to fetch ${b}/v2/accounts/SP1 and failed`); }), (e: Error) => {
+    assert.match(e.message, /Attempted to fetch/);
+    assert.doesNotMatch(e.message, /SECRET/);
+    return true;
+  });
+});
+
+// C2 / DSA-08: the timeout used to only stop WAITING; the underlying fetch kept its socket open.
+// Each attempt now gets an AbortSignal that fires on timeout, passed to fn and attached by hiroFetch.
+test("withRpc: a timed-out attempt's signal is aborted (the hung request is released)", async () => {
+  let seen: AbortSignal | undefined;
+  await assert.rejects(
+    withRpc((_b: string, signal?: AbortSignal) => {
+      seen = signal;
+      return new Promise(() => {});
+    }, 20),
+    /timed out after 20ms/,
+  );
+  assert.ok(seen, "fn received an AbortSignal");
+  assert.equal(seen.aborted, true);
+});
+
+test("hiroFetch: requests made inside a withRpc attempt carry that attempt's signal", async () => {
+  const orig = globalThis.fetch;
+  let got: AbortSignal | null | undefined;
+  globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
+    got = init?.signal;
+    return new Promise(() => {});
+  }) as typeof fetch;
+  try {
+    await assert.rejects(withRpc((b) => hiroFetch(b)(`${b}/x`), 20), /timed out/);
+  } finally {
+    globalThis.fetch = orig;
+  }
+  assert.ok(got, "signal attached");
+  assert.equal(got.aborted, true);
 });
