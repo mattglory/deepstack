@@ -9,7 +9,6 @@
 
 import {
   makeContractCall,
-  broadcastTransaction,
   fetchNonce,
   Cl,
   Pc,
@@ -21,7 +20,7 @@ import {
   type PostCondition,
 } from "@stacks/transactions";
 import { CORE, activePool, contractId, tokenId, type Token } from "./contracts.js";
-import { withRpc, hiroFetch } from "./rpc.js";
+import { withRpc, hiroFetch, broadcastSigned } from "./rpc.js";
 import {
   getAddLiquidityQuote,
   getSwapXForYQuote,
@@ -113,13 +112,10 @@ async function finalize(
     serializedTx: serializeTransaction(tx),
   };
   if (broadcasting) {
-    try {
-      const res = await broadcastTransaction({ transaction: tx, network });
-      const r = res as any;
-      built.broadcast = r.txid ? { txid: r.txid } : { error: JSON.stringify(r) };
-    } catch (err) {
-      built.broadcast = { error: (err as Error).message };
-    }
+    // Configured endpoints, failover, per-attempt timeout; the same signed tx on every attempt
+    // (rpc.ts broadcastSigned, C2 / DSA-08). A node rejection echoes a txid, so "error" decides.
+    const r = await broadcastSigned(tx);
+    built.broadcast = "error" in r ? { error: r.error } : { txid: r.txid };
   }
   return built;
 }
