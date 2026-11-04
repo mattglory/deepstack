@@ -48,8 +48,12 @@ From the halt key holder's machine:
 
 ## Audit trail
 
-- `logger -t deepstack-halt` records each halt, status or refused call in the system log.
-- sshd's own log records the connecting key's fingerprint and source address.
+- `logger -t deepstack-halt` records each halt and status call in the system log. It cannot
+  record the caller's address: sudo resets the environment, so `SSH_CONNECTION` is gone by then.
+- sshd's own log records the connecting key's fingerprint and source address; match it to the
+  `deepstack-halt` line by time.
+- Any command other than `halt` or `status` is refused by sudo before the script runs, so it
+  appears in sudo's log (`auth.log` / `journalctl _COMM=sudo`), not under `deepstack-halt`.
 - Optionally ship both off the host (roadmap D3).
 
 ## Limits
