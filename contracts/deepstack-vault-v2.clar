@@ -6,7 +6,8 @@
 ;;
 ;; Roles (section 2): admin (a native multisig on mainnet) sweeps and governs; the strategy
 ;; address alone returns capital; the guardian (the agent's hot key) can only pause; anyone can
-;; settle an overdue epoch and confirm a matured timelocked change.
+;; settle an overdue epoch and confirm a matured timelocked change (admin and strategy changes
+;; must be accepted by the new principal).
 ;;
 ;; States (section 3): IDLE (no capital out, exact NAV, deposits and withdrawal requests price
 ;; immediately) and DEPLOYED (an epoch is open, deposits and withdrawal requests queue and are
@@ -30,6 +31,10 @@
 (define-constant WITHDRAWAL-DELAY u288)      ;; burn blocks, about 2 days, IDLE requests
 (define-constant MAX-FEE-BPS u2000)          ;; 20% hard ceiling
 (define-constant MAX-DEPLOY-CEILING-BPS u8000) ;; 80% hard ceiling on the sweep cap
+;; [assessment N5] Deposits stop once PPS is 10,000x below the launch price. With the 80% sweep
+;; ceiling one epoch can cut PPS at most 5x, so supply stays under 5 * all-STX * SCALE / MIN-PPS
+;; (about 9e22) and no product in pricing or settlement can reach 2^128.
+(define-constant MIN-PPS (/ INITIAL-PPS u10000))
 
 (define-constant ERR-NOT-ADMIN            (err u300))
 (define-constant ERR-NOT-STRATEGY         (err u301))
@@ -56,6 +61,10 @@
 (define-constant ERR-NOT-PENDING-ADMIN    (err u323))
 (define-constant ERR-TOO-HIGH             (err u324))
 (define-constant ERR-ZERO-VALUE           (err u325))
+(define-constant ERR-ROLE-CONFLICT        (err u326)) ;; [assessment W-03]
+(define-constant ERR-NO-RECOVERY-WINDOW   (err u327)) ;; [assessment W-01]
+(define-constant ERR-NOT-PENDING-STRATEGY (err u328)) ;; [assessment W-02]
+(define-constant ERR-PPS-FLOOR            (err u329)) ;; [assessment N5]
 
 ;; ---------------------------------------------------------------------------
 ;; State
@@ -72,6 +81,9 @@
 (define-data-var max-deploy-bps uint u5000)    ;; 50% of settled assets per sweep (decision 2)
 
 (define-data-var deposits-paused bool false)
+;; [assessment W-01] True from a write-off until deposits are next unpaused: the only time a
+;; recovery may be booked, because no new shares can have entered since the loss.
+(define-data-var recovery-open bool false)
 (define-data-var sweeps-paused bool false)
 
 ;; Ledger (uSTX). vault-stx is everything the contract holds by its own accounting; it never
@@ -162,6 +174,7 @@
     guardian: (var-get guardian), fee-recipient: (var-get fee-recipient),
     max-tvl: (var-get max-tvl), fee-bps: (var-get fee-bps), max-deploy-bps: (var-get max-deploy-bps),
     deposits-paused: (var-get deposits-paused), sweeps-paused: (var-get sweeps-paused),
+    recovery-open: (var-get recovery-open),
     vault-stx: (var-get vault-stx), capital-at-strategy: (var-get capital-at-strategy),
     pending-deposits: (var-get pending-deposits), ringfenced: (var-get ringfenced),
     total-assets: (total-assets), supply: (get-supply), pps: (get-pps),
@@ -184,10 +197,18 @@
 ;; Setup: one-time role assignment by the deployer, before anything else can happen
 ;; ---------------------------------------------------------------------------
 
+;; [assessment W-03] Role separation (section 2): the deployer key never holds admin or
+;; strategy, and admin (the multisig), strategy (the dedicated wallet, D5) and guardian (the
+;; agent's hot key) are three different principals. Guardian and fee recipient may be the deployer.
+(define-read-only (roles-valid (a principal) (s principal) (g principal))
+  (and (not (is-eq a DEPLOYER)) (not (is-eq s DEPLOYER))
+       (not (is-eq a s)) (not (is-eq a g)) (not (is-eq s g))))
+
 (define-public (initialize (new-admin principal) (new-strategy principal) (new-guardian principal) (new-fee-recipient principal))
   (begin
     (asserts! (is-eq tx-sender DEPLOYER) ERR-NOT-DEPLOYER)
     (asserts! (not (var-get initialized)) ERR-ALREADY-INITIALIZED)
+    (asserts! (roles-valid new-admin new-strategy new-guardian) ERR-ROLE-CONFLICT)
     (var-set admin new-admin)
     (var-set strategy new-strategy)
     (var-set guardian new-guardian)
@@ -207,6 +228,7 @@
     (asserts! (var-get initialized) ERR-NOT-INITIALIZED)
     (asserts! (not (var-get deposits-paused)) ERR-DEPOSITS-PAUSED)
     (asserts! (> amount u0) ERR-ZERO-AMOUNT)
+    (asserts! (>= (get-pps) MIN-PPS) ERR-PPS-FLOOR) ;; [assessment N5]
     ;; Queued deposits count toward the cap (D8).
     (asserts! (<= (+ (total-assets) (var-get pending-deposits) amount) (var-get max-tvl)) ERR-OVER-CAP)
     (if (var-get epoch-open)
@@ -401,10 +423,15 @@
 )
 
 ;; Late STX from the strategy after a write-off (D1). Raises A for the holders at that time.
+;; [assessment W-01] Only while the recovery window opened by the write-off is still open, i.e.
+;; deposits have stayed paused since the loss was booked, so the holders who gain are exactly
+;; those who bore the loss (less any who chose to exit). Late STX after a normal settlement, or
+;; after the admin unpaused deposits, can come back only as part of a later epoch's return.
 (define-public (recover-from-strategy (amount uint))
   (begin
     (asserts! (is-eq tx-sender (var-get strategy)) ERR-NOT-STRATEGY)
     (asserts! (not (var-get epoch-open)) ERR-NOT-IDLE)
+    (asserts! (var-get recovery-open) ERR-NO-RECOVERY-WINDOW)
     (asserts! (> amount u0) ERR-ZERO-AMOUNT)
     (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
     (var-set vault-stx (+ (var-get vault-stx) amount))
@@ -459,7 +486,8 @@
       (if writeoff
         (begin
           (var-set ringfenced (+ (var-get ringfenced) dep))
-          (var-set deposits-paused true))
+          (var-set deposits-paused true)
+          (var-set recovery-open true)) ;; [assessment W-01] atomic with the pause
         (if (> minted u0)
           (try! (as-contract (contract-call? .deepstack-vault-v2-token mint-for-vault minted tx-sender)))
           true))
@@ -491,16 +519,20 @@
 (define-public (pause-sweeps)
   (begin (asserts! (is-guardian-or-admin) ERR-NOT-GUARDIAN)
     (var-set sweeps-paused true) (print { event: "sweeps-paused" }) (ok true)))
+;; [assessment W-01] Unpausing declares any write-off final: it closes the recovery window.
 (define-public (unpause-deposits)
   (begin (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-ADMIN)
-    (var-set deposits-paused false) (print { event: "deposits-unpaused" }) (ok true)))
+    (var-set deposits-paused false) (var-set recovery-open false)
+    (print { event: "deposits-unpaused" }) (ok true)))
 (define-public (unpause-sweeps)
   (begin (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-ADMIN)
     (var-set sweeps-paused false) (print { event: "sweeps-unpaused" }) (ok true)))
 
 ;; ---------------------------------------------------------------------------
 ;; Timelock (section 7): admin queues while IDLE, anyone confirms after TIMELOCK burn blocks,
-;; except admin succession, which the proposed admin must accept.
+;; except admin and strategy succession, which the proposed principal must accept
+;; [assessment W-02]. Role changes are checked for separation when queued and again when they
+;; land [assessment W-03].
 ;; ---------------------------------------------------------------------------
 
 (define-private (check-queue)
@@ -530,14 +562,17 @@
     (print { event: "queued", param: "fee-recipient", value: v, executable-at: at }) (ok at)))
 (define-public (queue-strategy (v principal))
   (let ((at (try! (check-queue))))
+    (asserts! (roles-valid (var-get admin) v (var-get guardian)) ERR-ROLE-CONFLICT)
     (var-set pending-strategy (some { value: v, executable-at: at }))
     (print { event: "queued", param: "strategy", value: v, executable-at: at }) (ok at)))
 (define-public (queue-guardian (v principal))
   (let ((at (try! (check-queue))))
+    (asserts! (roles-valid (var-get admin) (var-get strategy) v) ERR-ROLE-CONFLICT)
     (var-set pending-guardian (some { value: v, executable-at: at }))
     (print { event: "queued", param: "guardian", value: v, executable-at: at }) (ok at)))
 (define-public (queue-admin-change (v principal))
   (let ((at (try! (check-queue))))
+    (asserts! (roles-valid v (var-get strategy) (var-get guardian)) ERR-ROLE-CONFLICT)
     (var-set pending-admin (some { value: v, executable-at: at }))
     (print { event: "queued", param: "admin", value: v, executable-at: at }) (ok at)))
 (define-public (queue-resume-sweeps)
@@ -571,20 +606,26 @@
     (try! (matured (get executable-at p)))
     (var-set fee-recipient (get value p)) (var-set pending-fee-recipient none)
     (print { event: "confirmed", param: "fee-recipient", value: (get value p) }) (ok true)))
-(define-public (confirm-strategy)
+;; [assessment W-02] Two-step, like the admin change: only the proposed strategy can complete
+;; it, so a mistyped principal never becomes the address sweeps are sent to.
+(define-public (accept-strategy-change)
   (let ((p (unwrap! (var-get pending-strategy) ERR-NOTHING-QUEUED)))
+    (asserts! (is-eq tx-sender (get value p)) ERR-NOT-PENDING-STRATEGY)
     (try! (matured (get executable-at p)))
+    (asserts! (roles-valid (var-get admin) (get value p) (var-get guardian)) ERR-ROLE-CONFLICT)
     (var-set strategy (get value p)) (var-set pending-strategy none)
     (print { event: "confirmed", param: "strategy", value: (get value p) }) (ok true)))
 (define-public (confirm-guardian)
   (let ((p (unwrap! (var-get pending-guardian) ERR-NOTHING-QUEUED)))
     (try! (matured (get executable-at p)))
+    (asserts! (roles-valid (var-get admin) (var-get strategy) (get value p)) ERR-ROLE-CONFLICT)
     (var-set guardian (get value p)) (var-set pending-guardian none)
     (print { event: "confirmed", param: "guardian", value: (get value p) }) (ok true)))
 (define-public (accept-admin-change)
   (let ((p (unwrap! (var-get pending-admin) ERR-NOTHING-QUEUED)))
     (asserts! (is-eq tx-sender (get value p)) ERR-NOT-PENDING-ADMIN)
     (try! (matured (get executable-at p)))
+    (asserts! (roles-valid (get value p) (var-get strategy) (var-get guardian)) ERR-ROLE-CONFLICT)
     (var-set admin (get value p)) (var-set pending-admin none)
     (print { event: "confirmed", param: "admin", value: (get value p) }) (ok true)))
 ;; D13: a confirmed resume resets the drawdown reference to the price now. HWM-PPS is untouched.

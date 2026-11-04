@@ -16,14 +16,15 @@
 //   npm run m1:vault-v2 -- cancel-deposit | cancel-withdrawal --testnet
 //   npm run m1:vault-v2 -- sweep 50 --testnet           # admin
 //   npm run m1:vault-v2 -- return 55 --testnet          # strategy key
-//   npm run m1:vault-v2 -- recover 10 --testnet         # strategy key, after a write-off
+//   npm run m1:vault-v2 -- recover 10 --testnet         # strategy key, after a write-off, deposits still paused
 //   npm run m1:vault-v2 -- settle-overdue --testnet     # anyone, after MAX-EPOCH
 //   npm run m1:vault-v2 -- pause-deposits | pause-sweeps | unpause-deposits | unpause-sweeps --testnet
 //   npm run m1:vault-v2 -- queue max-tvl|fee-bps|max-deploy-bps <n> --testnet
 //   npm run m1:vault-v2 -- queue fee-recipient|strategy|guardian|admin <principal> --testnet
 //   npm run m1:vault-v2 -- queue resume-sweeps --testnet
-//   npm run m1:vault-v2 -- confirm max-tvl|fee-bps|max-deploy-bps|fee-recipient|strategy|guardian|resume-sweeps --testnet
+//   npm run m1:vault-v2 -- confirm max-tvl|fee-bps|max-deploy-bps|fee-recipient|guardian|resume-sweeps --testnet
 //   npm run m1:vault-v2 -- accept-admin --testnet       # signed by the proposed admin
+//   npm run m1:vault-v2 -- accept-strategy --testnet    # signed by the proposed strategy (STRATEGY_PRIVATE_KEY)
 //   npm run m1:vault-v2 -- send-test-stx <address> <stx> --testnet   # testnet only
 //
 // Contract calls here use Allow mode: this is operator tooling. Deny-mode post-conditions are
@@ -228,11 +229,12 @@ async function main() {
       if (principalParams.includes(param)) return void (await send(`queue-${param}`, [Cl.principal(pos[2])]));
     } else {
       if (param === "resume-sweeps") return void (await send("confirm-resume-sweeps", []));
-      if ([...uintParams, ...principalParams].includes(param) && param !== "admin") return void (await send(`confirm-${param}`, []));
+      if ([...uintParams, ...principalParams].includes(param) && param !== "admin" && param !== "strategy") return void (await send(`confirm-${param}`, []));
     }
     throw new Error(`unknown parameter: ${param}`);
   }
   if (cmd === "accept-admin") return void (await send("accept-admin-change", []));
+  if (cmd === "accept-strategy") return void (await send("accept-strategy-change", [], asStrategy()));
 
   if (cmd === "send-test-stx") {
     if (network !== "testnet") throw new Error("send-test-stx is testnet only");
