@@ -751,6 +751,12 @@ export async function main() {
       sessionStart = snap.portfolioY;
       sessionStartT = new Date().toISOString();
       saveDrawdownBaseline({ portfolioY: sessionStart, t: sessionStartT, pair: cfg.key, wallet: w.address });
+      // Audit trail (assessment R3-1): a missing baseline file looks exactly like a fresh install,
+      // so deleting it (the documented reset) or losing journal/ re-baselines the 15% halt at the
+      // current value. Every new baseline is therefore journalled and pinged, so a reset is
+      // never silent and always has a timestamped record next to the agent's other events.
+      console.error(`⚠ NEW DRAWDOWN BASELINE: ${sessionStart} ${cfg.y.symbol} for ${w.address} (${cfg.key}). If this is not a fresh install, the previous baseline was reset.`);
+      appendJournal({ t: sessionStartT, type: "drawdown-baseline-set", portfolioY: sessionStart, pair: cfg.key, wallet: w.address });
     }
     if (i % f.tuneEvery === 0) {
       const tuned = await tuneParams(snap.market, defaultParams());
@@ -964,7 +970,13 @@ export async function main() {
   // 40 x 6 s = 32 min) — 40 min of poll sleeps before any read time. A lower bound would flag
   // healthy slow recenters. The --interval sleep starts after a cycle ends, so cycles longer than
   // the interval never overlapped; the skip below keeps it that way after the watchdog fires.
-  const CYCLE_TIMEOUT_MS = Math.max(1, Number(process.env.CYCLE_TIMEOUT_MS ?? 45 * 60_000));
+  // Validated (assessment R3-2): Number("45m") is NaN and setTimeout(NaN) fires after ~1 ms, so a
+  // typo made every cycle a "timeout"; values above 2^31-1 ms overflow the same way.
+  const rawCycleTimeout = process.env.CYCLE_TIMEOUT_MS;
+  const CYCLE_TIMEOUT_MS = rawCycleTimeout === undefined || rawCycleTimeout === "" ? 45 * 60_000 : Number(rawCycleTimeout);
+  if (!Number.isInteger(CYCLE_TIMEOUT_MS) || CYCLE_TIMEOUT_MS < 60_000 || CYCLE_TIMEOUT_MS > 2_147_483_647) {
+    throw new Error(`CYCLE_TIMEOUT_MS must be whole milliseconds from 60000 to 2147483647, got "${rawCycleTimeout}"`);
+  }
   let inFlight: Promise<boolean> | null = null;
   const runStep = async (): Promise<void> => {
     if (inFlight) {
