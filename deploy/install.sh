@@ -35,7 +35,8 @@ BUILD_USER=deepstack-build
 UNIT=deepstack-agent
 LOG="${DEEPSTACK_DEPLOY_LOG:-/var/log/deepstack-deploys.log}"
 KEEP=5
-REQUIRED_CHECKS=(test contract-test)
+# The same contexts branch protection requires (ACCESS-AND-DECISIONS §4), from GitHub Actions only.
+REQUIRED_CHECKS=(test contract-test "Dependency audit" CodeQL)
 # Entries in $APP that are runtime state or secrets: never replaced or removed by a deploy.
 PRESERVE_RE='^(\.env.*|journal|KILL|dashboard|\.deployed-commit|\.release-.*)$'
 
@@ -87,8 +88,11 @@ verify_commit() {
     "https://api.github.com/repos/$GH_API_REPO/commits/$sha/check-runs?per_page=100")" || die "could not read CI status for $sha"
   CI_RESULT="$(printf '%s' "$json" | node -e '
     const req = process.argv.slice(1); let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
-      const runs = JSON.parse(s).check_runs ?? [];
-      const bad = req.filter(n => !runs.some(r => r.name === n && r.conclusion === "success"));
+      // Only GitHub Actions runs count (another app with checks:write could post the same name),
+      // and only the LATEST run of each name: a later failed re-run is not outvoted by an old pass.
+      const runs = (JSON.parse(s).check_runs ?? []).filter(r => r.app && r.app.slug === "github-actions");
+      const latest = n => runs.filter(r => r.name === n).sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)))[0];
+      const bad = req.filter(n => latest(n)?.conclusion !== "success");
       if (bad.length) { console.log("FAIL:" + bad.join(",")); process.exit(0); }
       console.log("CI-OK (" + req.join(", ") + ")");
     });' "${REQUIRED_CHECKS[@]}")"
@@ -123,6 +127,8 @@ activate() {
   local sha="$1" rel="$RELEASES/$1"
   [ -f "$rel/.release-complete" ] || die "release $sha is not built"
   install -d -m 0750 -o root -g "$SVC_USER" "$APP"
+  # The agent owns these two; a symlink planted there would make root chown or write elsewhere.
+  for d in "$APP/journal" "$APP/dashboard"; do [ -L "$d" ] && die "$d is a symlink; refusing (inspect it)"; done
   install -d -o "$SVC_USER" -g "$SVC_USER" "$APP/journal" "$APP/dashboard"
   # Remove top-level entries the previous release had and this one does not.
   if [ -f "$APP/.release-manifest" ]; then
@@ -134,9 +140,14 @@ activate() {
   # dashboard/ mixes code with the agent's state (metrics.json): replace code files only.
   if [ -d "$rel/dashboard" ]; then
     for f in "$rel"/dashboard/* "$rel"/dashboard/.[!.]*; do
-      [ -e "$f" ] || continue
+      [ -f "$f" ] && [ ! -L "$f" ] || continue
       case "$(basename "$f")" in metrics.json*) continue ;; esac
-      cp -a "$f" "$APP/dashboard/"
+      # The agent owns dashboard/, so it could plant a symlink where a code file goes, and cp
+      # writes THROUGH a destination symlink (as root). Stage in root-owned $APP and rename:
+      # rename(2) replaces whatever is at the destination and never follows it.
+      stage="$(mktemp "$APP/.dashboard-stage.XXXXXX")"
+      cp -a "$f" "$stage"
+      mv -fT "$stage" "$APP/dashboard/$(basename "$f")"
     done
     chown "$SVC_USER":"$SVC_USER" "$APP/dashboard"
   fi
