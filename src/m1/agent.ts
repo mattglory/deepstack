@@ -307,6 +307,7 @@ export function xykLiveGate(opts: { live: boolean; circuitOk: boolean; trades: n
 export interface DlmmCounters {
   failStreak: number;
   recenters: number;
+  corrupt?: true; // set only by loadDlmmCounters when the state file was unreadable (failStreak is then TRIPPED)
 }
 
 // How dlmmFailStreak/dlmmRecenters evolve after one DLMM cycle — the state machine behind
@@ -368,6 +369,7 @@ export function flashLiveGate(opts: {
 export interface FlashCounters {
   failStreak: number;
   attempts: number;
+  corrupt?: true; // set only by loadFlashCounters when the state file was unreadable (failStreak is then TRIPPED)
 }
 
 // Same transition rules as nextDlmmCounters, same reason: a flash-rebalance attempt and a
