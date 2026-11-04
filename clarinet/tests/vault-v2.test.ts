@@ -460,62 +460,160 @@ describe("max values (decision 7)", () => {
 describe("seeded invariants", () => {
   const rng = (seed: number) => () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
   const users = [alice, bob, mallory];
+  const actors = [...users, feeTo];
+  const TOL = 3n; // uSTX of rounding another actor's call may move a holder's value by
 
-  const checkInvariants = () => {
+  const checkInvariants = (donated: bigint) => {
     const s = st();
-    expect(s["vault-stx"]).toBe(stxOf(vaultId())); // ledger == real STX (no donations here)
+    expect(s["vault-stx"] + donated).toBe(stxOf(vaultId())); // ledger == real STX less donations
     expect(s["total-assets"] + s["pending-deposits"] + s.ringfenced).toBe(s["vault-stx"] + s["capital-at-strategy"]);
     expect(s["pending-deposits"] + s.ringfenced).toBeLessThanOrEqual(s["vault-stx"]);
     const holders = [...users, feeTo, vaultId()];
     expect(holders.reduce((acc, h) => acc + shares(h), 0n)).toBe(s.supply);
   };
 
-  for (const seed of [3, 11, 99, 2026, 31415]) {
-    it(`invariants hold for seed ${seed}`, () => {
-      const r = rng(seed);
-      const reqs: { id: bigint; who: string; at: number }[] = [];
-      const epochsTouched = new Set<bigint>();
-      ok(deposit(20n * STX, alice));
-      for (let step = 0; step < 70; step++) {
-        const op = Math.floor(r() * 9);
-        const who = users[Math.floor(r() * users.length)];
-        const s = st();
-        if (op === 0) {
-          const res = deposit(BigInt(Math.floor(r() * 30_000_000)) + 1n, who);
-          if ((res.result as any).type === "ok" && s["epoch-open"]) epochsTouched.add(s["current-epoch"]);
-        } else if (op === 1 && shares(who) > 0n) {
-          const res = request((shares(who) * BigInt(Math.floor(r() * 100) + 1)) / 100n, who);
-          if ((res.result as any).type === "ok") {
-            const v = ok(res);
-            if (v.queued) epochsTouched.add(v.id); else reqs.push({ id: v.id, who, at: simnet.burnBlockHeight });
-          }
-        } else if (op === 2 && !s["epoch-open"] && s["total-assets"] > 10n) {
-          sweep((s["total-assets"] * BigInt(Math.floor(r() * 50) + 1)) / 100n);
-        } else if (op === 3 && s["epoch-open"]) {
-          const dep = s["capital-at-strategy"];
-          ret((dep * BigInt(Math.floor(r() * 60) + 70)) / 100n); // -30%..+30%
-        } else if (op === 4 && s["epoch-open"]) {
-          burn(MAX_EPOCH + 1);
-          call("settle-overdue", [], who);
-          if (st()["deposits-paused"]) call("unpause-deposits", [], admin);
-        } else if (op === 5) {
-          burn(Math.floor(r() * 300));
-          for (const q of reqs.splice(0)) {
-            const res = claimReq(q.id, q.who);
-            if ((res.result as any).type !== "ok") reqs.push(q);
-          }
-        } else if (op === 6) {
-          for (const e of epochsTouched) for (const u of users) { claimDep(e, u); claimWd(e, u); }
-        } else if (op === 7 && s["epoch-open"]) {
-          call(r() < 0.5 ? "cancel-deposit" : "cancel-withdrawal", [], who);
-        } else if (op === 8 && !s["epoch-open"] && st()["sweeps-paused"] === false && r() < 0.2) {
-          // occasionally a drawdown block trips; resume it so the run keeps exercising epochs
-          if ((sweep(1n).result as any).type === "err") {
-            call("queue-resume-sweeps", [], admin); burn(TIMELOCK); call("confirm-resume-sweeps", [], admin);
-          } else ret(1n);
+  // Value model [assessment W-01]: an actor's value is shares x PPS plus everything the vault
+  // owes them (queued or claimable deposits and withdrawals, IDLE requests). `eff` counts the
+  // shares that bear the vault's result (own, escrowed for a queued exit, or claimable).
+  type Snap = Map<string, { value: bigint; eff: bigint }>;
+  const snapshot = (reqs: { id: bigint; who: string }[], epochs: Set<bigint>): Snap => {
+    const afs = (n: bigint) => ro("assets-for-shares", [Cl.uint(n)]) as bigint;
+    const m: Snap = new Map(actors.map((a) => [a, { value: valueOf(a), eff: shares(a) }]));
+    for (const e of epochs) {
+      const ep = ro("get-epoch", [Cl.uint(e)]);
+      if (!ep) continue;
+      for (const a of users) {
+        const v = m.get(a)!;
+        const dep = ro("get-epoch-deposit", [Cl.uint(e), Cl.principal(a)]) as bigint;
+        if (dep > 0n) {
+          if (!ep.settled || ep["written-off"]) v.value += dep;
+          else { const sh = (dep * ep["dep-shares-minted"]) / ep["dep-total"]; v.value += afs(sh); v.eff += sh; }
         }
-        checkInvariants();
+        const wd = ro("get-epoch-withdrawal", [Cl.uint(e), Cl.principal(a)]) as bigint;
+        if (wd > 0n) {
+          if (!ep.settled || ep["written-off"]) { v.value += afs(wd); v.eff += wd; }
+          else v.value += (wd * ep["wd-stx-paid"]) / ep["wd-shares-total"];
+        }
       }
-    });
+    }
+    for (const q of reqs) { const r = ro("get-request", [Cl.uint(q.id)]); if (r) m.get(q.who)!.value += r.amount; }
+    return m;
+  };
+  // One actor's own call (deposit, request, claim, cancel, donation; or the admin's sweep or
+  // unpause, with actor null) never moves anyone else's value beyond rounding.
+  const noTransfer = (before: Snap, after: Snap, actor: string | null, what: string) => {
+    for (const y of actors) {
+      if (y === actor) continue;
+      const d = after.get(y)!.value - before.get(y)!.value;
+      if (d > TOL || d < -TOL) throw new Error(`value transfer: ${what} by ${actor} moved ${y} by ${d} uSTX`);
+    }
+  };
+  // A recovery pays back a booked loss, so none of it may reach shares acquired after the last
+  // loss was booked (pre-fix, an IDLE deposit placed after a loss captured part of it: W-01).
+  const recoveryFair = (before: Snap, after: Snap, lossSnap: Snap | null) => {
+    for (const y of actors) {
+      const d = after.get(y)!.value - before.get(y)!.value;
+      const eff = after.get(y)!.eff;
+      const fresh = eff - (lossSnap?.get(y)!.eff ?? 0n);
+      if (d > 0n && fresh > 0n && (d * fresh) / eff > TOL)
+        throw new Error(`value transfer: recovery paid ${(d * fresh) / eff} uSTX to ${y}'s ${fresh} shares acquired after the loss`);
+    }
+  };
+
+  const run = (seed: number, extended: boolean) => {
+    const r = rng(seed);
+    const reqs: { id: bigint; who: string; at: number }[] = [];
+    const epochsTouched = new Set<bigint>();
+    let donated = 0n, unrecovered = 0n;
+    let lossSnap: Snap | null = null;
+    const snap = () => snapshot(reqs, epochsTouched);
+    const user = <T,>(who: string | null, what: string, f: () => T): T => {
+      const b = snap(); const out = f(); noTransfer(b, snap(), who, what); return out;
+    };
+    // Strategy results: remember who held what when a loss was booked.
+    const pnl = (f: () => any) => {
+      const s0 = st();
+      const res = f();
+      const s1 = st();
+      if (s0["epoch-open"] && !s1["epoch-open"]) {
+        if (s1.pps < s0.pps) lossSnap = snap();
+        if (s1["realized-pnl"] < s0["realized-pnl"]) unrecovered += s0["realized-pnl"] - s1["realized-pnl"];
+      }
+      return res;
+    };
+    user(alice, "deposit", () => ok(deposit(20n * STX, alice)));
+    for (let step = 0; step < 70; step++) {
+      const op = Math.floor(r() * (extended ? 12 : 9));
+      const who = users[Math.floor(r() * users.length)];
+      const s = st();
+      if (op === 0) {
+        const amt = BigInt(Math.floor(r() * 30_000_000)) + 1n;
+        const res = user(who, "deposit", () => deposit(amt, who));
+        if ((res.result as any).type === "ok" && s["epoch-open"]) epochsTouched.add(s["current-epoch"]);
+      } else if (op === 1 && shares(who) > 0n) {
+        const sh = (shares(who) * BigInt(Math.floor(r() * 100) + 1)) / 100n;
+        const res = user(who, "request", () => request(sh, who));
+        if ((res.result as any).type === "ok") {
+          const v = ok(res);
+          if (v.queued) epochsTouched.add(v.id); else reqs.push({ id: v.id, who, at: simnet.burnBlockHeight });
+        }
+      } else if (op === 2 && !s["epoch-open"] && s["total-assets"] > 10n) {
+        const amt = (s["total-assets"] * BigInt(Math.floor(r() * 50) + 1)) / 100n;
+        user(null, "sweep", () => sweep(amt));
+      } else if (op === 3 && s["epoch-open"]) {
+        const dep = s["capital-at-strategy"];
+        const amt = (dep * BigInt(Math.floor(r() * 60) + 70)) / 100n; // -30%..+30%
+        pnl(() => ret(amt));
+      } else if (op === 4 && s["epoch-open"]) {
+        burn(MAX_EPOCH + 1);
+        pnl(() => call("settle-overdue", [], who));
+        // The original run unpauses at once; the extended run leaves that to op 10, so the
+        // recovery window after a write-off gets exercised.
+        if (!extended && st()["deposits-paused"]) user(null, "unpause", () => call("unpause-deposits", [], admin));
+      } else if (op === 5) {
+        burn(Math.floor(r() * 300));
+        for (const q of reqs.splice(0)) {
+          const res = user(q.who, "claim-withdrawal", () => claimReq(q.id, q.who));
+          if ((res.result as any).type !== "ok") reqs.push(q);
+        }
+      } else if (op === 6) {
+        for (const e of epochsTouched) for (const u of users) {
+          if ((ro("get-epoch-deposit", [Cl.uint(e), Cl.principal(u)]) as bigint) > 0n) user(u, "claim-deposit", () => claimDep(e, u));
+          else claimDep(e, u);
+          if ((ro("get-epoch-withdrawal", [Cl.uint(e), Cl.principal(u)]) as bigint) > 0n) user(u, "claim-epoch-withdrawal", () => claimWd(e, u));
+          else claimWd(e, u);
+        }
+      } else if (op === 7 && s["epoch-open"]) {
+        const fn = r() < 0.5 ? "cancel-deposit" : "cancel-withdrawal";
+        user(who, fn, () => call(fn, [], who));
+      } else if (op === 8 && !s["epoch-open"] && st()["sweeps-paused"] === false && r() < 0.2) {
+        // occasionally a drawdown block trips; resume it so the run keeps exercising epochs
+        if ((user(null, "sweep", () => sweep(1n)).result as any).type === "err") {
+          call("queue-resume-sweeps", [], admin); burn(TIMELOCK); call("confirm-resume-sweeps", [], admin);
+        } else pnl(() => ret(1n));
+      } else if (op === 9 && !s["epoch-open"] && unrecovered > 0n) {
+        // late STX from the strategy, at most what was booked as lost
+        const want = BigInt(Math.floor(r() * 20_000_000)) + 1n;
+        const amt = want < unrecovered ? want : unrecovered;
+        const b = snap();
+        const res = call("recover-from-strategy", [Cl.uint(amt)], strategy);
+        if ((res.result as any).type === "ok") { unrecovered -= amt; recoveryFair(b, snap(), lossSnap); }
+      } else if (op === 10 && st()["deposits-paused"]) {
+        user(null, "unpause", () => call("unpause-deposits", [], admin));
+      } else if (op === 11) {
+        const amt = BigInt(Math.floor(r() * 5_000_000)) + 1n;
+        user(null, "donation", () => simnet.transferSTX(amt, vaultId(), who));
+        donated += amt;
+      }
+      checkInvariants(donated);
+    }
+  };
+
+  for (const seed of [3, 11, 99, 2026, 31415]) {
+    it(`invariants hold for seed ${seed}`, () => run(seed, false));
+  }
+  // [assessment W-01] recoveries, donations, and write-offs without an automatic unpause.
+  for (const seed of [7, 42, 1234, 8086, 65537]) {
+    it(`no value transfer between holders, extended run, seed ${seed}`, () => run(seed, true));
   }
 });

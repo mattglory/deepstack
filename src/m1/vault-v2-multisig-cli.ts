@@ -36,6 +36,9 @@
 // transaction, or a tampered build could name a different vault (review 2026-10-28). For calls
 // that hand a role to an address (admin, strategy, guardian, fee recipient), the signer also
 // types the last 6 characters of that address.
+//
+// C10 (2026-11-03): `sign` also refuses a transaction whose chain id is not the configured
+// network's, or whose fee is above 0.5 STX.
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, appendFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
@@ -47,6 +50,7 @@ import {
   Cl, Pc, cvToString, type ClarityValue, type MultiSigSpendingCondition,
 } from "@stacks/transactions";
 import { loadDotenv, getNetwork, apiBase, type Network } from "./wallet.js";
+import { assertTxChain, assertFeeCap, MULTISIG_FEE_CAP } from "./vault-v2-deploy.js";
 
 const argv = process.argv.slice(2);
 const flags = new Map(argv.filter((a) => a.startsWith("--")).map((a) => { const [k, v] = a.slice(2).split("="); return [k, v ?? "true"]; }));
@@ -62,8 +66,8 @@ export const ADMIN_FUNCTIONS = new Set([
   "queue-max-tvl", "queue-fee-bps", "queue-max-deploy-bps", "queue-fee-recipient", "queue-strategy",
   "queue-guardian", "queue-admin-change", "queue-resume-sweeps",
   "confirm-max-tvl", "confirm-fee-bps", "confirm-max-deploy-bps", "confirm-fee-recipient",
-  "confirm-strategy", "confirm-guardian", "confirm-resume-sweeps", "accept-admin-change",
-]);
+  "confirm-guardian", "confirm-resume-sweeps", "accept-admin-change",
+]); // a strategy change is completed by the new strategy itself (accept-strategy-change), not the multisig
 
 function configuredVault(): string {
   const v = (flags.get("vault") ?? process.env.MS_VAULT ?? "").trim();
@@ -196,6 +200,9 @@ async function sign(file: string, keyN: string, confirm = true): Promise<void> {
   const d = describe(tx);
   checkAllowed(d.contractId, d.fn);
   if (tx.postConditionMode !== PostConditionMode.Deny) throw new Error("refusing: not deny mode");
+  // C10: the transaction must be for this signer's configured network, with a bounded fee.
+  assertTxChain(tx.chainId, network);
+  assertFeeCap(BigInt(sc.fee), MULTISIG_FEE_CAP);
   console.log(`About to sign with key ${keyN}:\n${d.text}`);
   const p = tx.payload as any;
   const principal = PRINCIPAL_FUNCTIONS.has(d.fn) && p.functionArgs?.[0] ? cvToString(p.functionArgs[0]) : null;
