@@ -18,7 +18,32 @@ const strip = (s: string) => s.trim().replace(/\/+$/, "");
 // activity from the live agent and manual CLI checks. An API key raises that to 900/min.
 // Attach it only when the target is actually a Hiro host — the QuickNode fallback (or any
 // other) neither needs nor recognizes it.
-const isHiroHost = (baseUrl: string) => /(^|\.)hiro\.so\b/.test(baseUrl);
+//
+// Matched on the PARSED hostname (C8 / DSA-25): the old regex /(^|\.)hiro\.so\b/ also matched
+// https://api.hiro.so.attacker.tld or a ".hiro.so" in a path/query, which would send the key to
+// a non-Hiro host. https only, so the key never travels in clear text.
+const isHiroHost = (baseUrl: string) => {
+  try {
+    const u = new URL(baseUrl);
+    return u.protocol === "https:" && (u.hostname === "hiro.so" || u.hostname.endsWith(".hiro.so"));
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * An endpoint as it may appear in logs and errors: scheme + host (+ port) only. Providers such
+ * as QuickNode put the access token in the path or query, and these strings reach journald and
+ * the journal's cycle-error records (C8 / DSA-25).
+ */
+export function redactEndpoint(baseUrl: string): string {
+  try {
+    const u = new URL(baseUrl);
+    return u.pathname === "/" && !u.search ? u.origin : `${u.origin}/…`;
+  } catch {
+    return "<invalid endpoint>";
+  }
+}
 
 /** Extra headers to send a Hiro endpoint — the API key if configured, empty otherwise. */
 export function hiroHeaders(baseUrl: string): Record<string, string> {
@@ -38,12 +63,25 @@ export function hiroFetch(baseUrl: string): typeof fetch {
     fetch(url, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), ...extra } })) as typeof fetch;
 }
 
+// Every endpoint must be https (C8 / DSA-25): reads over plain http can be altered in transit,
+// and the agent sizes and prices trades from them. A misconfigured endpoint throws, so every
+// read fails and nothing is broadcast, rather than silently trusting it.
 export function endpoints(): string[] {
   const fallbacks = (process.env.STACKS_API_FALLBACKS ?? "")
     .split(",")
     .map(strip)
     .filter(Boolean);
-  return [strip(config.stacksApi), ...fallbacks];
+  const eps = [strip(config.stacksApi), ...fallbacks];
+  for (const e of eps) {
+    let ok = false;
+    try {
+      ok = new URL(e).protocol === "https:";
+    } catch {
+      ok = false;
+    }
+    if (!ok) throw new Error(`refusing non-https Stacks API endpoint ${redactEndpoint(e)} (STACKS_API / STACKS_API_FALLBACKS)`);
+  }
+  return eps;
 }
 
 let preferred = 0; // index of the last endpoint that worked (may exceed the list if env changes)
@@ -82,13 +120,16 @@ export async function withRpc<T>(fn: (baseUrl: string) => Promise<T>, timeoutMs 
   for (let i = 0; i < eps.length; i++) {
     const idx = (preferred + i) % eps.length;
     try {
-      const out = await withTimeout(fn(eps[idx]), timeoutMs, `RPC call to ${eps[idx]}`);
+      const out = await withTimeout(fn(eps[idx]), timeoutMs, `RPC call to ${redactEndpoint(eps[idx])}`);
       if (idx !== preferred) {
-        console.warn(`  [rpc] ${eps[preferred]} failing — switched to ${eps[idx]}`);
+        console.warn(`  [rpc] ${redactEndpoint(eps[preferred])} failing — switched to ${redactEndpoint(eps[idx])}`);
         preferred = idx;
       }
       return out;
     } catch (err) {
+      // Library errors echo the full request URL ("Attempted to fetch <url>..."); strip the
+      // endpoint's path/query from the message before it can reach a log or the journal.
+      if (err instanceof Error && err.message.includes(eps[idx])) err.message = err.message.split(eps[idx]).join(redactEndpoint(eps[idx]));
       lastErr = err;
     }
   }
