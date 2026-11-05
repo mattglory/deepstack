@@ -1,9 +1,8 @@
 # Vault v3: the vault owns the position (design note, draft)
 
 Status: DRAFT for discussion, 2026-10-19; research update 2026-11-05 (sections 2, 6 and 9).
-Nothing here is built. v3 is the step required before any outside deposit. Proposed
-2026-11-05, pending the founders' decision: v2 stays a testnet reference and is not deployed
-to mainnet (section 8).
+Nothing here is built. v3 is the step required before any outside deposit. Agreed 2026-11-05:
+v2 stays a testnet reference and is not deployed to mainnet (section 8); decisions in section 10.
 
 ## 1. Why v3
 
@@ -39,8 +38,10 @@ Checked against the live mainnet contract sources (read from the Hiro API) on 20
 
 **Clarity version (checked 2026-11-05).** Clarity 4 replaced `as-contract` with `as-contract?`,
 which takes explicit asset allowances (`with-ft`, `with-stx`) and aborts the call if the
-contract's own assets move beyond them. Mainnet runs Clarity 6 since the PoX-5 upgrade, and
-the repo's simulator (clarinet-sdk 3.24) supports Clarity 4 to 6. v3 should use it: every call
+contract's own assets move beyond them. Mainnet has been in epoch 4.0 since burn block 960,230
+(PoX-5 active, read from `/v2/pox` on 2026-11-05), which brought Clarity 6 under SIP-044; the
+repo's simulator (clarinet-sdk 3.24) includes epoch 4.0. Both are confirmed in practice by step
+1 of section 8. v3 should use it: every call
 the vault makes as itself allows only the fixed sBTC and USDCx amounts for that step, so the
 language, not only our own checks, stops the vault's assets going anywhere else. Confirm the
 exact allowance syntax and Clarity version at build time.
@@ -126,7 +127,7 @@ so plainly, alongside the professional audit status of v3 itself.
    well), then test-first Clarity, as for v2.
 4. Professional audit before any outside deposit.
 
-**v2 (proposed 2026-11-05, pending the founders' decision):** v2 is fully exercised on testnet
+**v2 (agreed 2026-11-05):** v2 is fully exercised on testnet
 (docs/VAULT_V2_TESTNET.md) but custodial in practice, which v3 removes. Deploying it to mainnet
 with the owner's own capital would add little evidence beyond the live agent and would split
 effort. Proposal: keep v2 as the tested reference and carry its parts into v3 (share accounting
@@ -156,9 +157,12 @@ The fee does not use this price (section 3).
 
 ## 10. Decisions for the founders
 
-1. Deposits: in kind, both tokens (section 3, needs no price), or single-asset with a swap.
+1. Deposits: **agreed 2026-11-05**: in kind, both tokens, in the vault's current ratio (needs no
+   price). The site can offer a swap helper for users who hold only one token; the contract
+   accepts only the two tokens.
 2. Fee: **decided 2026-11-05**: 10% of trading fees earned, no other fees (section 3).
-3. Maximum range width, which bounds the runtime cost of a withdraw.
-4. Zest for idle reserve: in v3, or a later version (recommended: later, to keep the first
-   audited version small).
-5. v2: not deployed to mainnet (proposed in section 8).
+3. Maximum range width: **agreed provisionally 2026-11-05**: at most ±50 bins, to be lowered if
+   step 1 of section 8 shows a holder's withdrawal (which touches every bin) costs too much.
+4. Zest for idle reserve: **agreed 2026-11-05**: a later version, to keep the first audited
+   version small.
+5. v2: **agreed 2026-11-05**: not deployed to mainnet (section 8).
