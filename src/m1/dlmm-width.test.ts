@@ -31,3 +31,15 @@ test("table and recommendation: never narrow while fees lose to impermanent loss
   assert.ok(Math.abs(r10.recenterPerDay - (18 / 14) * 11) < 1e-9);
   assert.notEqual(recommendWidth(winning, 50).halfWidth, 50);
 });
+
+test("recommendation: the 2026-11-04 table no longer jumps to ±10", () => {
+  // The real table from 4 Nov: 20 days of bin path, 7.9 days of fee data, IL read low after a round trip.
+  const recenters = new Map([[10, 32], [15, 22], [20, 8], [25, 11], [30, 5], [35, 3], [50, 3]]);
+  const rows = widthTable({ feesPerDay: 9.11, ilPerDay: 1.81, currentHalfWidth: 50, spanDays: 20.02, costUsd: 10.95, recenters });
+  assert.equal(recommendWidth(rows, 50).halfWidth, 10); // the old, uncapped behaviour
+  const r = recommendWidth(rows, 50, { spanDays: 20.02, dataDays: 7.91 });
+  assert.equal(r.halfWidth, 35);
+  assert.match(r.reason, /provisional/);
+  // With enough data, the recenter cap alone still rules out ±10 and ±15 (over 0.5 a day).
+  assert.equal(recommendWidth(rows, 50, { spanDays: 20.02, dataDays: 30 }).halfWidth, 20);
+});
