@@ -109,7 +109,10 @@ no admin path that moves user funds.
    completed audits, but no published audit report for the DLMM core was found on
    2026-10-19 or again on 2026-11-05 (only community reviews of the swap router). The audit
    status must be confirmed with Bitflow and disclosed.
-6. **Testing venue:** HODLMM does not appear to exist on testnet, so testing has to use
+6. **Fee bookkeeping:** the fee (section 3) needs, per bin, the value put in at that bin's
+   price, increased on every add and reduced pro rata on every withdrawal, so that only the
+   growth is charged. It must round against the fee, never against holders.
+7. **Testing venue:** HODLMM does not appear to exist on testnet, so testing has to use
    simnet with the mainnet contract sources, then a tiny mainnet proof.
 
 ## 7. Dependencies and disclosure
