@@ -36,7 +36,7 @@ UNIT=deepstack-agent
 LOG="${DEEPSTACK_DEPLOY_LOG:-/var/log/deepstack-deploys.log}"
 KEEP=5
 # The same contexts branch protection requires (ACCESS-AND-DECISIONS §4), from GitHub Actions only.
-REQUIRED_CHECKS=(test contract-test "Dependency audit" CodeQL)
+REQUIRED_CHECKS=(test contract-test "Dependency audit" CodeQL "Secret scan")
 # Entries in $APP that are runtime state or secrets: never replaced or removed by a deploy.
 PRESERVE_RE='^(\.env.*|journal|KILL|dashboard|\.deployed-commit|\.release-.*)$'
 
