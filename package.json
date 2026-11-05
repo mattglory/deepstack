@@ -35,9 +35,11 @@
     "m1:key-backup-verify": "tsx src/m1/key-backup-verify-cli.ts",
     "m1:dlmm-fees": "tsx src/m1/dlmm-fees-cli.ts",
     "m1:dlmm-width": "tsx src/m1/dlmm-width-cli.ts",
+    "m1:sign-message": "tsx src/m1/sign-message-cli.ts",
     "m1:allocator": "tsx src/m1/allocator-cli.ts"
   },
   "dependencies": {
+    "@stacks/encryption": "^7.6.0",
     "@stacks/transactions": "^7.6.0",
     "@stacks/wallet-sdk": "^7.6.0"
   },
