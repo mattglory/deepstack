@@ -60,9 +60,15 @@ contract (step 1 of section 8 measures it).
 - **Withdrawals are never blocked by the operator.** No epoch is needed. The position is
   always in the contract, so a holder can always take their share. Pause stops deposits and
   rebalances, never withdrawals.
-- **Fee:** a management fee minted as shares over time (for example a few percent a year),
-  because a performance fee needs a valuation and therefore a price. A performance fee can
-  come later, if a manipulation-resistant price source is available on Stacks.
+- **Fee (decided 2026-11-05):** 10% of the trading fees the position earns, taken in kind when
+  the vault withdraws bins (at a rebalance or a holder's withdrawal). Fees inside a bin are
+  measured at that bin's own fixed price, as `src/m1/dlmm-fees.ts` already does off chain, so
+  the fee needs no price feed. No management fee, no deposit or withdrawal fee. A hard maximum
+  in the contract (20%); an increase only through the admin timelock, a decrease at once; 0%
+  while only the owners' capital is in the vault. This matches how concentrated-liquidity
+  managers charge (Gamma about 10% of fees; Arrakis a manager-set share of fees with a
+  timelocked increase; Charm a small share of fees). Unlike a high-water-mark fee, it is
+  charged even when the position trails simply holding; the disclosure says so.
 
 ## 4. The operator's only power: `rebalance`
 
@@ -146,14 +152,12 @@ and the oracle operators are trusted for the rebalance check only.
 To measure in step 1 of section 8: the cost of verifying a Pyth update inside the rebalance
 call, and whether `pyth-oracle-v3` accepts the current update format.
 
-A reliable price also makes a performance fee over a high-water mark possible (section 3);
-the founders decide between that and a management fee.
+The fee does not use this price (section 3).
 
 ## 10. Decisions for the founders
 
 1. Deposits: in kind, both tokens (section 3, needs no price), or single-asset with a swap.
-2. Fee: management fee (no price needed) or performance fee over a high-water mark (needs
-   section 9).
+2. Fee: **decided 2026-11-05**: 10% of trading fees earned, no other fees (section 3).
 3. Maximum range width, which bounds the runtime cost of a withdraw.
 4. Zest for idle reserve: in v3, or a later version (recommended: later, to keep the first
    audited version small).
