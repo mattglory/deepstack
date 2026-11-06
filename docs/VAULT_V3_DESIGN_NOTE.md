@@ -46,8 +46,16 @@ the vault makes as itself allows only the fixed sBTC and USDCx amounts for that 
 language, not only our own checks, stops the vault's assets going anywhere else. Confirm the
 exact allowance syntax and Clarity version at build time.
 
+**Proven 2026-11-05 (step 1, one bin):** in simnet against mainnet state, a contract added
+liquidity to the live pool as itself, the pool minted the shares to the contract, and the
+contract withdrew them back to itself; a stranger could not. The pool requires principals of the
+current network (`is-standard`), which a mainnet contract principal satisfies; withdrawals need
+non-zero minimums; and the contract's withdraw needs `as-contract?` allowances for its own
+`pool-token` shares and its `pool-token-id` holder tag as well as the tokens. Details and
+results: `proofs/v3-own-bin/README.md`.
+
 Not yet verified: the runtime cost of a multi-bin add and withdraw from inside another
-contract (step 1 of section 8 measures it).
+contract (the next part of step 1).
 
 ## 3. Shape
 
