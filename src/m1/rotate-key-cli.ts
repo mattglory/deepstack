@@ -6,7 +6,11 @@
 // key itself has been in two places. A new key that has only ever existed on the server ends that.
 //
 // Steps (each refuses unless the one before it is complete):
-//   npm run m1:rotate-key -- new                      # generate the new key into .env.rotation; prints only its address
+//   npm run m1:rotate-key -- new                      # generate the new key into .env.rotation, encrypted backup to
+//                                                     # KEY_BACKUP_RECIPIENT_FILES (>= 2 custodians); prints only its address
+//   (offline, a custodian)  gpg --decrypt .env.rotation.backup.asc | npm run -s m1:key-backup-verify -- --network mainnet
+//   npm run m1:rotate-key -- attest --verified-by=<name> --fingerprint=<custodian key fpr>
+//                                                     # record that the backup was recovered offline to the same address
 //   npm run m1:rotate-key -- plan                     # balances of both wallets and what would move (read-only)
 //   npm run m1:rotate-key -- move --yes-mainnet       # send everything, one transfer at a time, each confirmed
 //   npm run m1:rotate-key -- switch --yes-mainnet     # old wallet drained → .env uses the new key; migration recorded
@@ -15,7 +19,10 @@
 // Add --testnet (with STACKS_NETWORK=testnet in .env) to rehearse the whole sequence on testnet.
 //
 // Guards:
-// - Never prints a key. The new key is written to an owner-only file and nowhere else.
+// - Never prints a key. The new key is written to an owner-only file and, encrypted, to a backup
+//   that only the custodians can open (key-backup.ts). `move` refuses until a custodian has proven
+//   offline that the backup recovers the new address (assessment 2026-11, DSA-01): losing the
+//   server must not mean losing the funds.
 // - The agent must be stopped (systemctl), not just paused: a paused agent still records a sample
 //   every cycle, and a sample taken halfway through the move would show the transfers as a crash.
 //   KILL must also be present, so a restart by accident cannot trade either.
@@ -43,6 +50,7 @@ import { loadPending } from "./dlmm-pending-state.js";
 import { addWalletMigration } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 import { parseBalances, planRotation, isDrained, fmtUnits, rotationAssets, ROTATION_FEE_USTX, type WalletBalances } from "./key-rotation.js";
+import { BACKUP_PATH, ATTESTATION_PATH, parseRecipientFiles, parseFingerprints, gpgEncryptArgs, attestationProblems, sha256Hex, type Attestation } from "./key-backup.js";
 
 const argv = process.argv.slice(2);
 const cmd = argv.find((a) => !a.startsWith("--")) ?? "plan";
@@ -56,6 +64,26 @@ const SERVICE = process.env.AGENT_SERVICE ?? "deepstack-agent";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 interface Progress { from: string; to: string; txids: string[] }
+
+const flag = (name: string): string | undefined => argv.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+
+function fingerprintOf(file: string): string {
+  const fprs = parseFingerprints(execFileSync("gpg", ["--batch", "--show-keys", "--with-colons", file], { encoding: "utf8" }));
+  if (fprs.length !== 1) throw new Error(`${file}: expected exactly one public key, found ${fprs.length}`);
+  return fprs[0];
+}
+
+const backupSha = (): string | null => (existsSync(BACKUP_PATH) ? sha256Hex(readFileSync(BACKUP_PATH)) : null);
+
+function loadAttestation(): Attestation | null {
+  try { return existsSync(ATTESTATION_PATH) ? (JSON.parse(readFileSync(ATTESTATION_PATH, "utf8")) as Attestation) : null; } catch { return null; }
+}
+function saveAttestation(a: Attestation): void {
+  mkdirSync(dirname(ATTESTATION_PATH), { recursive: true });
+  const tmp = `${ATTESTATION_PATH}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(a, null, 2));
+  renameSync(tmp, ATTESTATION_PATH);
+}
 
 function newKey(): string | null {
   if (!existsSync(rotationPath)) return null;
@@ -161,11 +189,39 @@ async function main(): Promise<void> {
 
   if (cmd === "new") {
     if (existsSync(rotationPath)) throw new Error(`refusing: ${rotationPath} already exists (one rotation at a time)`);
+    if (existsSync(BACKUP_PATH)) throw new Error(`refusing: ${BACKUP_PATH} already exists; move it off the server and remove it first`);
+    const files = parseRecipientFiles(process.env.KEY_BACKUP_RECIPIENT_FILES);
+    const recipients = files.map(fingerprintOf);
+    if (new Set(recipients).size !== recipients.length) throw new Error("two recipient files hold the same key; each custodian needs their own");
     const key = randomPrivateKey();
-    writePrivate(rotationPath, `NEW_STACKS_PRIVATE_KEY=${key}\n`);
+    const line = `NEW_STACKS_PRIVATE_KEY=${key}\n`;
+    // Encrypt before anything is written: if the backup fails, no unbacked-up key exists anywhere.
+    execFileSync("gpg", gpgEncryptArgs(files, BACKUP_PATH), { input: line, stdio: ["pipe", "ignore", "inherit"] });
+    chmodSync(BACKUP_PATH, 0o600);
+    writePrivate(rotationPath, line);
     const address = getAddressFromPrivateKey(key, w.network);
+    const backupSha256 = sha256Hex(readFileSync(BACKUP_PATH));
+    saveAttestation({ address, backupSha256, recipients, verifiedBy: [], at: new Date().toISOString() });
     console.log(`new key written to ${rotationPath} (owner-only). Its address: ${address}`);
-    console.log("next: npm run m1:rotate-key -- plan");
+    console.log(`encrypted backup: ${BACKUP_PATH} (sha256 ${backupSha256}), to ${recipients.length} custodians:`);
+    for (const r of recipients) console.log(`  ${r}`);
+    console.log("next: copy the backup off the server to separate places (check the sha256 of each copy),");
+    console.log("      have a custodian decrypt it OFFLINE into `npm run -s m1:key-backup-verify -- --network <net>`,");
+    console.log("      and when the address matches: npm run m1:rotate-key -- attest --verified-by=<name> --fingerprint=<their fpr>");
+    return;
+  }
+
+  if (cmd === "attest") {
+    const att = loadAttestation();
+    if (!att) throw new Error(`no ${ATTESTATION_PATH}: run \`new\` first`);
+    const name = flag("verified-by");
+    const fpr = (flag("fingerprint") ?? "").toUpperCase();
+    if (!name || !fpr) throw new Error("pass --verified-by=<name> --fingerprint=<the verifying custodian's key fingerprint>");
+    if (!att.recipients.includes(fpr)) throw new Error(`refusing: ${fpr} is not one of the backup's recipients`);
+    att.verifiedBy.push({ name, fingerprint: fpr, at: new Date().toISOString() });
+    saveAttestation(att);
+    const left = attestationProblems(att, { address: att.address, backupSha256: backupSha() });
+    console.log(left.length ? `recorded; still blocked: ${left.join("; ")}` : `recorded: backup of ${att.address} proven recoverable by ${name}`);
     return;
   }
 
@@ -189,6 +245,8 @@ async function main(): Promise<void> {
     const p = printPlan(old, await balances({ address: to, network: w.network }), w.address, to, assets);
     notePending();
     if (p.blockers.length) throw new Error("refusing: resolve the BLOCKED items first; nothing sent");
+    const backupProblems = attestationProblems(loadAttestation(), { address: to, backupSha256: backupSha() });
+    if (backupProblems.length) throw new Error(`refusing: the new key's backup is not proven recoverable; nothing sent:\n  ${backupProblems.join("\n  ")}`);
     if (!yes) return void console.log("\n(preview — not sent; stop the agent, then add --yes-mainnet)");
     requireStopped();
     await confirmTyped(to);
@@ -272,7 +330,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  throw new Error(`unknown command "${cmd}" (new | plan | move | switch | --remove-backup)`);
+  throw new Error(`unknown command "${cmd}" (new | attest | plan | move | switch | --remove-backup)`);
 }
 
 main().catch((e) => {

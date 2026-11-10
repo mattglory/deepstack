@@ -32,16 +32,20 @@
     "m1:withdraw": "tsx src/m1/owner-withdraw-cli.ts",
     "m1:narrow-key": "tsx src/m1/narrow-key-cli.ts",
     "m1:rotate-key": "tsx src/m1/rotate-key-cli.ts",
+    "m1:key-backup-verify": "tsx src/m1/key-backup-verify-cli.ts",
     "m1:dlmm-fees": "tsx src/m1/dlmm-fees-cli.ts",
     "m1:dlmm-width": "tsx src/m1/dlmm-width-cli.ts",
+    "m1:sign-message": "tsx src/m1/sign-message-cli.ts",
+    "m1:pool-watch": "tsx src/m1/pool-watch-cli.ts",
     "m1:allocator": "tsx src/m1/allocator-cli.ts"
   },
   "dependencies": {
+    "@stacks/encryption": "^7.6.0",
     "@stacks/transactions": "^7.6.0",
     "@stacks/wallet-sdk": "^7.6.0"
   },
   "devDependencies": {
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
