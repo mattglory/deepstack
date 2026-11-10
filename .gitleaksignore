@@ -1,0 +1,9 @@
+# Reviewed false positives for the Secret scan job (gitleaks). One fingerprint per line, each with
+# the reason it is not a secret. Add entries only after looking at the flagged line, and do not
+# quote the flagged text in these comments (the scanner reads this file too).
+#
+# 2026-11-03: generic-api-key in a unit test: the value is the public USDCx token contract
+# principal (SP120SBRB...usdcx); the rule keys on the test object's field name.
+9510e649fdc6188a9142b4085a81095fdf4b048a:src/m1/dlmm-write.test.ts:generic-api-key:112
+# 2026-11-03: the first version of this file quoted that test line in a comment.
+17dc689c35f65e901c3cb1d92c4c2f27b95be2e2:.gitleaksignore:generic-api-key:4

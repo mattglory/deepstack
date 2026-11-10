@@ -1,0 +1,23 @@
+[project]
+name = "v3-own-bin-proof"
+requirements = [
+  { contract_id = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-liquidity-router-v-1-2" },
+  { contract_id = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10" },
+  { contract_id = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token" },
+  { contract_id = "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx" },
+]
+
+[contracts.own-bin-proof]
+path = "contracts/own-bin-proof.clar"
+clarity_version = 4
+epoch = "4.0"
+
+[repl.analysis]
+passes = ["check_checker"]
+
+# Simulate against real mainnet state (pool liquidity, balances) at a fixed height, so the
+# proof runs against the live Bitflow contracts and their actual state, not local copies.
+[repl.remote_data]
+enabled = true
+api_url = "https://api.hiro.so"
+initial_height = 9419800
