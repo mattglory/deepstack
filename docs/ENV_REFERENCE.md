@@ -76,6 +76,7 @@ Every variable the code reads from the environment (`.env` on the agent host, or
 | `OWNER_WITHDRAW_ADDRESSES` |  | `""` | m1/owner-withdraw-cli.ts | Allow-list for m1:withdraw destinations (owner cold addresses) |
 | `PAIR` |  | `"sbtc-stx"` | m1/contracts.ts |  |
 | `POOL_FEE_BPS` |  | `50` | m1/lvr-cli.ts |  |
+| `POOL_WATCH_PATH` |  | `"journal/pool-watch.jsonl"` | m1/pool-watch-cli.ts | Read-only candidate-pool watch log |
 | `RPC_TIMEOUT_MS` |  | `15_000` | m1/rpc.ts | Per-attempt RPC timeout |
 | `SENDER_ADDRESS` |  | `"SP000000000000000000002Q6VF78"` | config.ts |  |
 | `STACKS_ACCOUNT_INDEX` |  | `0` | m1/wallet.ts | Account derived from a seed phrase (ignored for a hex key) |
