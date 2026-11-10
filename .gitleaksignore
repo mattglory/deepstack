@@ -10,3 +10,6 @@
 # 2026-11-10: generic-api-key in the C4 pin table: the value is the same public USDCx token
 # contract principal; the rule keys on the object's field name.
 757790ce513c2ab6d667ba0f66381b66d7dc777f:src/m1/dlmm-read.ts:generic-api-key:64
+# 2026-11-10: generic-api-key in the B4 harness: a made-up test private key, marked throwaway in the
+# file. Checked unfunded with no history on mainnet and testnet the same day.
+24e4c635de8c7485eab23c15ee1d264dedc70c59:src/m1/agent-cli.harness.ts:generic-api-key:117
