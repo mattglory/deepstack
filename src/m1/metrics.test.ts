@@ -22,9 +22,10 @@ const sample = (lpValueY: number, mid = 400_000) => ({
   t: "2026-09-01T00:00:00Z", mid, ext: null,
   xBase: "100000", yBase: "400000000", lpValueY, portfolioY: 800, safe: true,
 });
-const dlmmSample = (t: string, dlmmValueY: number, mid = 400_000) => ({
+// stxUsd = 1 keeps the y leg's USDCx and STX figures equal in the older tests below.
+const dlmmSample = (t: string, dlmmValueY: number, mid = 400_000, stxUsd = 1) => ({
   t, mid, ext: null,
-  xBase: "100000", yBase: "400000000", lpValueY: 0, dlmmValueY, portfolioY: 800, safe: true,
+  xBase: "100000", yBase: "400000000", lpValueY: 0, dlmmValueY, stxUsd, portfolioY: 800, safe: true,
 });
 const readBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).lpBasis;
 const readDlmmBasis = () => JSON.parse(readFileSync(METRICS_PATH, "utf8")).dlmmBasis;
@@ -313,4 +314,17 @@ test("metrics writes are atomic: no temp file is left behind", () => {
   const base = METRICS_PATH.split("/").pop()!;
   assert.deepEqual(readdirSync(tmpdir()).filter((f) => f.startsWith(`${base}.tmp`)), []);
   assert.ok(JSON.parse(readFileSync(METRICS_PATH, "utf8")).lpBasis);
+});
+
+test("dlmmBasis fallback: y leg in USDCx, and a recenter's explicit basis is never overwritten (2026-11-06)", async () => {
+  const { setDlmmBasis } = await import("./metrics.js");
+  // Position worth 3,000 STX at $0.33: the y half is 1,500 STX = 495 USDCx, not 1,500.
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T22:00:00Z", 3000, 223_000, 0.33));
+  assert.ok(Math.abs(readDlmmBasis().yQty - 495) < 1e-9);
+  // Recenter split across cycles: an empty sample, then the agent sets the adjusted basis, then
+  // the next sample sees the position again. The agent's basis must survive.
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T23:48:00Z", 0, 223_000, 0.33));
+  setDlmmBasis({ xQty: 0.00104383, yQty: 3832.716818, t: "2026-11-06T00:20:00Z" });
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-06T00:22:00Z", 2900, 223_000, 0.33));
+  assert.deepEqual(readDlmmBasis(), { xQty: 0.00104383, yQty: 3832.716818, t: "2026-11-06T00:20:00Z" });
 });
