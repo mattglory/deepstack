@@ -288,3 +288,19 @@ test("dlmmBasis fallback: y leg in USDCx, and a recenter's explicit basis is nev
   recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-06T00:22:00Z", 2900, 223_000, 0.33));
   assert.deepEqual(readDlmmBasis(), { xQty: 0.00104383, yQty: 3832.716818, t: "2026-11-06T00:20:00Z" });
 });
+
+test("dlmmBasis fallback: a recenter split across cycles keeps the agent's adjusted basis, whose t is the original open", async () => {
+  const { setDlmmBasis, loadVenueBases } = await import("./metrics.js");
+  const { adjustBasisForRecenter } = await import("./dlmm-recenter.js");
+  // Position opened earlier: explicit basis from `open`.
+  setDlmmBasis({ xQty: 0.001, yQty: 3800, t: "2026-11-01T00:00:00Z" });
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T22:00:00Z", 3000, 223_000, 0.33));
+  // Cycle N: withdraw confirmed, re-add not yet -> zero sample.
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T23:13:00Z", 0, 223_000, 0.33));
+  // Cycle N+1: re-add confirmed; the agent adjusts the basis exactly as dlmm-recenter-exec.ts does.
+  const prev = loadVenueBases().dlmmBasis!;
+  const next = adjustBasisForRecenter(prev, { x: 0.0011, y: 3700 }, { x: 0.00108, y: 3690 });
+  setDlmmBasis(next);
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T23:49:00Z", 2950, 223_000, 0.33));
+  assert.deepEqual(readDlmmBasis(), next);
+});
