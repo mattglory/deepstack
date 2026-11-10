@@ -40,9 +40,9 @@
     "m1:allocator": "tsx src/m1/allocator-cli.ts"
   },
   "dependencies": {
-    "@stacks/encryption": "^7.6.0",
-    "@stacks/transactions": "^7.6.0",
-    "@stacks/wallet-sdk": "^7.6.0"
+    "@stacks/encryption": "^7.7.0",
+    "@stacks/transactions": "^7.7.0",
+    "@stacks/wallet-sdk": "^7.7.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
