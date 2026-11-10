@@ -36,6 +36,10 @@ export function binSignedId(uintKey: number): number {
   return uintKey - CENTER_BIN_ID;
 }
 
+// What the plain readers below need: they read by contract name and never use the pin, so an
+// unpinned candidate pool (pool-watch-cli) can be read too. Pinned paths check pinMismatch.
+export type DlmmPoolRef = Pick<DlmmPool, "key" | "name">;
+
 export interface DlmmPool {
   key: string; // short label
   name: string; // contract name under DEPLOYER
@@ -159,7 +163,7 @@ export function sumBinWindow(
   return { xTotal, yTotal, binsWithLiquidity };
 }
 
-async function callRead(pool: DlmmPool, fn: string, args: any[] = []): Promise<any | null> {
+async function callRead(pool: DlmmPoolRef, fn: string, args: any[] = []): Promise<any | null> {
   try {
     return cvToJSON(
       await withRpc((baseUrl) =>
@@ -273,7 +277,7 @@ export async function readShareFloors(coreAddress: string): Promise<{ minBinShar
 }
 
 /** Read the pool's swap-facing state: active bin, step, tokens, core, and activity. */
-export async function readDlmmState(pool: DlmmPool): Promise<DlmmState | null> {
+export async function readDlmmState(pool: DlmmPoolRef): Promise<DlmmState | null> {
   const j = await callRead(pool, "get-pool-for-swap", [Cl.bool(true)]);
   const t = j?.value?.value;
   if (!t) return null;
@@ -292,7 +296,7 @@ export async function readDlmmState(pool: DlmmPool): Promise<DlmmState | null> {
 }
 
 /** Sum liquidity across a window of bins centred on the active bin. */
-export async function readLocalDepth(pool: DlmmPool, activeBinId: number, halfWindow = 10): Promise<DlmmDepth> {
+export async function readLocalDepth(pool: DlmmPoolRef, activeBinId: number, halfWindow = 10): Promise<DlmmDepth> {
   const bins: Array<{ x: bigint; y: bigint } | null> = [];
   let binsSkipped = 0;
   for (let signedId = activeBinId - halfWindow; signedId <= activeBinId + halfWindow; signedId++) {
