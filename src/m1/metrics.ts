@@ -302,12 +302,19 @@ export function recordSample(
     // a fabricated -60.8% APR on what was actually a +2h-old, roughly breakeven position). A
     // same-cycle recenter (withdraw immediately followed by re-add) never shows an intervening
     // zero sample, so it correctly does NOT reset the basis — only a REAL gap does.
-    const prevDlmmValueY = m.samples.length ? (m.samples[m.samples.length - 1].dlmmValueY ?? 0) : 0;
-    if ((!m.dlmmBasis || prevDlmmValueY <= 0) && s.mid > 0 && (s.dlmmValueY ?? 0) > 0) {
-      // Same 50/50-by-value fallback as lpBasis. A caller with the real x/y split (e.g.
-      // from a historical on-chain read) should seed dlmmBasis directly instead — this
-      // auto-init only fires when nothing better has been set yet.
-      m.dlmmBasis = { xQty: s.dlmmValueY! / 2 / s.mid, yQty: s.dlmmValueY! / 2, t: s.t };
+    const prevSample = m.samples.length ? m.samples[m.samples.length - 1] : null;
+    const prevDlmmValueY = prevSample ? (prevSample.dlmmValueY ?? 0) : 0;
+    // A basis set explicitly since the previous sample (the agent's recenter re-add, `open`, or
+    // `set-basis`) is never overwritten here. Found 2026-11-06: a recenter whose withdraw and
+    // re-add fell in different cycles left one zero sample, and this fallback then replaced the
+    // agent's correct, adjusted basis with a 50/50 guess.
+    const basisSetSinceLastSample = !!m.dlmmBasis && !!prevSample && Date.parse(m.dlmmBasis.t) > Date.parse(prevSample.t);
+    if ((!m.dlmmBasis || prevDlmmValueY <= 0) && !basisSetSinceLastSample && s.mid > 0 && (s.dlmmValueY ?? 0) > 0 && (s.stxUsd ?? 0) > 0) {
+      // 50/50-by-value fallback when nothing better exists. dlmmValueY is in STX, but the DLMM
+      // basis's y leg is USDCx (the pool is sBTC/USDCx), so the y half is converted at stxUsd.
+      // Before 2026-11-06 it was stored in STX units, which showed a fabricated loss of about
+      // two thirds of the position on the dashboard after the first such re-anchor.
+      m.dlmmBasis = { xQty: s.dlmmValueY! / 2 / s.mid, yQty: (s.dlmmValueY! / 2) * s.stxUsd!, t: s.t };
     }
     m.samples.push(s);
     if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);

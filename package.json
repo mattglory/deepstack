@@ -36,6 +36,7 @@
     "m1:dlmm-fees": "tsx src/m1/dlmm-fees-cli.ts",
     "m1:dlmm-width": "tsx src/m1/dlmm-width-cli.ts",
     "m1:sign-message": "tsx src/m1/sign-message-cli.ts",
+    "m1:pool-watch": "tsx src/m1/pool-watch-cli.ts",
     "m1:allocator": "tsx src/m1/allocator-cli.ts",
     "watch:wallet": "tsx src/watcher/cli.ts"
   },
