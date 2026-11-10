@@ -1,0 +1,26 @@
+# Every change needs a review from a code owner other than its author (assessment 2026-11,
+# DSA-04 / roadmap A3). Branch protection on main must have "Require review from Code Owners"
+# enabled for this file to take effect, and every owner listed needs write access to the repo.
+# Paths below are the ones that move money, hold keys, deploy, or decide what CI enforces; they
+# are listed explicitly so the list survives if the catch-all is ever narrowed.
+
+*                               @mattglory @unixwhisperer
+
+/contracts/                     @mattglory @unixwhisperer
+/clarinet/                      @mattglory @unixwhisperer
+/deploy/                        @mattglory @unixwhisperer
+/.github/                       @mattglory @unixwhisperer
+/src/m1/wallet.ts               @mattglory @unixwhisperer
+/src/m1/actions.ts              @mattglory @unixwhisperer
+/src/m1/agent.ts                @mattglory @unixwhisperer
+/src/m1/agent-cli.ts            @mattglory @unixwhisperer
+/src/m1/safety.ts               @mattglory @unixwhisperer
+/src/m1/dlmm-*                  @mattglory @unixwhisperer
+/src/m1/rotate-key-cli.ts       @mattglory @unixwhisperer
+/src/m1/key-*                   @mattglory @unixwhisperer
+/src/m1/narrow-key-cli.ts       @mattglory @unixwhisperer
+/src/m1/owner-withdraw-cli.ts   @mattglory @unixwhisperer
+/src/m1/vault-*                 @mattglory @unixwhisperer
+/src/m2/                        @mattglory @unixwhisperer
+/package.json                   @mattglory @unixwhisperer
+/package-lock.json              @mattglory @unixwhisperer
