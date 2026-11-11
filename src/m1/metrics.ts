@@ -146,13 +146,58 @@ export interface MetricsFile {
   deployedCommit?: string; // short git hash running when `updated` was written
 }
 
+// A missing file is null (fresh box). A file that exists but cannot be read or parsed is NOT
+// silently replaced any more (C7, DSA-13): it used to read as null, and the next recordSample
+// overwrote the whole pilot history with a fresh file. It is now moved aside to
+// metrics.json.corrupt-<ts> (kept for a human to recover) and logged, and THEN reads as null,
+// so recording starts a fresh file and the agent keeps running. If it cannot be moved aside,
+// load() throws: writers (all wrapped in try/catch, or a CLI) then skip the write rather than
+// overwrite it, and readers go through loadOrNull().
 function load(): MetricsFile | null {
+  let raw: string;
   try {
-    if (!existsSync(METRICS_PATH)) return null;
-    return JSON.parse(readFileSync(METRICS_PATH, "utf8")) as MetricsFile;
-  } catch {
-    return null; // corrupt file -> start fresh rather than crash the agent
+    raw = readFileSync(METRICS_PATH, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return quarantine((e as Error).message);
   }
+  try {
+    const m = JSON.parse(raw);
+    if (m && typeof m === "object" && Array.isArray(m.samples)) return m as MetricsFile;
+    return quarantine("not a metrics object");
+  } catch (e) {
+    return quarantine((e as Error).message);
+  }
+}
+
+function quarantine(why: string): null {
+  const aside = `${METRICS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  try {
+    renameSync(METRICS_PATH, aside);
+  } catch (e) {
+    throw new Error(`${METRICS_PATH} unreadable (${why}) and could not be moved aside (${(e as Error).message}); refusing to overwrite it`);
+  }
+  console.error(`⛔ METRICS FILE UNREADABLE (${why}) — moved aside to ${aside}; starting a fresh ${METRICS_PATH}`);
+  return null;
+}
+
+// Readers must never take the agent down over metrics (same policy as before).
+function loadOrNull(): MetricsFile | null {
+  try {
+    return load();
+  } catch (e) {
+    console.error(`⛔ ${(e as Error).message}`);
+    return null;
+  }
+}
+
+// Atomic (temp file + rename), like addCapitalFlow: a crash or full disk mid-write leaves the
+// previous file, never a half-written one that the next load() would have to quarantine.
+function writeMetrics(m: MetricsFile): void {
+  mkdirSync(dirname(METRICS_PATH), { recursive: true });
+  const tmp = `${METRICS_PATH}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(m));
+  renameSync(tmp, METRICS_PATH);
 }
 
 /**
@@ -161,7 +206,7 @@ function load(): MetricsFile | null {
  * error, or the agent can't run on a fresh box.
  */
 export function loadHistory(): MetricsSample[] {
-  return load()?.samples ?? [];
+  return loadOrNull()?.samples ?? [];
 }
 
 /**
@@ -172,7 +217,7 @@ export function loadHistory(): MetricsSample[] {
  * the formula these bases feed.
  */
 export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?: MetricsFile["dlmmBasis"] } {
-  const m = load();
+  const m = loadOrNull();
   return { lpBasis: m?.lpBasis, dlmmBasis: m?.dlmmBasis };
 }
 
@@ -186,7 +231,7 @@ export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?
 // read as a drawdown: a 700 STX withdrawal is not a trading loss, and must not push the agent
 // into its defensive regime.
 export function currentDrawdown(portfolioYNow: number, nowT = new Date().toISOString()): number {
-  const hist = load()?.samples ?? [];
+  const hist = loadOrNull()?.samples ?? [];
   if (hist.length === 0 || !(portfolioYNow > 0)) return 0;
   const flows = loadCapitalFlows();
   const now = portfolioYNow + withdrawnStx(flows, null, nowT);
@@ -217,7 +262,7 @@ function readFlowsFile(): CapitalFlow[] {
 /** The flows file, plus any flows recorded inside metrics.json before the file existed. */
 export function loadCapitalFlows(): CapitalFlow[] {
   const byTx = new Map<string, CapitalFlow>();
-  for (const f of [...(load()?.capitalFlows ?? []), ...readFlowsFile()]) byTx.set(f.txid, f);
+  for (const f of [...(loadOrNull()?.capitalFlows ?? []), ...readFlowsFile()]) byTx.set(f.txid, f);
   return [...byTx.values()].sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
 }
 
@@ -331,8 +376,7 @@ export function recordSample(
     else if (!((s.dlmmValueY ?? 0) > 0)) delete m.dlmmFees; // no position: no fee figure
     m.updated = s.t;
     m.deployedCommit = deployedCommit();
-    mkdirSync(dirname(METRICS_PATH), { recursive: true });
-    writeFileSync(METRICS_PATH, JSON.stringify(m));
+    writeMetrics(m);
   } catch (err) {
     // Metrics are evidence, not safety-critical — never take the agent down over them.
     console.warn(`(metrics write skipped: ${(err as Error).message})`);
@@ -362,7 +406,7 @@ export function markPilotStart(): { startedAt: string; portfolioY: number } {
   // top-level lpBasis/dlmmBasis, which are meant to evolve with real capital events.
   if (m.lpBasis) m.pilotBaseline.lpBasis = { xQty: m.lpBasis.xQty, yQty: m.lpBasis.yQty };
   if (m.dlmmBasis) m.pilotBaseline.dlmmBasis = { xQty: m.dlmmBasis.xQty, yQty: m.dlmmBasis.yQty };
-  writeFileSync(METRICS_PATH, JSON.stringify(m));
+  writeMetrics(m);
   return { startedAt: s.t, portfolioY: s.portfolioY };
 }
 
@@ -395,7 +439,7 @@ export function adjustLpBasis(
       m.lpBasis = { xQty: b.xQty * keep, yQty: b.yQty * keep, t: b.t };
       if (last) last.lpValueY *= keep;
     }
-    writeFileSync(METRICS_PATH, JSON.stringify(m));
+    writeMetrics(m);
   } catch (err) {
     console.warn(`(lp basis update skipped: ${(err as Error).message})`);
   }
@@ -419,7 +463,7 @@ export function setDlmmBasis(basis: { xQty: number; yQty: number; t: string } | 
     if (!m) return;
     if (basis) { m.dlmmBasis = basis; m.dlmmBasisSetAt = new Date().toISOString(); }
     else { delete m.dlmmBasis; delete m.dlmmBasisSetAt; }
-    writeFileSync(METRICS_PATH, JSON.stringify(m));
+    writeMetrics(m);
   } catch (err) {
     console.warn(`(dlmm basis update skipped: ${(err as Error).message})`);
   }
