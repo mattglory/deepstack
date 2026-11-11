@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/mattglory/deepstack/actions/workflows/ci.yml/badge.svg)](https://github.com/mattglory/deepstack/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Live on mainnet](https://img.shields.io/badge/Stacks-mainnet-orange.svg)](https://explorer.hiro.so/address/SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60?chain=mainnet)
+[![Live on mainnet](https://img.shields.io/badge/Stacks-mainnet-orange.svg)](https://explorer.hiro.so/address/SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4?chain=mainnet)
 
 DeepStack is an agent that provides and actively manages liquidity in Bitcoin-backed
 markets on Stacks. It runs a full-range position on Bitflow's sBTC/STX pool and a
@@ -15,7 +15,8 @@ Every number it reports can be checked on-chain. Nothing here is a promise of yi
 
 | | |
 |---|---|
-| **Agent wallet** | [`SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60`](https://explorer.hiro.so/address/SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60?chain=mainnet) |
+| **Agent wallet** | [`SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4`](https://explorer.hiro.so/address/SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4?chain=mainnet) |
+| **Previous agent wallet** | [`SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60`](https://explorer.hiro.so/address/SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60?chain=mainnet), used until the key rotation on 11 Nov 2026 (pilot history lives here) |
 | **Live dashboard** | [dashboard-two-alpha-t9c0vbn07m.vercel.app](https://dashboard-two-alpha-t9c0vbn07m.vercel.app) |
 | **Venues** | Bitflow sBTC/STX (XYK) · Bitflow HODLMM sBTC/USDCx (DLMM, 10 bps bins) |
 | **Running since** | July 2026 on mainnet, 30-day public pilot closed 27 Sep 2026 |
@@ -25,7 +26,7 @@ Every number it reports can be checked on-chain. Nothing here is a promise of yi
 ## What it does
 
 - **Provides liquidity in two venue types.** A constant-product position that earns on
-  every trade, and a concentrated position spread across ~100 price bins that earns where
+  every trade, and a concentrated position spread across ~70 price bins that earns where
   the trading actually happens.
 - **Manages it on its own.** Every 30 minutes it reads the pools, its positions and an
   independent price, then holds, rebalances inventory, or recenters the concentrated range
