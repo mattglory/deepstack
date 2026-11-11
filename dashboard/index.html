@@ -139,7 +139,8 @@
     <script type="module">
       import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets } from "./pnl-math.js";
       const CFG = {
-        wallet: "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+        // Fallback until telemetry loads; telemetry's wallet + walletMigrations take over after.
+        wallet: "SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4",
         api: "https://api.mainnet.hiro.so",
         sbtcAsset: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
         usdcxAsset: "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
