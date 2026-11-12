@@ -172,3 +172,28 @@ test("agentWallets: follows recorded rotations back from the current wallet only
   // Garbage in the telemetry falls back to the configured address.
   assert.equal(agentWallets({ wallet: "<script>" }, A).current, A);
 });
+
+test("trackRecordEnd: ends at the first owner deposit after the anchor; withdrawals don't end it", async () => {
+  const { trackRecordEnd } = await import("./pnl-math.js");
+  const flows = [
+    { t: "2026-10-14T12:24:12Z", stx: -65 },
+    { t: "2026-10-27T10:53:10Z", stx: 9000 },
+    { t: "2026-10-27T08:47:21Z", stx: 3300 },
+    { t: "2026-08-01T00:00:00Z", stx: 500 }, // before the anchor: not part of the track record
+  ];
+  assert.equal(trackRecordEnd({ capitalFlows: flows }, "2026-08-28T20:59:43Z"), "2026-10-27T08:47:21Z");
+  assert.equal(trackRecordEnd({ capitalFlows: flows.filter((f) => f.stx < 0) }, "2026-08-28T20:59:43Z"), null);
+  assert.equal(trackRecordEnd({}, "2026-08-28T20:59:43Z"), null);
+});
+
+test("capitalAllocation: counts both positions and free balances, in STX, summing to 100%", async () => {
+  const { capitalAllocation } = await import("./pnl-math.js");
+  // Shape of the 2026-11-12 10:20 sample: ~50 STX loose, the rest in the two positions.
+  const a = capitalAllocation({ yBase: "49980000", xBase: "886", mid: 242580, lpValueY: 1850, dlmmValueY: 12640, freeUsdcxValueY: 460 });
+  const by = Object.fromEntries(a.parts.map((p) => [p.key, p]));
+  assert.ok(Math.abs(a.total - (49.98 + 0.00000886 * 242580 + 1850 + 12640 + 460)) < 1e-6);
+  assert.ok(by.dlmm.pct > 80 && by.stx.pct < 1);
+  assert.ok(Math.abs(a.parts.reduce((s, p) => s + p.pct, 0) - 100) < 1e-9);
+  // Empty parts are left out; no positions and no balances → nothing to draw.
+  assert.equal(capitalAllocation({ yBase: "0", xBase: "0", mid: 1 }).parts.length, 0);
+});
