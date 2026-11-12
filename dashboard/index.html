@@ -88,7 +88,7 @@
       </div>
 
       <div class="panel">
-        <h2>Inventory allocation</h2>
+        <h2>Where the capital is</h2>
         <div class="alloc" id="alloc"><span style="width:50%;background:var(--stx)"></span><span style="width:50%;background:var(--btc)"></span></div>
         <div class="legend" id="legend"></div>
       </div>
@@ -137,7 +137,7 @@
     </div>
 
     <script type="module">
-      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets } from "./pnl-math.js";
+      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets, trackRecordEnd, capitalAllocation } from "./pnl-math.js";
       const CFG = {
         // Fallback until telemetry loads; telemetry's wallet + walletMigrations take over after.
         wallet: "SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4",
@@ -278,12 +278,22 @@
 
         // hero
         $("hero").innerHTML =
-          card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
+          card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `${agentStxUsd > 0 ? `≈ $${fmt(portfolio * agentStxUsd, 0)} · ` : ""}≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
           card("Volume facilitated", `${fmt(uSTX(hero.volume), 2)} <small>STX</small>`, `${hero.swaps} swaps${sincePilot}`) +
           card("Network fees paid", `${fmt(uSTX(hero.fees), 3)} <small>STX</small>`, `${hero.count} txs${sincePilot}`) +
           card("Success rate", `${successRate}%`, `${hero.ok} ok · ${hero.ab} aborted`);
 
-        // allocation
+        // allocation: where the capital sits, from the agent's latest sample (capitalAllocation,
+        // pnl-math.js). Free balances alone ignored both positions. Falls back to the old free
+        // STX/sBTC split only before the first heartbeat lands.
+        const ALLOC_COL = { stx: "var(--stx)", sbtc: "var(--btc)", xyk: "#2bb3a3", dlmm: "var(--blue)", usdcx: "var(--muted)" };
+        const alloc = agentLastSample ? capitalAllocation(agentLastSample) : null;
+        if (alloc && alloc.total > 0) {
+          $("alloc").innerHTML = alloc.parts.map((p) => `<span style="width:${p.pct}%;background:${ALLOC_COL[p.key]}"></span>`).join("");
+          $("legend").innerHTML =
+            alloc.parts.map((p) => `<span><i style="background:${ALLOC_COL[p.key]}"></i>${p.label} ${fmt(p.pct, 1)}% · ${fmt(p.valueY, 0)} STX</span>`).join("") +
+            `<span style="color:var(--faint)">valued in STX at the agent's latest prices</span>`;
+        } else {
         const sbtcVal = vmid ? sbtc * vmid : 0, total = stx + sbtcVal;
         const stxPct = total ? (stx / total) * 100 : 50;
         $("alloc").innerHTML = `<span style="width:${stxPct}%;background:var(--stx)"></span><span style="width:${100 - stxPct}%;background:var(--btc)"></span>`;
@@ -291,6 +301,7 @@
           `<span><i style="background:var(--stx)"></i>STX ${fmt(stxPct, 1)}% · ${fmt(stx, 2)}</span>` +
           `<span><i style="background:var(--btc)"></i>sBTC ${fmt(100 - stxPct, 1)}% · ${fmt(sbtc, 8)}</span>` +
           `<span style="color:var(--faint)">target 50 / 50 · mid ${vmid ? fmt(vmid, 0) + " STX/sBTC" : "—"}</span>`;
+        }
 
         // economics — honest. Fees net of IL = venue value vs HOLDING the deposited legs at
         // today's mid (the definition of impermanent loss; a scalar STX basis would smuggle
@@ -369,6 +380,7 @@
       // but not its value — the agent computes that each cycle from a withdraw quote, so
       // the portfolio tile borrows it rather than undercounting by the LP position.
       let agentLpValueY = 0;
+      let agentLastSample = null; // latest telemetry sample, for the allocation bar
       let agentPortfolioY = 0; // agent's own total (free + LP + DLMM) — see render()
       let agentLpBasis = null; // deposited leg quantities {xQty, yQty, t} (agent-tracked)
       let agentDlmmValueY = 0; // agent's latest DLMM position valuation (in STX)
@@ -395,7 +407,12 @@
           note.innerHTML = "Track record begins at <b>pilot start</b> — a clean, fixed-inception equity curve with no capital top-ups (the honest way to show performance). Current LP&nbsp;P&amp;L net of IL is in Economics above.";
           return;
         }
+        // Ends at the first owner deposit after the pilot anchor (trackRecordEnd, pnl-math.js):
+        // after that the comparison would track the STX price, not the agent.
+        const endT = trackRecordEnd(m, m.pilotStartedAt);
+        const endMs = endT ? Date.parse(endT) : Infinity;
         const series = ss
+          .filter((s) => Date.parse(s.t) < endMs)
           .map((s) => {
             const hodl = hodlNow(m, s);
             return { t: s.t, hodl, port: adjustedPortfolio(m, s), v: ilAdjustedReturn(m, s) ?? 0 };
@@ -435,7 +452,10 @@
         $("perfT0").textContent = tstr(new Date(series[0].t).getTime() / 1000);
         $("perfT1").textContent = tstr(new Date(series[series.length - 1].t).getTime() / 1000);
         const val = (v) => (v >= 0 ? "+" : "") + fmt(v, 2) + "%";
-        note.innerHTML = `Latest: <b style="color:${col}">${val(lastV)}</b> · 0% = matching a buy-and-hold of the starting inventory; above the line, fees beat impermanent loss.${(m.capitalFlows ?? []).length ? ` Owner withdrawals (${m.capitalFlows.length}) are added back, so they don't count as losses.` : ""}`;
+        const withdrawals = (m.capitalFlows ?? []).filter((f) => f.stx < 0 && Date.parse(f.t) < endMs).length;
+        note.innerHTML = endT
+          ? `Final: <b style="color:${col}">${val(lastV)}</b> · 0% = matching a buy-and-hold of the starting inventory; above the line, fees beat impermanent loss. The track record ends at the owner's deposit on ${endT.slice(0, 10)}: that STX was put into sBTC and USDCx for the DLMM, which a buy-and-hold of the starting inventory cannot follow, so a curve past that point would track the STX price rather than the agent. Since then, see the per-venue P&amp;L net of IL in Economics.${withdrawals ? ` Owner withdrawals before then (${withdrawals}) are added back, so they don't count as losses.` : ""}`
+          : `Latest: <b style="color:${col}">${val(lastV)}</b> · 0% = matching a buy-and-hold of the starting inventory; above the line, fees beat impermanent loss.${withdrawals ? ` Owner withdrawals (${withdrawals}) are added back, so they don't count as losses.` : ""}`;
         const tip = $("perfTip"), cross = svg.querySelector("#perfCross"), dot = svg.querySelector("#perfDot");
         svg.onmousemove = (e) => {
           const r = svg.getBoundingClientRect();
@@ -505,6 +525,7 @@
           return;
         }
         const last = ss[ss.length - 1];
+        agentLastSample = last;
         agentLpValueY = last.lpValueY ?? 0;
         agentDlmmValueY = last.dlmmValueY ?? 0;
         agentStxUsd = last.stxUsd ?? 0;
@@ -547,8 +568,11 @@
         }
         const hodlNowVal = hodlNow(m, last);
         const ilAdj = ilAdjustedReturn(m, last);
+        const recordEnd = trackRecordEnd(m, m.pilotStartedAt);
         const ilTile =
-          ilAdj === null
+          recordEnd && Date.parse(last.t) >= Date.parse(recordEnd)
+            ? small("IL-adjusted return", `n/a<div class="sub2">whole-portfolio comparison closed at the owner's deposit on ${recordEnd.slice(0, 10)} · per-venue P&amp;L net of IL is in Economics</div>`)
+            : ilAdj === null
             ? small("IL-adjusted return", `n/a<div class="sub2">measuring — see Economics for LP/DLMM P&L net of IL</div>`)
             : small("IL-adjusted return", `<span style="color:${ilAdj >= 0 ? "var(--ok)" : "var(--bad)"}">${ilAdj >= 0 ? "+" : ""}${ilAdj.toFixed(3)}%</span><div class="sub2">vs full HODL baseline (${fmt(adjustedPortfolio(m, last), 1)} vs ${fmt(hodlNowVal, 1)} STX)${withdrawnUpTo(m, last.t) > 0 ? ` · incl. ${fmt(withdrawnUpTo(m, last.t), 1)} STX withdrawn by the owner` : ""}</div>`);
 
