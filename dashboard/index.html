@@ -278,7 +278,7 @@
 
         // hero
         $("hero").innerHTML =
-          card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
+          card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `${agentStxUsd > 0 ? `≈ $${fmt(portfolio * agentStxUsd, 0)} · ` : ""}≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
           card("Volume facilitated", `${fmt(uSTX(hero.volume), 2)} <small>STX</small>`, `${hero.swaps} swaps${sincePilot}`) +
           card("Network fees paid", `${fmt(uSTX(hero.fees), 3)} <small>STX</small>`, `${hero.count} txs${sincePilot}`) +
           card("Success rate", `${successRate}%`, `${hero.ok} ok · ${hero.ab} aborted`);
@@ -286,7 +286,7 @@
         // allocation: where the capital sits, from the agent's latest sample (capitalAllocation,
         // pnl-math.js). Free balances alone ignored both positions. Falls back to the old free
         // STX/sBTC split only before the first heartbeat lands.
-        const ALLOC_COL = { stx: "var(--stx)", sbtc: "var(--btc)", xyk: "var(--acc)", dlmm: "var(--blue)", usdcx: "var(--muted)" };
+        const ALLOC_COL = { stx: "var(--stx)", sbtc: "var(--btc)", xyk: "#2bb3a3", dlmm: "var(--blue)", usdcx: "var(--muted)" };
         const alloc = agentLastSample ? capitalAllocation(agentLastSample) : null;
         if (alloc && alloc.total > 0) {
           $("alloc").innerHTML = alloc.parts.map((p) => `<span style="width:${p.pct}%;background:${ALLOC_COL[p.key]}"></span>`).join("");
