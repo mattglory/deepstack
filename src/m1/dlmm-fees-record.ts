@@ -4,7 +4,7 @@
 
 import { withRpc, hiroFetch } from "./rpc.js";
 import { DLMM_POOLS, readDlmmState, readBinPrices } from "./dlmm-read.js";
-import { parseAddLiquidityRepr, mergeDeposit, loadDeposit, saveDeposit } from "./dlmm-fees.js";
+import { parseAddLiquidityRepr, mergeDeposit, loadDeposit, saveDeposit, depositPath } from "./dlmm-fees.js";
 
 interface TxJson {
   tx_status?: string;
@@ -33,11 +33,12 @@ export async function recordDepositFromTx(txid: string, owner: string, poolKey: 
     const st = await readDlmmState(poolDef);
     if (!st) throw new Error("pool state unreadable");
     const prices = await readBinPrices(st.coreAddress, st.initialPrice, st.binStep, amounts.map((a) => a.bin));
-    const next = mergeDeposit(loadDeposit(), {
+    const path = depositPath(poolKey); // the primary's file, or this extra pair's own
+    const next = mergeDeposit(loadDeposit(path), {
       pool: poolKey, owner, t: j.burn_block_time_iso ?? new Date().toISOString(), txid,
       bins: amounts.map((a) => ({ ...a, price: prices.get(a.bin)! })),
     });
-    saveDeposit(next);
+    saveDeposit(next, path);
     log(`  [dlmm-fees] recorded the deposit in ${amounts.length} bins from ${txid.slice(0, 10)}`);
     return true;
   } catch (err) {

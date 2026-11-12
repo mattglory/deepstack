@@ -232,6 +232,39 @@ rm /opt/deepstack/KILL        # resumes
 
 ---
 
+## 8. A second DLMM pair (off by default)
+
+The agent can manage more than one DLMM position (`src/m1/dlmm-pairs.ts`). The primary pair is
+still `DLMM_OBSERVE_PAIR` and nothing about it changes. Extra pairs are listed in
+`DLMM_EXTRA_PAIRS` (pool keys, comma-separated, e.g. `stx-sbtc`) and each keeps its own state:
+
+| | Primary | Extra pair `stx-sbtc` |
+|---|---|---|
+| Fail streak / recenters | `journal/dlmm-failstreak.json` | `journal/dlmm-failstreak.stx-sbtc.json` |
+| Pending re-add | `journal/dlmm-pending-readd.json` | `journal/dlmm-pending-readd.stx-sbtc.json` |
+| Deposit (fees) | `journal/dlmm-deposit.json` | `journal/dlmm-deposit.stx-sbtc.json` |
+| Basis, fees in metrics | `dlmmBasis`, `dlmmFees` | `dlmmPairs["stx-sbtc"]` |
+| Settings | `DLMM_TARGET_USD`, `DLMM_MAX_TARGET_USD`, `DLMM_PIN_HALF_WIDTH`, `DLMM_HALF_WIDTH` | the same names with `__STX_SBTC` |
+
+Rules:
+
+- An extra pair never borrows the primary's settings. Without `DLMM_TARGET_USD__<PAIR>` it only observes.
+- It broadcasts only with `DLMM_LIVE=1` **and** `DLMM_EXTRA_LIVE=1`, through the same gates as the primary
+  (live flags, safety, circuit, its own fail streak and `--max-trades`).
+- The agent never **opens** an extra pair's position; it only recenters one that exists. Opening is attended.
+- Key rotation refuses while any DLMM position is open (all pairs) and lists every pending re-add.
+
+Opening one, attended (agent paused with `touch KILL`):
+
+1. Free the capital: for example re-size the primary smaller (`withdraw`, then `open <usd>`), and convert
+   what the new pair needs (`DLMM_PAIR=stx-usdcx-v1 npm run m1:dlmm-recenter -- swap y-for-x <usdcx>` for STX).
+2. When the pool's X is native STX (`stx-sbtc`), the open keeps 100 STX back for gas, so hold at least that
+   much more STX than the position needs.
+3. Set `DLMM_TARGET_USD__STX_SBTC`, `DLMM_MAX_TARGET_USD__STX_SBTC` and `DLMM_PIN_HALF_WIDTH__STX_SBTC` in `.env`.
+4. Preview, then open: `DLMM_PAIR=stx-sbtc npm run m1:dlmm-recenter -- open <usd>` (add `--yes-mainnet`).
+5. Add `DLMM_EXTRA_PAIRS=stx-sbtc` (observe first), restart, check the `[dlmm stx-sbtc]` line; only then
+   set `DLMM_EXTRA_LIVE=1`. Remove `KILL`.
+
 ## Open issues to settle before 1 September
 
 **~~Telemetry does not reach the public dashboard.~~ Resolved** — gist mirror, see §5b.
@@ -254,5 +287,12 @@ must move together, and mid-pilot is not the time.
 **~~No way to fail over to a backup RPC.~~ Resolved** — every agent read (Clarity
 read-onlys, balances, tx confirmation) now routes through `src/m1/rpc.ts`, which tries
 `STACKS_API` then each `STACKS_API_FALLBACKS` entry and sticks with whatever works.
+Since C2 this includes the per-cycle pool read and every live broadcast (XYK, DLMM, flash):
+the same signed transaction is resent to the next endpoint on a timeout or transport
+error, never re-signed. Each attempt is bounded by `RPC_TIMEOUT_MS` (default 15 s) and the
+hung request is aborted. A cycle still running after `CYCLE_TIMEOUT_MS` (default 45 min)
+pings the healthcheck "fail" and is journalled (`cycle-timeout`); it is left to finish,
+and no new cycle starts until it does (each skipped interval journals `cycle-skipped` and
+pings "fail" again).
 Remaining setup is operational: pick a second provider and put it in `.env` (see §4).
 With no fallback configured, behaviour is unchanged — one provider, one point of failure.

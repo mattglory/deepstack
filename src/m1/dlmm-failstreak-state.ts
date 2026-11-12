@@ -10,9 +10,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DlmmCounters } from "./agent.js";
+import { pairScopedPath } from "./dlmm-pairs.js";
 
-export function dlmmFailstreakStatePath(): string {
-  return process.env.DLMM_FAILSTREAK_STATE_PATH ?? "journal/dlmm-failstreak.json";
+// An extra DLMM pair (dlmm-pairs.ts) keeps its own counters: journal/dlmm-failstreak.<pair>.json.
+export function dlmmFailstreakStatePath(pair?: string | null): string {
+  return pairScopedPath(process.env.DLMM_FAILSTREAK_STATE_PATH ?? "journal/dlmm-failstreak.json", pair);
 }
 
 // Fail closed (C7, DSA-13): a missing file is a fresh install and reads as {0, 0}, but a

@@ -344,3 +344,25 @@ test("dlmmBasis fallback: a recenter split across cycles keeps the agent's adjus
   recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T23:49:00Z", 2950, 223_000, 0.33));
   assert.deepEqual(readDlmmBasis(), next);
 });
+
+test("extra DLMM pair: its basis and fees live under dlmmPairs; the primary's dlmmBasis and dlmmFees are untouched", async () => {
+  const { setDlmmBasis, loadVenueBases } = await import("./metrics.js");
+  process.env.DLMM_OBSERVE_PAIR = "sbtc-usdcx";
+  try {
+    recordSample("sbtc-stx", "SP1", 1800, { ...dlmmSample("2026-11-12T00:00:00Z", 1000), dlmmPairs: { "stx-sbtc": { valueY: 500, activeBin: -14, binStep: 15, feesY: 0.00001, feesValueY: 2.4, feesSince: "2026-11-11T00:00:00Z" } } });
+    const primaryBefore = loadVenueBases().dlmmBasis;
+    setDlmmBasis({ xQty: 1500, yQty: 0.002, t: "2026-11-12T00:00:00Z" }, "stx-sbtc");
+    const m = JSON.parse(readFileSync(METRICS_PATH, "utf8"));
+    assert.deepEqual(m.dlmmPairs["stx-sbtc"].basis, { xQty: 1500, yQty: 0.002, t: "2026-11-12T00:00:00Z" });
+    assert.ok(m.dlmmPairs["stx-sbtc"].basisSetAt);
+    assert.deepEqual(m.dlmmPairs["stx-sbtc"].fees, { y: 0.00001, valueY: 2.4, since: "2026-11-11T00:00:00Z", t: "2026-11-12T00:00:00Z" });
+    assert.deepEqual(loadVenueBases("stx-sbtc").dlmmBasis, { xQty: 1500, yQty: 0.002, t: "2026-11-12T00:00:00Z" });
+    assert.deepEqual(loadVenueBases("sbtc-usdcx").dlmmBasis, primaryBefore, "the primary's basis is its own");
+    assert.equal(m.samples.at(-1).dlmmPairs["stx-sbtc"].activeBin, -14);
+    // The pair's position gone: its fee figure goes too.
+    recordSample("sbtc-stx", "SP1", 1800, { ...dlmmSample("2026-11-12T00:30:00Z", 1000), dlmmPairs: { "stx-sbtc": { valueY: 0 } } });
+    assert.equal(JSON.parse(readFileSync(METRICS_PATH, "utf8")).dlmmPairs["stx-sbtc"].fees, undefined);
+  } finally {
+    delete process.env.DLMM_OBSERVE_PAIR;
+  }
+});

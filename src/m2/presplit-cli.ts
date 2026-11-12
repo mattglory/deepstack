@@ -20,6 +20,7 @@ import { activePool, contractId } from "../m1/contracts.js";
 import { getPoolState } from "../../src/pool.js";
 import { buildSwapYForX, buildSwapXForY } from "../m1/actions.js";
 import { withRpc } from "../m1/rpc.js";
+import { killFilePresent, killPath } from "../m1/kill.js";
 
 const CHUNK_Y = 500_000_000n; // 500 STX per swap — small vs pool reserves (~0.03%)
 const SLIP_BPS = 100;
@@ -65,6 +66,8 @@ async function main() {
 
   if (Math.abs(gapY) < MIN_GAP_Y) { console.log("already balanced — nothing to do"); return; }
   if (!live) { console.log("preview only — add --yes-mainnet to execute"); return; }
+  // The operational rule above, enforced (C8 / DSA-27): two signers on one wallet race nonces.
+  if (!killFilePresent()) throw new Error(`refusing: pause the agent first (touch ${killPath()}) so the two never send at once`);
 
   const opts = { senderKey: w.key, network: "mainnet" as const, broadcast: true, slippageBps: SLIP_BPS, feeMicroStx: FEE_USTX };
   let remaining = BigInt(Math.floor(Math.abs(gapY) * 1e6)); // µSTX of value to convert

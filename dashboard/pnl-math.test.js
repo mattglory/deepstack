@@ -194,6 +194,9 @@ test("capitalAllocation: counts both positions and free balances, in STX, summin
   assert.ok(Math.abs(a.total - (49.98 + 0.00000886 * 242580 + 1850 + 12640 + 460)) < 1e-6);
   assert.ok(by.dlmm.pct > 80 && by.stx.pct < 1);
   assert.ok(Math.abs(a.parts.reduce((s, p) => s + p.pct, 0) - 100) < 1e-9);
+  // An extra DLMM pair is its own slice.
+  const e = capitalAllocation({ yBase: "0", xBase: "0", mid: 1, dlmmValueY: 300, dlmmPairs: { "stx-sbtc": { valueY: 100 } } });
+  assert.deepEqual(e.parts.map((p) => [p.label, p.pct]), [["DLMM position", 75], ["DLMM stx-sbtc", 25]]);
   // Empty parts are left out; no positions and no balances → nothing to draw.
   assert.equal(capitalAllocation({ yBase: "0", xBase: "0", mid: 1 }).parts.length, 0);
 });

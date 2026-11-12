@@ -77,6 +77,8 @@ export function capitalAllocation(s) {
     { key: "sbtc", label: "Free sBTC", valueY: s.mid > 0 ? (Number(s.xBase ?? 0) / 1e8) * s.mid : 0 },
     { key: "xyk", label: "XYK position", valueY: s.lpValueY ?? 0 },
     { key: "dlmm", label: "DLMM position", valueY: s.dlmmValueY ?? 0 },
+    // Extra DLMM pairs (src/m1/dlmm-pairs.ts), one slice each.
+    ...Object.entries(s.dlmmPairs ?? {}).map(([pair, p]) => ({ key: "dlmm-extra", label: `DLMM ${pair}`, valueY: p?.valueY ?? 0 })),
     { key: "usdcx", label: "Free USDCx", valueY: s.freeUsdcxValueY ?? 0 },
   ].filter((p) => p.valueY > 0);
   const total = parts.reduce((a, p) => a + p.valueY, 0);

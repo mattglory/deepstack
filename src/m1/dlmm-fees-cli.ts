@@ -10,7 +10,7 @@
 import { getWallet } from "./wallet.js";
 import { DLMM_POOLS } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
-import { loadDeposit, clearDeposit, feesEarned } from "./dlmm-fees.js";
+import { loadDeposit, clearDeposit, feesEarned, depositPath } from "./dlmm-fees.js";
 import { recordDepositFromTx } from "./dlmm-fees-record.js";
 
 const argv = process.argv.slice(2);
@@ -18,21 +18,23 @@ const [cmd, txid] = argv.filter((a) => !a.startsWith("--"));
 
 async function main(): Promise<void> {
   const w = await getWallet();
-  const pair = process.env.DLMM_OBSERVE_PAIR ?? "sbtc-usdcx";
+  // DLMM_PAIR picks an extra pair (dlmm-pairs.ts), whose record is its own file.
+  const pair = process.env.DLMM_PAIR ?? process.env.DLMM_OBSERVE_PAIR ?? "sbtc-usdcx";
+  const path = depositPath(pair);
   const poolDef = DLMM_POOLS.find((p) => p.key === pair);
   if (!poolDef) throw new Error(`unknown pool ${pair}`);
 
   if (cmd === "seed") {
     if (!/^0x[0-9a-f]{64}$/.test(txid ?? "")) throw new Error("usage: m1:dlmm-fees -- seed <0x txid> [--replace]");
-    if (argv.includes("--replace")) clearDeposit();
-    if (loadDeposit()?.txids.includes(txid)) return void console.log("already recorded; nothing to do");
+    if (argv.includes("--replace")) clearDeposit(path);
+    if (loadDeposit(path)?.txids.includes(txid)) return void console.log("already recorded; nothing to do");
     const ok = await recordDepositFromTx(txid, w.address, pair, (m) => console.log(m));
     if (!ok) process.exitCode = 1;
     return;
   }
   if (cmd !== "show") throw new Error("usage: m1:dlmm-fees -- show | seed <txid> [--replace]");
 
-  const dep = loadDeposit();
+  const dep = loadDeposit(path);
   if (!dep || dep.pool !== pair || dep.owner !== w.address) return void console.log("no deposit recorded for this wallet's position (use seed <txid>)");
   const pos = await readUserPosition(poolDef, w.address);
   const f = feesEarned(dep, pos.bins);

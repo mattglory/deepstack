@@ -283,8 +283,10 @@ export function dlmmLiveGate(opts: {
   dlmmFailStreakLimit: number;
   dlmmRecenters: number;
   maxTrades: number;
+  network: string; // the wallet's network: the DLMM executor hardcodes "mainnet" (C8 / DSA-26)
 }): boolean {
   return (
+    opts.network === "mainnet" &&
     opts.dlmmLiveFlag &&
     opts.live &&
     opts.circuitOk &&
@@ -355,8 +357,10 @@ export function flashLiveGate(opts: {
   flashFailStreakLimit: number;
   flashAttempts: number;
   maxTrades: number;
+  network: string; // the wallet's network: the flash executor hardcodes "mainnet" (C8 / DSA-26)
 }): boolean {
   return (
+    opts.network === "mainnet" &&
     opts.flashLiveFlag &&
     opts.live &&
     opts.circuitOk &&

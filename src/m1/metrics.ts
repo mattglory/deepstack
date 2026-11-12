@@ -11,6 +11,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 import { execSync } from "node:child_process";
+import { isPrimaryPair } from "./dlmm-pairs.js";
 
 export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json";
 // Owner deposits/withdrawals live in their own file, written only by capital-flow-cli, so the
@@ -67,6 +68,8 @@ export interface MetricsSample {
   dlmmActiveBin?: number; // DLMM pool's active bin this tick (absent when the read failed) — the vol source for range width
   dlmmBinStep?: number; // that pool's bin step in bps, so a bin series is never mixed across pools
   dlmmFeesUsdcx?: number; // fees the DLMM position has earned since its deposit, from chain data (dlmm-fees.ts)
+  // Extra DLMM pairs (dlmm-pairs.ts), keyed by pair. The primary pair keeps the fields above.
+  dlmmPairs?: Record<string, DlmmPairSample>;
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
   // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y
@@ -80,6 +83,22 @@ export interface MetricsSample {
 // the outside world, not a trading result. `stx` is signed, in STX: negative = withdrawn.
 // Added 2026-10-22 after two owner withdrawals (65 STX on 10-14, 700 STX on 10-22) showed up as
 // losses on the dashboard's HODL comparison and as drawdown in the agent's own risk checks.
+export interface DlmmPairSample {
+  valueY: number; // position value in y (STX), included in portfolioY
+  activeBin?: number; // absent when the read failed, like dlmmActiveBin
+  binStep?: number;
+  feesY?: number; // fees earned since the deposit, in the pair's own y-token units (dlmm-fees.ts)
+  feesValueY?: number; // the same fees in y (STX)
+  feesSince?: string;
+}
+
+/** Per-pair basis and fees of an extra DLMM pair; the primary pair keeps dlmmBasis/dlmmFees. */
+export interface DlmmPairState {
+  basis?: { xQty: number; yQty: number; t: string };
+  basisSetAt?: string;
+  fees?: { y: number; valueY?: number; since: string; t: string };
+}
+
 export interface CapitalFlow { t: string; txid: string; stx: number; note?: string }
 // The same capital moved from one agent address to another. The transfers are not capital flows:
 // nothing entered or left the operation, it changed address.
@@ -142,6 +161,7 @@ export interface MetricsFile {
   walletMigrations?: WalletMigration[];
   // Latest on-chain fee figure for the current DLMM position (dlmm-fees.ts), with its deposit time.
   dlmmFees?: { usdcx: number; since: string; t: string };
+  dlmmPairs?: Record<string, DlmmPairState>;
   updated: string;
   deployedCommit?: string; // short git hash running when `updated` was written
 }
@@ -216,9 +236,11 @@ export function loadHistory(): MetricsSample[] {
  * allocator), rather than re-deriving or guessing it — see pnl-math.js's organicApr() for
  * the formula these bases feed.
  */
-export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?: MetricsFile["dlmmBasis"] } {
+export function loadVenueBases(pair?: string | null): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?: MetricsFile["dlmmBasis"] } {
   const m = loadOrNull();
-  return { lpBasis: m?.lpBasis, dlmmBasis: m?.dlmmBasis };
+  // An extra DLMM pair's basis lives under dlmmPairs (dlmm-pairs.ts); the primary's is dlmmBasis.
+  const dlmmBasis = isPrimaryPair(pair) ? m?.dlmmBasis : m?.dlmmPairs?.[pair as string]?.basis;
+  return { lpBasis: m?.lpBasis, dlmmBasis };
 }
 
 /**
@@ -374,6 +396,13 @@ export function recordSample(
     if (migrations.length) m.walletMigrations = migrations;
     if (s.dlmmFeesUsdcx != null && extra.dlmmFeesSince) m.dlmmFees = { usdcx: s.dlmmFeesUsdcx, since: extra.dlmmFeesSince, t: s.t };
     else if (!((s.dlmmValueY ?? 0) > 0)) delete m.dlmmFees; // no position: no fee figure
+    // Extra pairs: the same fee rule per pair. Their basis is only ever set explicitly (the
+    // recenter's open/re-add, or set-basis), never by the primary's 50/50 fallback above.
+    for (const [pair, ps] of Object.entries(s.dlmmPairs ?? {})) {
+      const st = ((m.dlmmPairs ??= {})[pair] ??= {});
+      if (ps.feesY != null && ps.feesSince) st.fees = { y: ps.feesY, ...(ps.feesValueY != null ? { valueY: ps.feesValueY } : {}), since: ps.feesSince, t: s.t };
+      else if (!(ps.valueY > 0)) delete st.fees;
+    }
     m.updated = s.t;
     m.deployedCommit = deployedCommit();
     writeMetrics(m);
@@ -457,11 +486,16 @@ export function adjustLpBasis(
  * position, repositioned to new bins) — that correctly keeps the existing basis, since no new
  * capital entered; only a genuine fresh open (first-ever, or a deliberate resize) should reset it.
  */
-export function setDlmmBasis(basis: { xQty: number; yQty: number; t: string } | null): void {
+export function setDlmmBasis(basis: { xQty: number; yQty: number; t: string } | null, pair?: string | null): void {
   try {
     const m = load();
     if (!m) return;
-    if (basis) { m.dlmmBasis = basis; m.dlmmBasisSetAt = new Date().toISOString(); }
+    if (!isPrimaryPair(pair)) {
+      // An extra DLMM pair (dlmm-pairs.ts): its own basis, never the primary's dlmmBasis.
+      const st = ((m.dlmmPairs ??= {})[pair as string] ??= {});
+      if (basis) { st.basis = basis; st.basisSetAt = new Date().toISOString(); }
+      else { delete st.basis; delete st.basisSetAt; }
+    } else if (basis) { m.dlmmBasis = basis; m.dlmmBasisSetAt = new Date().toISOString(); }
     else { delete m.dlmmBasis; delete m.dlmmBasisSetAt; }
     writeMetrics(m);
   } catch (err) {

@@ -16,6 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { pairScopedPath } from "./dlmm-pairs.js";
 
 export interface DepositBin { bin: number; x: bigint; y: bigint; price: bigint } // base units; price = y per x × 1e8
 export interface DlmmDeposit { pool: string; owner: string; t: string; txids: string[]; bins: DepositBin[] }
@@ -73,8 +74,9 @@ export function feesEarned(dep: DlmmDeposit, held: HeldBin[]): { feesY: bigint; 
 
 // ---- the record on disk (journal/ survives deploys) ----
 
-export function depositPath(): string {
-  return process.env.DLMM_DEPOSIT_PATH ?? "journal/dlmm-deposit.json";
+// An extra DLMM pair (dlmm-pairs.ts) keeps its own: journal/dlmm-deposit.<pair>.json.
+export function depositPath(pair?: string | null): string {
+  return pairScopedPath(process.env.DLMM_DEPOSIT_PATH ?? "journal/dlmm-deposit.json", pair);
 }
 
 export function loadDeposit(path = depositPath()): DlmmDeposit | null {

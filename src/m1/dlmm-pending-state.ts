@@ -7,6 +7,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { pairScopedPath } from "./dlmm-pairs.js";
 
 export interface PendingReadd {
   pair: string;
@@ -21,8 +22,9 @@ export interface PendingReadd {
   pendingSwap?: { txid: string; direction: "x-for-y" | "y-for-x" };
 }
 
-export function pendingStatePath(): string {
-  return process.env.DLMM_PENDING_STATE_PATH ?? "journal/dlmm-pending-readd.json";
+// An extra DLMM pair (dlmm-pairs.ts) keeps its own: journal/dlmm-pending-readd.<pair>.json.
+export function pendingStatePath(pair?: string | null): string {
+  return pairScopedPath(process.env.DLMM_PENDING_STATE_PATH ?? "journal/dlmm-pending-readd.json", pair);
 }
 
 export function loadPending(path = pendingStatePath()): PendingReadd | null {

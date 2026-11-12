@@ -182,15 +182,16 @@ export function sizeTwoSidedDeposit(
   availYBase: bigint, // Y (USDCx) available, in Y base units
   xDecimals = 6, // X token decimals (STX/USDCx = 6, sBTC = 8)
   yDecimals = 6, // Y (USDCx) decimals
+  yPriceUsd = 1, // USD price of Y: 1 for USDCx, BTC/USD when Y is sBTC (stx-sbtc)
 ): TwoSidedSize {
-  if (!(targetValueUsd > 0) || !(xPriceUsd > 0)) return { xBase: 0n, yBase: 0n, valueUsd: 0 };
+  if (!(targetValueUsd > 0) || !(xPriceUsd > 0) || !(yPriceUsd > 0)) return { xBase: 0n, yBase: 0n, valueUsd: 0 };
   const halfUsd = targetValueUsd / 2;
   const xUnit = 10 ** xDecimals, yUnit = 10 ** yDecimals;
-  let yBase = BigInt(Math.floor(halfUsd * yUnit)); // Y is USDCx ≈ $1
+  let yBase = BigInt(Math.floor((halfUsd / yPriceUsd) * yUnit)); // Y worth ~halfUsd
   let xBase = BigInt(Math.floor((halfUsd / xPriceUsd) * xUnit)); // X worth ~halfUsd
   if (yBase > availYBase) yBase = availYBase < 0n ? 0n : availYBase;
   if (xBase > availXBase) xBase = availXBase < 0n ? 0n : availXBase;
-  const valueUsd = (Number(xBase) / xUnit) * xPriceUsd + Number(yBase) / yUnit;
+  const valueUsd = (Number(xBase) / xUnit) * xPriceUsd + (Number(yBase) / yUnit) * yPriceUsd;
   return { xBase, yBase, valueUsd };
 }
 

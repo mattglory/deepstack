@@ -4,7 +4,8 @@
 // Each cycle: safety gate → (if LP enabled) move toward target LP allocation →
 // else rebalance free inventory toward the target x/y value split via swaps.
 // OBSERVE by default; LIVE requires --live AND --yes-mainnet, mainnet-only, caps,
-// fee headroom, and per-tx confirmation, capped at --max-trades per run.
+// fee headroom, and per-tx confirmation, capped at --max-trades successful XYK trades over the
+// agent's lifetime (persisted, journal/xyk-trades.json).
 //
 //   npm run m1:agent
 //   PAIR=stx-aeusdc npm run m1:agent -- --interval 60
@@ -22,7 +23,9 @@ import {
   type BuiltTx,
 } from "./actions.js";
 import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
-import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
+import { loadDlmmCounters, saveDlmmCounters, dlmmFailstreakStatePath } from "./dlmm-failstreak-state.js";
+import { extraDlmmPairs, extraPairsLive, pairSetting } from "./dlmm-pairs.js";
+import { extraPairsValueY } from "./dlmm-extra-value.js";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
@@ -31,20 +34,25 @@ import { scanStstxGap } from "./ststx-gap.js";
 import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmVol, pinnedHalfWidth } from "./dlmm-recenter-exec.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { loadDeposit, feesEarned } from "./dlmm-fees.js";
-import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, pinMismatch } from "./dlmm-read.js";
+import { isKilled } from "./kill.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
 import { checkNonceSafety } from "./nonce-safety.js";
-import { recordSample, loadHistory, adjustLpBasis, currentDrawdown, loadCapitalFlows, withdrawnStx } from "./metrics.js";
+import { type DlmmPairSample } from "./metrics.js";
+import { recordSample, loadHistory, adjustLpBasis, currentDrawdown, loadCapitalFlows, withdrawnStx, loadWalletMigrations } from "./metrics.js";
+import { loadXykTrades, saveXykTrades, loadDrawdownBaseline, saveDrawdownBaseline, baselineMismatch, drawdownBaselinePath } from "./risk-state.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
 import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
 import { createSupervisor, briefError, type Supervisor } from "./supervise.js";
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 // Per-tick journal record (audit trail); assembled across act()/refuse()/broadcastResult()
 // and flushed once per tick in step(). See src/m1/journal.ts.
@@ -81,7 +89,7 @@ async function waitForTx(txid: string) {
     await sleep(5000);
     try {
       const j = await withRpc(async (base) => {
-        const r = await fetch(`${base}/extended/v1/tx/${txid}`);
+        const r = await hiroFetch(base)(`${base}/extended/v1/tx/${txid}`); // aborted on timeout (C2)
         if (!r.ok) throw new Error(`tx fetch → ${r.status}`);
         return (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
       });
@@ -108,6 +116,8 @@ interface Snapshot {
   dlmmBinStep?: number;
   dlmmFeesUsdcx?: number;
   dlmmFeesSince?: string;
+  dlmmPairs: Record<string, DlmmPairSample>; // extra DLMM pairs (dlmm-pairs.ts), valued in Y
+  extraDlmmValueY: number; // their positions plus any free balance nobody else counts
   portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
@@ -184,6 +194,11 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
       return last;
     }
     const [pos, xTok, yTok] = await Promise.all([readUserPosition(poolDef, w.address), resolveToken(st.xToken), resolveToken(st.yToken)]);
+    const mismatch = pinMismatch(poolDef, st, xTok, yTok); // C4: never value with RPC-substituted tokens/decimals
+    if (mismatch) {
+      console.warn(`  [dlmm-value] ⛔ pool does not match its pinned definition (${mismatch}) — skipping DLMM valuation this tick`);
+      return last;
+    }
     const usdPerStx = await stxPriceUsd();
     lastUsdPerStx = usdPerStx;
     const xValueY = (Number(pos.totalX) / 10 ** xTok.decimals) * midXinY;
@@ -227,7 +242,13 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
   }
   const freeValueY = xH * pool.midXinY + yH;
   const { dlmmValueY, freeUsdcxValueY, usdPerStx, activeBin: dlmmActiveBin, binStep: dlmmBinStep, feesUsdcx: dlmmFeesUsdcx, feesSince: dlmmFeesSince } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
-  const portfolioY = freeValueY + lpValueY + dlmmValueY + freeUsdcxValueY;
+  // Extra DLMM pairs (dlmm-pairs.ts). A bad DLMM_EXTRA_PAIRS is reported by the DLMM step and
+  // values nothing here; the primary pair's y-token free balance is already counted above.
+  let extras: string[] = [];
+  try { extras = extraDlmmPairs(); } catch { /* reported by the DLMM step */ }
+  const primaryPin = DLMM_POOLS.find((p) => p.key === process.env.DLMM_OBSERVE_PAIR)?.pin;
+  const extra = await extraPairsValueY(w, extras, pool.midXinY, usdPerStx, primaryPin ? [`${primaryPin.yToken}::${primaryPin.yAsset}`] : []);
+  const portfolioY = freeValueY + lpValueY + dlmmValueY + freeUsdcxValueY + extra.totalValueY;
   const yFraction = freeValueY > 0 ? yH / freeValueY : 0;
   return {
     midXinY: pool.midXinY,
@@ -244,6 +265,8 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     dlmmBinStep,
     dlmmFeesUsdcx,
     dlmmFeesSince,
+    dlmmPairs: extra.pairs,
+    extraDlmmValueY: extra.totalValueY,
     portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
@@ -293,6 +316,7 @@ async function act(
     `  free: ${s.xHuman} ${x.symbol} + ${s.yHuman} ${y.symbol} | ` +
       `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueY.toFixed(2)} ${y.symbol}) | ` +
       `DLMM: ~${s.dlmmValueY.toFixed(2)} ${y.symbol}${s.dlmmFeesUsdcx != null ? ` (fees earned ${s.dlmmFeesUsdcx.toFixed(2)} USDCx)` : ""} | free-USDCx: ~${s.freeUsdcxValueY.toFixed(2)} ${y.symbol} | ` +
+      (Object.keys(s.dlmmPairs).length ? `DLMM extra: ${Object.entries(s.dlmmPairs).map(([k, v]) => `${k} ~${v.valueY.toFixed(2)}`).join(", ")} ${y.symbol} | ` : "") +
       `portfolio ~${s.portfolioY.toFixed(2)} ${y.symbol}`,
   );
 
@@ -391,6 +415,7 @@ async function act(
     dlmmActiveBin: s.dlmmActiveBin,
     dlmmBinStep: s.dlmmBinStep,
     dlmmFeesUsdcx: s.dlmmFeesUsdcx,
+    ...(Object.keys(s.dlmmPairs).length ? { dlmmPairs: s.dlmmPairs } : {}),
     portfolioY: s.portfolioY,
     safe: safety.safe,
     poolX: s.xReserve,
@@ -407,6 +432,7 @@ async function act(
     broadcast: true,
     slippageBps: params.slippageBps,
     feeMicroStx: FEE_USTX,
+    refMidXinY: s.externalMid ?? undefined, // floors swap min-outs by the reference (C5)
   };
 
   // Free inventory minus the native-STX fee reserve: neither rule below may spend the gas the
@@ -441,6 +467,7 @@ async function act(
       if (w.network !== "mainnet") return refuse("not mainnet");
       const nativeNeed = FEE_USTX + (lp.action === "add-liquidity" && x.native ? lp.xBase : 0n);
       if (s.nativeStxMicro < nativeNeed) return refuse("insufficient native STX for fee");
+      if (isKilled()) return refuse("kill switch engaged"); // re-checked right before the broadcast (C8)
       console.log("  → broadcasting…");
       const built =
         lp.action === "add-liquidity"
@@ -534,6 +561,7 @@ async function act(
       flashFailStreakLimit: flashCtx.failStreakLimit,
       flashAttempts: flashCtx.attempts,
       maxTrades: flashCtx.maxTrades,
+      network: w.network,
     });
     if (flashLive) {
       try {
@@ -563,6 +591,7 @@ async function act(
   const inputNative = d.action === "swap-y-for-x" ? y.native : x.native;
   const nativeNeed = FEE_USTX + (inputNative ? d.amountBase : 0n);
   if (s.nativeStxMicro < nativeNeed) return refuse("insufficient native STX for amount + fee");
+  if (isKilled()) return refuse("kill switch engaged"); // re-checked right before the broadcast (C8)
   console.log("  → broadcasting…");
   const built =
     d.action === "swap-y-for-x"
@@ -634,7 +663,7 @@ function applyAllocation(
   };
 }
 
-async function main() {
+export async function main() {
   const f = flags();
   const live = f.live && f.yesMainnet;
   const cfg = activePool();
@@ -649,7 +678,11 @@ async function main() {
   if (params.targetLpFraction > 0)
     console.log(`LP enabled: target ${(params.targetLpFraction * 100).toFixed(0)}% of portfolio`);
 
-  let trades = 0;
+  // Lifetime XYK trade count behind --max-trades, persisted (risk-state.ts, C1 / DSA-07): a
+  // restart used to start it at 0 and re-arm the whole budget. Unreadable file = budget
+  // exhausted (observe-only). Operator reset: delete journal/xyk-trades.json.
+  const xykLoad = loadXykTrades();
+  let { trades } = xykLoad;
   // Sep 21 2026: a bad min-dlp guard made every DLMM add abort, and nothing stopped the agent
   // retrying it every cycle — 15 failed broadcasts over ~7 hours before a human noticed and
   // killed it by hand. Root cause is now fixed (see dlmm-recenter-exec.ts's per-bin min-dlp),
@@ -666,16 +699,48 @@ async function main() {
   // be exceeded just by restarting. A human clears dlmmFailStreak explicitly by deleting (or
   // editing) the state file — an ordinary restart no longer clears either counter. The
   // transition rules themselves (nextDlmmCounters, agent.ts) are unit-tested separately.
-  let { failStreak: dlmmFailStreak, recenters: dlmmRecenters } = loadDlmmCounters();
+  const dlmmLoad = loadDlmmCounters();
+  let { failStreak: dlmmFailStreak, recenters: dlmmRecenters } = dlmmLoad;
   const DLMM_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.DLMM_FAIL_STREAK_LIMIT ?? 2));
   // Same restart-survival discipline for the autonomous flash-rebalance path (OFF by default
   // via FLASH_LIVE) — a drift correction too large for the direct-swap cap uses FlashStack's
   // flash loan instead of a plain swap, gated by flashLiveGate() exactly like DLMM's gate.
-  let { failStreak: flashFailStreak, attempts: flashAttempts } = loadFlashCounters();
+  const flashLoad = loadFlashCounters();
+  let { failStreak: flashFailStreak, attempts: flashAttempts } = flashLoad;
   const FLASH_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.FLASH_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
+  // Drawdown baseline for the 15% halt, persisted (risk-state.ts, C1 / DSA-07): a restart used to
+  // re-baseline at the current, possibly post-loss, value. Taken once, at the first successful
+  // read with no baseline file; kept across restarts and across recorded key rotations; owner
+  // withdrawals recorded after sessionStartT are added back below. An unreadable file, or one
+  // for another pair / an unrelated wallet, is NOT replaced: every cycle halts (baselineProblem)
+  // until a human inspects it. Operator reset: delete journal/drawdown-baseline.json.
   let sessionStart = 0;
   let sessionStartT = ""; // when sessionStart was read: withdrawals after it are added back
+  let baselineProblem: string | null = null;
+  const storedBaseline = loadDrawdownBaseline();
+  if (storedBaseline.kind === "corrupt") {
+    baselineProblem = `unreadable (${storedBaseline.why})`;
+  } else if (storedBaseline.kind === "ok") {
+    const b = storedBaseline.baseline;
+    baselineProblem = baselineMismatch(b, cfg.key, w.address, loadWalletMigrations());
+    if (baselineProblem === null) {
+      sessionStart = b.portfolioY;
+      sessionStartT = b.t;
+      if (b.wallet !== w.address) saveDrawdownBaseline({ ...b, wallet: w.address }); // followed a recorded rotation
+      console.log(`drawdown baseline: ${b.portfolioY} ${cfg.y.symbol} since ${b.t} (persisted)`);
+    }
+  }
+  // State files that fail closed and need a human to clear them. Unlike an ordinary safety halt
+  // (which clears itself when the condition passes), these never clear on their own, so every
+  // cycle journals "risk-state-unreadable" and pings the healthcheck "fail" until they are fixed.
+  const riskStateProblems = [
+    ...(xykLoad.corrupt ? ["XYK trade count unreadable (budget treated as exhausted)"] : []),
+    ...(baselineProblem ? [`drawdown baseline unusable: ${baselineProblem}`] : []),
+    ...(dlmmLoad.corrupt ? ["DLMM fail-streak state unreadable (treated as tripped)"] : []),
+    ...(flashLoad.corrupt ? ["flash fail-streak state unreadable (treated as tripped)"] : []),
+  ];
+  if (baselineProblem) console.error(`⛔ DRAWDOWN BASELINE UNUSABLE — ${baselineProblem}. All trading halts until a human inspects and deletes ${drawdownBaselinePath()}.`);
   // Forward reference: the supervisor is created after step() below (it wraps step itself),
   // but step's own circuit-breaker check needs its live streak. Assigned once, right after
   // creation, before runStep() ever calls step() — closures capture the variable, not its
@@ -697,9 +762,16 @@ async function main() {
     // Same role as dlmmFailedThisTick, for the autonomous flash-rebalance path below.
     let flashFailedThisTick = false;
     const snap = await readMarket(w);
-    if (sessionStart === 0) {
+    if (sessionStart === 0 && baselineProblem === null && snap.portfolioY > 0) {
       sessionStart = snap.portfolioY;
       sessionStartT = new Date().toISOString();
+      saveDrawdownBaseline({ portfolioY: sessionStart, t: sessionStartT, pair: cfg.key, wallet: w.address });
+      // Audit trail (assessment R3-1): a missing baseline file looks exactly like a fresh install,
+      // so deleting it (the documented reset) or losing journal/ re-baselines the 15% halt at the
+      // current value. Every new baseline is therefore journalled and pinged, so a reset is
+      // never silent and always has a timestamped record next to the agent's other events.
+      console.error(`⚠ NEW DRAWDOWN BASELINE: ${sessionStart} ${cfg.y.symbol} for ${w.address} (${cfg.key}). If this is not a fresh install, the previous baseline was reset.`);
+      appendJournal({ t: sessionStartT, type: "drawdown-baseline-set", portfolioY: sessionStart, pair: cfg.key, wallet: w.address });
     }
     if (i % f.tuneEvery === 0) {
       const tuned = await tuneParams(snap.market, defaultParams());
@@ -763,9 +835,16 @@ async function main() {
       },
       defaultSafetyParams(),
     );
+    if (baselineProblem) {
+      safety.safe = false;
+      safety.reasons.push(`drawdown baseline unusable: ${baselineProblem} (delete the file to re-baseline)`);
+    }
     try {
       const flashCtx = { live, circuitOk, failStreak: flashFailStreak, failStreakLimit: FLASH_FAIL_STREAK_LIMIT, attempts: flashAttempts, maxTrades: f.maxTrades };
-      if (await act(w, snap, params, xykLiveGate({ live, circuitOk, trades, maxTrades: f.maxTrades }), sessionStart, f.interval, safety, flashCtx)) trades++;
+      if (await act(w, snap, params, xykLiveGate({ live, circuitOk, trades, maxTrades: f.maxTrades }), sessionStart, f.interval, safety, flashCtx)) {
+        trades++;
+        saveXykTrades(trades);
+      }
       const flash = tickJournal.flash as { attempted?: boolean; executed?: boolean } | undefined;
       if (flash?.attempted) {
         ({ failStreak: flashFailStreak, attempts: flashAttempts } = nextFlashCounters(
@@ -776,6 +855,7 @@ async function main() {
         if (!flash.executed) flashFailedThisTick = true;
       }
     } finally {
+      if (riskStateProblems.length) Object.assign(tickJournal, { alert: "risk-state-unreadable", riskStateProblems });
       appendJournal(tickJournal); // one journal line per tick, whatever happened
       // Cross-pool spread observations (read-only) — the dataset that decides whether
       // atomic cross-venue arb is worth building. See crosspool.ts.
@@ -822,6 +902,7 @@ async function main() {
             dlmmFailStreakLimit: DLMM_FAIL_STREAK_LIMIT,
             dlmmRecenters,
             maxTrades: f.maxTrades,
+            network: w.network,
           });
           const { sigmaDaily, source: volSource } = dlmmVol();
           const pinned = pinnedHalfWidth();
@@ -852,6 +933,56 @@ async function main() {
           appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message, dlmmFailStreak });
         }
       }
+      // Extra DLMM pairs (dlmm-pairs.ts): the same recenter path, each pair with its own counters,
+      // pending re-add, deposit record, basis and settings (<NAME>__<PAIR>). Broadcasts only with
+      // DLMM_LIVE=1 AND DLMM_EXTRA_LIVE=1, never without the pair's own DLMM_TARGET_USD__<PAIR>,
+      // and never opens a position (recenterOnce holds an extra pair with no position).
+      let extraPairs: string[] = [];
+      try {
+        extraPairs = extraDlmmPairs();
+      } catch (e) {
+        console.log(`  [dlmm] ⛔ ${(e as Error).message} — extra pairs skipped`);
+        appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message });
+        dlmmFailedThisTick = true;
+      }
+      for (const pair of extraPairs) {
+        const statePath = dlmmFailstreakStatePath(pair);
+        let { failStreak: pFail, recenters: pRecenters } = loadDlmmCounters(statePath);
+        let pLive = false;
+        try {
+          const targetUsd = Number(pairSetting("DLMM_TARGET_USD", pair) ?? NaN);
+          const halfWidth = Math.max(1, Math.min(50, Number(pairSetting("DLMM_HALF_WIDTH", pair) ?? 3)));
+          if (!(targetUsd > 0)) console.log(`  [dlmm ${pair}] no DLMM_TARGET_USD__${pair.toUpperCase().replace(/-/g, "_")} set — observe only`);
+          if (pFail >= DLMM_FAIL_STREAK_LIMIT) console.log(`  [dlmm ${pair}] ⛔ ${pFail} consecutive failed adds ≥ ${DLMM_FAIL_STREAK_LIMIT} — broadcasts stopped until manually reset (${statePath})`);
+          pLive = targetUsd > 0 && extraPairsLive() && dlmmLiveGate({
+            dlmmLiveFlag: true,
+            live,
+            circuitOk,
+            safe: safety.safe,
+            dlmmFailStreak: pFail,
+            dlmmFailStreakLimit: DLMM_FAIL_STREAK_LIMIT,
+            dlmmRecenters: pRecenters,
+            maxTrades: f.maxTrades,
+            network: w.network,
+          });
+          const { sigmaDaily, source: volSource } = dlmmVol(pair);
+          const pinned = pinnedHalfWidth(pair);
+          const res = await recenterOnce(w, { pair, halfWidth, targetUsd: targetUsd > 0 ? targetUsd : 1, sigmaDaily }, pLive, (m) => console.log(m));
+          const attempted = pLive && res.action !== "hold" && !res.skipped;
+          ({ failStreak: pFail, recenters: pRecenters } = nextDlmmCounters({ failStreak: pFail, recenters: pRecenters }, { executed: res.executed, attempted }));
+          if ((!res.executed && attempted) || res.alert) dlmmFailedThisTick = true;
+          if (attempted) saveDlmmCounters({ failStreak: pFail, recenters: pRecenters }, statePath);
+          appendJournal({ t: new Date().toISOString(), type: pLive ? "dlmm-recenter" : "dlmm-observe", pair, sigmaDaily, volSource, dlmmFailStreak: pFail, ...res });
+          console.log(`  [dlmm ${pair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${pinned !== null ? " (pinned)" : ""}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day, ${volSource})` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : pLive ? "" : " (observe)"}`);
+        } catch (e) {
+          if (pLive) {
+            ({ failStreak: pFail, recenters: pRecenters } = nextDlmmCounters({ failStreak: pFail, recenters: pRecenters }, { executed: false, attempted: true }));
+            dlmmFailedThisTick = true;
+            saveDlmmCounters({ failStreak: pFail, recenters: pRecenters }, statePath);
+          }
+          appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", pair, error: (e as Error).message, dlmmFailStreak: pFail });
+        }
+      }
       // Haven rotation (haven.ts): the full stablecoin capital-preservation reflex. Armed
       // but DORMANT — decides what it would do and whether a USDCx route is deep enough to
       // act, using the pools just scanned. Journalled so the day a real USDCx pool launches
@@ -875,7 +1006,7 @@ async function main() {
       // root cause and would have surfaced here too, had this existed then. A good XYK cycle
       // still pings "ok" even when DLMM, flash, or publish fails — a signal to look, not a
       // claim the whole tick failed.
-      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed ? "fail" : "ok");
+      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed || riskStateProblems.length ? "fail" : "ok");
     }
   };
 
@@ -891,7 +1022,56 @@ async function main() {
       console.error(`  ⚠ ${consecutive} consecutive failures — circuit breaker active, no new trades until one succeeds. Check RPC/network.`);
   });
   supervisorRef = supervisor; // step()'s circuit-breaker check reads this each cycle
-  const runStep = () => supervisor.run(step);
+
+  // Cycle watchdog (C2 / DSA-08). A cycle still running after CYCLE_TIMEOUT_MS is reported as
+  // failed (journal "cycle-timeout" + healthcheck fail), but NOT aborted: it may be mid broadcast
+  // sequence (a DLMM withdraw → swaps → re-add), and abandoning that loses the state the
+  // sequence persists as it goes. Instead no new cycle starts while it runs: every interval that
+  // finds it still in flight is skipped and pings fail again, so a hung agent stays loud.
+  //
+  // Default 45 min, from the code's own confirmation budgets: one cycle can legitimately do an
+  // XYK swap (waitForTx: 24 x 5 s = 2 min) or a flash rebalance (2 waits x 40 x 6 s = 8 min), and
+  // then a DLMM recenter (withdraw + up to READD_MAX_CHUNKS = 6 swaps + re-add = 8 waits x
+  // 40 x 6 s = 32 min) — 40 min of poll sleeps before any read time. A lower bound would flag
+  // healthy slow recenters. The --interval sleep starts after a cycle ends, so cycles longer than
+  // the interval never overlapped; the skip below keeps it that way after the watchdog fires.
+  // Validated (assessment R3-2): Number("45m") is NaN and setTimeout(NaN) fires after ~1 ms, so a
+  // typo made every cycle a "timeout"; values above 2^31-1 ms overflow the same way.
+  const rawCycleTimeout = process.env.CYCLE_TIMEOUT_MS;
+  const CYCLE_TIMEOUT_MS = rawCycleTimeout === undefined || rawCycleTimeout === "" ? 45 * 60_000 : Number(rawCycleTimeout);
+  if (!Number.isInteger(CYCLE_TIMEOUT_MS) || CYCLE_TIMEOUT_MS < 60_000 || CYCLE_TIMEOUT_MS > 2_147_483_647) {
+    throw new Error(`CYCLE_TIMEOUT_MS must be whole milliseconds from 60000 to 2147483647, got "${rawCycleTimeout}"`);
+  }
+  let inFlight: Promise<boolean> | null = null;
+  const runStep = async (): Promise<void> => {
+    if (inFlight) {
+      console.error("  ⛔ previous cycle still running (past the watchdog) — skipping this cycle");
+      appendJournal({ t: new Date().toISOString(), type: "cycle-skipped", reason: "previous cycle still running" });
+      await pingHealthcheck("fail");
+      return;
+    }
+    const started = Date.now();
+    const run = supervisor.run(step);
+    inFlight = run;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      run.then(() => false),
+      new Promise<boolean>((r) => (timer = setTimeout(() => r(true), CYCLE_TIMEOUT_MS))),
+    ]);
+    clearTimeout(timer);
+    if (!timedOut) {
+      inFlight = null;
+      return;
+    }
+    console.error(`  ⛔ CYCLE WATCHDOG — cycle still running after ${CYCLE_TIMEOUT_MS / 1000}s; reported as failed, left to finish, no new cycle until it does`);
+    appendJournal({ t: new Date().toISOString(), type: "cycle-timeout", timeoutMs: CYCLE_TIMEOUT_MS });
+    await pingHealthcheck("fail");
+    void run.then(() => {
+      inFlight = null;
+      console.error(`  cycle that passed the watchdog finished after ${Math.round((Date.now() - started) / 1000)}s`);
+      appendJournal({ t: new Date().toISOString(), type: "cycle-late-finish", ms: Date.now() - started });
+    });
+  };
 
   if (f.interval) {
     // Guarded from the first cycle: a blip at startup must not stop the pilot beginning.
@@ -908,7 +1088,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error("agent failed:", err.message);
-  process.exit(1);
-});
+// Start only when this file is the process entrypoint (`node --import tsx src/m1/agent-cli.ts`,
+// as in deploy/deepstack-agent.service), not when a test imports it. realpath because Node
+// resolves the entry module's URL through symlinks but leaves process.argv[1] as typed.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  main().catch((err) => {
+    console.error("agent failed:", err.message);
+    process.exit(1);
+  });
+}
