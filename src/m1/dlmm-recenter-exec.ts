@@ -33,7 +33,8 @@ import { executeDescriptor } from "./dlmm-execute.js";
 import { checkNonceSafety } from "./nonce-safety.js";
 import { briefError } from "./supervise.js";
 import { loadPending, savePending, clearPending, pendingStatePath, type PendingReadd } from "./dlmm-pending-state.js";
-import { clearDeposit } from "./dlmm-fees.js";
+import { clearDeposit, depositPath } from "./dlmm-fees.js";
+import { isPrimaryPair, pairSetting, pairSettingName } from "./dlmm-pairs.js";
 import { recordDepositFromTx } from "./dlmm-fees-record.js";
 import { realizedVolDaily } from "./lvr.js";
 
@@ -57,9 +58,25 @@ import { realizedVolDaily } from "./lvr.js";
 // Since 2026-10-15 the preferred source is the pool's own active-bin series (binSeriesVolDaily
 // in dlmm-recenter.ts), recorded every tick in metrics samples; the implied series below is
 // only the fallback until ~2 days of bin readings exist. See binSeriesVolDaily for why.
-export type DlmmVolSource = "active-bin" | "implied-btcusd";
-export function dlmmVol(): { sigmaDaily: number | null; source: DlmmVolSource | null } {
+//
+// An extra pair (dlmm-pairs.ts) reads its own bin series from the samples' dlmmPairs. Its fallback
+// is the XYK mid (STX per sBTC) for a STX/sBTC pair, the same price; any other extra pair has no
+// fallback and uses its fixed or pinned width until its own bin history exists.
+export type DlmmVolSource = "active-bin" | "implied-btcusd" | "implied-stxsbtc";
+export function dlmmVol(pair?: string | null): { sigmaDaily: number | null; source: DlmmVolSource | null } {
   const hist = loadHistory();
+  if (pair && !isPrimaryPair(pair)) {
+    const own = binSeriesVolDaily(
+      hist
+        .map((s) => ({ t: s.t, p: s.dlmmPairs?.[pair] }))
+        .filter((r) => r.p?.activeBin !== undefined && r.p?.binStep !== undefined)
+        .map((r) => ({ t: r.t, bin: r.p!.activeBin as number, binStep: r.p!.binStep as number })),
+    );
+    if (own !== null) return { sigmaDaily: own, source: "active-bin" };
+    if (pair !== "stx-sbtc") return { sigmaDaily: null, source: null };
+    const implied = realizedVolDaily(hist.filter((s) => s.mid > 0).map((s) => ({ t: s.t, mid: s.mid, lpValueY: 0 })));
+    return { sigmaDaily: implied, source: implied === null ? null : "implied-stxsbtc" };
+  }
   const fromBins = binSeriesVolDaily(
     hist
       .filter((s) => s.dlmmActiveBin !== undefined && s.dlmmBinStep !== undefined)
@@ -73,8 +90,8 @@ export function dlmmVol(): { sigmaDaily: number | null; source: DlmmVolSource | 
   );
   return { sigmaDaily: implied, source: implied === null ? null : "implied-btcusd" };
 }
-export function dlmmSigmaDaily(): number | null {
-  return dlmmVol().sigmaDaily;
+export function dlmmSigmaDaily(pair?: string | null): number | null {
+  return dlmmVol(pair).sigmaDaily;
 }
 
 // The ONE place that decides vol-scaled vs. fixed-fallback half-width — used by recenterOnce()
@@ -85,15 +102,17 @@ export function dlmmSigmaDaily(): number | null {
 // default. It exists so a corrected vol input can ship without silently narrowing the live
 // range: the width is a fee-vs-recenter-loss trade-off decided on measured fee data, not a
 // side effect of a measurement fix (2026-10-15). An explicit CLI --half-width still wins.
-export function pinnedHalfWidth(): number | null {
-  const raw = process.env.DLMM_PIN_HALF_WIDTH;
-  if (raw === undefined || raw.trim() === "") return null;
+// An extra pair is pinned by its own DLMM_PIN_HALF_WIDTH__<PAIR>, never the primary's.
+export function pinnedHalfWidth(pair?: string | null): number | null {
+  const raw = pairSetting("DLMM_PIN_HALF_WIDTH", pair);
+  if (raw === undefined) return null;
   const n = Number(raw);
-  if (!Number.isInteger(n) || n < 1 || n > 50) throw new Error(`DLMM_PIN_HALF_WIDTH must be a whole number from 1 to 50 (got '${raw}')`);
+  const name = isPrimaryPair(pair) ? "DLMM_PIN_HALF_WIDTH" : pairSettingName("DLMM_PIN_HALF_WIDTH", pair as string);
+  if (!Number.isInteger(n) || n < 1 || n > 50) throw new Error(`${name} must be a whole number from 1 to 50 (got '${raw}')`);
   return n;
 }
-export function resolveHalfWidth(sigmaDaily: number | null | undefined, binStepBps: number, fallbackHalfWidth: number, rangeOpts: RangeOpts = {}): number {
-  const pinned = pinnedHalfWidth();
+export function resolveHalfWidth(sigmaDaily: number | null | undefined, binStepBps: number, fallbackHalfWidth: number, rangeOpts: RangeOpts = {}, pair?: string | null): number {
+  const pinned = pinnedHalfWidth(pair);
   if (pinned !== null) return pinned;
   return sigmaDaily != null && sigmaDaily > 0
     ? binRangeFromVol(sigmaDaily, binStepBps, { maxHalfWidthBins: 50, ...rangeOpts }).halfWidthBins
@@ -264,6 +283,7 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   const cap = maxTargetUsd(cfg);
   if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) throw new Error(`target must be >0 and ≤ ${cap}`);
   const xPrice = await priceOfToken(xTok);
+  const yPrice = await priceOfToken(yTok); // 1 for USDCx; BTC/USD when Y is sBTC (stx-sbtc)
   const nativeStx = (await getStxBalance(w.address, w.network)).microStx;
   if (nativeStx < FEE_USTX) throw new Error(`insufficient native STX for gas (need ~${Number(FEE_USTX) / 1e6})`);
   // X available: if X IS native STX, keep the gas reserve out of it; otherwise use the full FT balance.
@@ -273,9 +293,9 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   const size = amounts
     ? capToTarget(
         { xBase: amounts.xBase > availX ? availX : amounts.xBase, yBase: amounts.yBase > availY ? availY : amounts.yBase },
-        xPrice, xTok.decimals, yTok.decimals, cap,
+        xPrice, xTok.decimals, yTok.decimals, cap, yPrice,
       )
-    : sizeTwoSidedDeposit(cfg.targetUsd, xPrice, availX, availY, xTok.decimals, yTok.decimals);
+    : sizeTwoSidedDeposit(cfg.targetUsd, xPrice, availX, availY, xTok.decimals, yTok.decimals, yPrice);
   if (size.xBase <= 0n || size.yBase <= 0n)
     throw new Error(`cannot size two-sided: ${xTok.asset || "STX"} ${Number(availX) / 10 ** xTok.decimals}, ${yTok.asset} ${Number(availY) / 10 ** yTok.decimals}`);
   const deposits = distributeAcrossRange(st.activeBinId, cfg.halfWidth, size.xBase, size.yBase);
@@ -313,13 +333,15 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   return r.txid;
 }
 
+// An extra pair's ceiling is its own DLMM_MAX_TARGET_USD__<PAIR> (same 250 default).
 function maxTargetUsd(cfg: RecenterConfig): number {
-  return cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
+  return cfg.maxTargetUsd ?? Number(pairSetting("DLMM_MAX_TARGET_USD", cfg.pair) ?? 250);
 }
 
 // Scale an explicit re-add down proportionally if it would exceed the configured ceiling (USD).
-function capToTarget(a: { xBase: bigint; yBase: bigint }, xPriceUsd: number, xDec: number, yDec: number, capUsd: number) {
-  const valueUsd = (Number(a.xBase) / 10 ** xDec) * xPriceUsd + Number(a.yBase) / 10 ** yDec;
+// yPriceUsd: 1 for a USDCx pool; for a pool whose Y isn't a dollar (stx-sbtc) its real price.
+function capToTarget(a: { xBase: bigint; yBase: bigint }, xPriceUsd: number, xDec: number, yDec: number, capUsd: number, yPriceUsd = 1) {
+  const valueUsd = (Number(a.xBase) / 10 ** xDec) * xPriceUsd + (Number(a.yBase) / 10 ** yDec) * yPriceUsd;
   if (!(valueUsd > capUsd)) return { ...a, valueUsd };
   const f = capUsd / valueUsd;
   return { xBase: BigInt(Math.floor(Number(a.xBase) * f)), yBase: BigInt(Math.floor(Number(a.yBase) * f)), valueUsd: capUsd };
@@ -334,7 +356,8 @@ function capToTarget(a: { xBase: bigint; yBase: bigint }, xPriceUsd: number, xDe
 const WITHDRAW_MIN_OUT_TOLERANCE_BPS = Number(process.env.DLMM_WITHDRAW_MIN_OUT_TOLERANCE_BPS ?? 500);
 const REBALANCE_SLIPPAGE_BPS = Number(process.env.DLMM_REBALANCE_SLIPPAGE_BPS ?? 100);
 const REBALANCE_MAX_DIVERGENCE_BPS = Number(process.env.DLMM_REBALANCE_MAX_DIVERGENCE_BPS ?? 300);
-// Largest single rebalance swap, in Y units (USDCx). The attended conversions on 2026-10-27 went
+// Largest single rebalance swap, in USD (the name predates pools whose Y isn't a dollar; it is
+// converted to the pool's Y units at the swap). The attended conversions on 2026-10-27 went
 // through in chunks of $600-700 with ~0.5% slippage; a single $2,100 swap would likely miss min-out.
 const REBALANCE_CHUNK_VALUE_Y = Number(process.env.DLMM_REBALANCE_CHUNK_VALUE_Y ?? 600);
 
@@ -385,19 +408,20 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
       action: "skip", reason: `read failed before any broadcast: ${briefError((err as Error).message)}`,
       // The configured width, not the fallback: the pool's bin step is unknown here, so this is
       // the pin if set (it was logging "±25 (pinned)" with a ±50 pin, 2026-10-27).
-      activeBin: -1, posLo: null, posHi: null, posX: 0, posY: 0, halfWidth: (() => { try { return pinnedHalfWidth(); } catch { return null; } })() ?? cfg.halfWidth,
+      activeBin: -1, posLo: null, posHi: null, posX: 0, posY: 0, halfWidth: (() => { try { return pinnedHalfWidth(cfg.pair); } catch { return null; } })() ?? cfg.halfWidth,
       executed: false, skipped: true,
     };
   }
-  const halfWidth = resolveHalfWidth(cfg.sigmaDaily, st.binStep, cfg.halfWidth, cfg.rangeOpts);
+  const halfWidth = resolveHalfWidth(cfg.sigmaDaily, st.binStep, cfg.halfWidth, cfg.rangeOpts, cfg.pair);
   const effCfg: RecenterConfig = { ...cfg, halfWidth };
   // A pending re-add from an earlier cycle takes priority over a fresh decision: the position is
   // empty because the agent withdrew it, not because it should open from wallet balances.
-  const pendingNow = loadPending();
+  const pendingPath = pendingStatePath(cfg.pair); // the primary's file, or this extra pair's own
+  const pendingNow = loadPending(pendingPath);
   if (pendingNow && pendingNow.pair === cfg.pair) {
     if (pos.bins.length > 0) {
       log(`  [dlmm] a pending re-add was recorded but a position exists again; discarding the pending record`);
-      clearPending();
+      clearPending(pendingPath);
     } else {
       const baseP: RecenterResult = {
         action: "recenter", reason: "resuming pending re-add", activeBin: st.activeBinId, posLo: null, posHi: null,
@@ -425,6 +449,11 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     halfWidth, executed: false,
   };
   if (dec.action === "hold" || !live) return base;
+  // An extra pair (dlmm-pairs.ts) is never opened by the agent: an open sizes from wallet balances
+  // the XYK position and the primary pair also draw on. Opening is attended (cfg.force).
+  if (dec.action === "open" && !isPrimaryPair(cfg.pair) && !cfg.force) {
+    return { ...base, action: "hold", reason: "no position; an extra pair is only opened by hand (m1:dlmm-recenter -- open)", skipped: true };
+  }
 
   // The manual kill switch (safety.ts's own check) previously covered only the XYK path — the
   // Sep 21 incident's failure loop ran for ~7 hours with no way to stop it short of editing
@@ -463,11 +492,20 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     poolPrice = priceYPerX;
     const localPoolValueY =
       (Number(depth.xTotal) / 10 ** xTok.decimals) * priceYPerX + Number(depth.yTotal) / 10 ** yTok.decimals;
+    // The cap compares USD with USD: Y is a dollar for a USDCx pool, sBTC for stx-sbtc. A price
+    // read failure here is a skip, like the reads above.
+    let yUsd: number;
+    try {
+      yUsd = await priceOfToken(yTok);
+    } catch (err) {
+      return { ...base, reason: `could not price ${yTok.asset || "STX"} for the pool-share check: ${briefError((err as Error).message)}`, skipped: true };
+    }
+    const localPoolValueUsd = localPoolValueY * yUsd;
     const capBps = Number(process.env.DLMM_MAX_POOL_SHARE_BPS ?? 1000);
-    if (exceedsPoolShare(0, cfg.targetUsd, localPoolValueY, capBps)) {
+    if (exceedsPoolShare(0, cfg.targetUsd, localPoolValueUsd, capBps)) {
       return {
         ...base,
-        reason: `skip — local pool-share cap (target $${cfg.targetUsd} vs ~$${localPoolValueY.toFixed(0)} local depth, cap ${capBps / 100}%)`,
+        reason: `skip — local pool-share cap (target $${cfg.targetUsd} vs ~$${localPoolValueUsd.toFixed(0)} local depth, cap ${capBps / 100}%)`,
         skipped: true,
       };
     }
@@ -510,7 +548,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
           xQty: Number(confirmedPos.totalX) / 10 ** xTok.decimals,
           yQty: Number(confirmedPos.totalY) / 10 ** yTok.decimals,
           t: new Date().toISOString(),
-        });
+        }, cfg.pair);
       } catch (err) {
         log(`  (basis reset skipped: ${(err as Error).message})`);
       }
@@ -564,8 +602,8 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     before: { x: Number(pos.totalX) / xu, y: Number(pos.totalY) / yu },
     t: new Date().toISOString(), abortedSwaps: 0,
   };
-  savePending(pending);
-  clearDeposit(); // the bins are gone; the re-add records its own deposit
+  savePending(pending, pendingStatePath(cfg.pair));
+  clearDeposit(depositPath(cfg.pair)); // the bins are gone; the re-add records its own deposit
   log(`  withdrew ${Number(got.x) / xu} ${xTok.asset || "STX"} + ${Number(got.y) / yu} ${yTok.asset}; recorded as a pending re-add`);
   const res = await readdPending(w, poolDef, st, xTok, yTok, effCfg, pending, base, log);
   return { ...res, withdrawTxid: wr.txid };
@@ -581,6 +619,7 @@ async function readdPending(
   pending: PendingReadd, base: RecenterResult, log: (s: string) => void,
 ): Promise<RecenterResult> {
   const xu = 10 ** xTok.decimals, yu = 10 ** yTok.decimals;
+  const pendingPath = pendingStatePath(pending.pair); // the primary's file, or this extra pair's own
   const waitResult = (reason: string): RecenterResult => {
     log(`  ⚠ re-add not finished: ${reason}. Tokens stay withdrawn (pending re-add saved); retrying next cycle.`);
     return { ...base, executed: false, skipped: true, alert: true, reason: `re-add pending: ${reason}` };
@@ -598,10 +637,10 @@ async function readdPending(
       pending.abortedSwaps += 1;
     }
     delete pending.pendingSwap;
-    savePending(pending);
+    savePending(pending, pendingPath);
   }
   if (pending.abortedSwaps >= READD_MAX_ABORTED_SWAPS) {
-    return waitResult(`${pending.abortedSwaps} rebalance swaps failed in a row; not retrying until a human checks (delete ${pendingStatePath()} to abandon)`);
+    return waitResult(`${pending.abortedSwaps} rebalance swaps failed in a row; not retrying until a human checks (delete ${pendingPath} to abandon)`);
   }
   let stNow = st;
   for (let i = 0; i <= READD_MAX_CHUNKS; i++) {
@@ -615,13 +654,18 @@ async function readdPending(
     } catch (err) {
       return waitResult(`pool read failed: ${briefError((err as Error).message)}`);
     }
+    // The chunk cap is in USD; nextReaddStep takes it in Y units (Y is sBTC for stx-sbtc).
+    let yUsd = 1;
     try {
-      refPrice = (await priceOfToken(xTok)) / (await priceOfToken(yTok));
+      yUsd = await priceOfToken(yTok);
+      refPrice = (await priceOfToken(xTok)) / yUsd;
     } catch {
       refPrice = null;
     }
+    // Without a Y price there is no safe chunk size for a non-dollar Y; wait rather than guess.
+    if (refPrice === null && !/usdc|usdh|usda|susd/i.test(yTok.asset)) return waitResult(`no ${yTok.asset} price for sizing the rebalance swap`);
     const step = nextReaddStep(pending.xBase, pending.yBase, poolPrice, refPrice, xTok.decimals, yTok.decimals, {
-      slippageBps: REBALANCE_SLIPPAGE_BPS, maxDivergenceBps: REBALANCE_MAX_DIVERGENCE_BPS, chunkValueY: REBALANCE_CHUNK_VALUE_Y,
+      slippageBps: REBALANCE_SLIPPAGE_BPS, maxDivergenceBps: REBALANCE_MAX_DIVERGENCE_BPS, chunkValueY: REBALANCE_CHUNK_VALUE_Y / yUsd,
     });
     if (step.kind === "wait") return waitResult(step.reason);
     if (step.kind === "add") break;
@@ -641,20 +685,20 @@ async function readdPending(
     if (!cfg.force && isKilled()) return waitResult("kill switch engaged before rebalance swap");
     const snonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
     const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, deny: true, feeMicroStx: FEE_USTX, nonce: snonce });
-    if (sr.txid) { pending.pendingSwap = { txid: sr.txid, direction: step.direction }; savePending(pending); }
+    if (sr.txid) { pending.pendingSwap = { txid: sr.txid, direction: step.direction }; savePending(pending, pendingPath); }
     const sres = sr.txid ? await waitForTxResult(sr.txid, log) : { status: "no-txid" as string, repr: undefined };
     if (sres.status === "timeout") return waitResult(`rebalance swap ${sr.txid} not confirmed yet; it will be settled next cycle`);
     delete pending.pendingSwap;
     const fill = sres.status === "success" ? parseSwapResult(sres.repr) : null;
     if (!fill) {
       pending.abortedSwaps += 1;
-      savePending(pending);
+      savePending(pending, pendingPath);
       return waitResult(`rebalance swap ${sres.status}`);
     }
     if (step.direction === "x-for-y") { pending.xBase -= fill.in; pending.yBase += fill.out; }
     else { pending.yBase -= fill.in; pending.xBase += fill.out; }
     pending.abortedSwaps = 0;
-    savePending(pending);
+    savePending(pending, pendingPath);
   }
 
   // Balanced: re-add all of it, keeping 2% back for the pool's liquidity fee.
@@ -665,15 +709,15 @@ async function readdPending(
   const as = await waitForTx(addTxid, log);
   const outcome = recenterSequenceOutcome("success", as);
   if (!outcome.executed) return { ...waitResult(`re-add ${as}`), addTxid };
-  clearPending();
+  clearPending(pendingPath);
   await recordDepositFromTx(addTxid, w.address, cfg.pair, log);
   // Capital moved by the resize goes into the basis, not the P&L (adjustBasisForRecenter).
   try {
     const after = await readUserPosition(poolDef, w.address);
-    const prev = loadVenueBases().dlmmBasis;
+    const prev = loadVenueBases(cfg.pair).dlmmBasis;
     if (prev) {
       const next = adjustBasisForRecenter(prev, pending.before, { x: Number(after.totalX) / xu, y: Number(after.totalY) / yu });
-      setDlmmBasis(next);
+      setDlmmBasis(next, cfg.pair);
       log(`  basis adjusted for the resize: ${next.xQty} x + ${next.yQty} y`);
     }
   } catch (err) {

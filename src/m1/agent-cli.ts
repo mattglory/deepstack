@@ -23,7 +23,9 @@ import {
   type BuiltTx,
 } from "./actions.js";
 import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
-import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
+import { loadDlmmCounters, saveDlmmCounters, dlmmFailstreakStatePath } from "./dlmm-failstreak-state.js";
+import { extraDlmmPairs, extraPairsLive, pairSetting } from "./dlmm-pairs.js";
+import { extraPairsValueY } from "./dlmm-extra-value.js";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
@@ -37,6 +39,7 @@ import { isKilled } from "./kill.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
 import { checkNonceSafety } from "./nonce-safety.js";
+import { type DlmmPairSample } from "./metrics.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown, loadCapitalFlows, withdrawnStx, loadWalletMigrations } from "./metrics.js";
 import { loadXykTrades, saveXykTrades, loadDrawdownBaseline, saveDrawdownBaseline, baselineMismatch, drawdownBaselinePath } from "./risk-state.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
@@ -113,6 +116,8 @@ interface Snapshot {
   dlmmBinStep?: number;
   dlmmFeesUsdcx?: number;
   dlmmFeesSince?: string;
+  dlmmPairs: Record<string, DlmmPairSample>; // extra DLMM pairs (dlmm-pairs.ts), valued in Y
+  extraDlmmValueY: number; // their positions plus any free balance nobody else counts
   portfolioY: number;
   externalMid: number | null;
   poolActive: boolean;
@@ -237,7 +242,13 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
   }
   const freeValueY = xH * pool.midXinY + yH;
   const { dlmmValueY, freeUsdcxValueY, usdPerStx, activeBin: dlmmActiveBin, binStep: dlmmBinStep, feesUsdcx: dlmmFeesUsdcx, feesSince: dlmmFeesSince } = await dlmmPositionValueY(w, cfg.x, pool.midXinY);
-  const portfolioY = freeValueY + lpValueY + dlmmValueY + freeUsdcxValueY;
+  // Extra DLMM pairs (dlmm-pairs.ts). A bad DLMM_EXTRA_PAIRS is reported by the DLMM step and
+  // values nothing here; the primary pair's y-token free balance is already counted above.
+  let extras: string[] = [];
+  try { extras = extraDlmmPairs(); } catch { /* reported by the DLMM step */ }
+  const primaryPin = DLMM_POOLS.find((p) => p.key === process.env.DLMM_OBSERVE_PAIR)?.pin;
+  const extra = await extraPairsValueY(w, extras, pool.midXinY, usdPerStx, primaryPin ? [`${primaryPin.yToken}::${primaryPin.yAsset}`] : []);
+  const portfolioY = freeValueY + lpValueY + dlmmValueY + freeUsdcxValueY + extra.totalValueY;
   const yFraction = freeValueY > 0 ? yH / freeValueY : 0;
   return {
     midXinY: pool.midXinY,
@@ -254,6 +265,8 @@ async function readMarket(w: Wallet): Promise<Snapshot> {
     dlmmBinStep,
     dlmmFeesUsdcx,
     dlmmFeesSince,
+    dlmmPairs: extra.pairs,
+    extraDlmmValueY: extra.totalValueY,
     portfolioY,
     externalMid: ext?.midXinY ?? null,
     poolActive: pool.poolActive,
@@ -303,6 +316,7 @@ async function act(
     `  free: ${s.xHuman} ${x.symbol} + ${s.yHuman} ${y.symbol} | ` +
       `LP: ${lpH(s.lpBalanceBase).toFixed(6)} (~${s.lpValueY.toFixed(2)} ${y.symbol}) | ` +
       `DLMM: ~${s.dlmmValueY.toFixed(2)} ${y.symbol}${s.dlmmFeesUsdcx != null ? ` (fees earned ${s.dlmmFeesUsdcx.toFixed(2)} USDCx)` : ""} | free-USDCx: ~${s.freeUsdcxValueY.toFixed(2)} ${y.symbol} | ` +
+      (Object.keys(s.dlmmPairs).length ? `DLMM extra: ${Object.entries(s.dlmmPairs).map(([k, v]) => `${k} ~${v.valueY.toFixed(2)}`).join(", ")} ${y.symbol} | ` : "") +
       `portfolio ~${s.portfolioY.toFixed(2)} ${y.symbol}`,
   );
 
@@ -401,6 +415,7 @@ async function act(
     dlmmActiveBin: s.dlmmActiveBin,
     dlmmBinStep: s.dlmmBinStep,
     dlmmFeesUsdcx: s.dlmmFeesUsdcx,
+    ...(Object.keys(s.dlmmPairs).length ? { dlmmPairs: s.dlmmPairs } : {}),
     portfolioY: s.portfolioY,
     safe: safety.safe,
     poolX: s.xReserve,
@@ -916,6 +931,56 @@ export async function main() {
             saveDlmmCounters({ failStreak: dlmmFailStreak, recenters: dlmmRecenters });
           }
           appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message, dlmmFailStreak });
+        }
+      }
+      // Extra DLMM pairs (dlmm-pairs.ts): the same recenter path, each pair with its own counters,
+      // pending re-add, deposit record, basis and settings (<NAME>__<PAIR>). Broadcasts only with
+      // DLMM_LIVE=1 AND DLMM_EXTRA_LIVE=1, never without the pair's own DLMM_TARGET_USD__<PAIR>,
+      // and never opens a position (recenterOnce holds an extra pair with no position).
+      let extraPairs: string[] = [];
+      try {
+        extraPairs = extraDlmmPairs();
+      } catch (e) {
+        console.log(`  [dlmm] ⛔ ${(e as Error).message} — extra pairs skipped`);
+        appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", error: (e as Error).message });
+        dlmmFailedThisTick = true;
+      }
+      for (const pair of extraPairs) {
+        const statePath = dlmmFailstreakStatePath(pair);
+        let { failStreak: pFail, recenters: pRecenters } = loadDlmmCounters(statePath);
+        let pLive = false;
+        try {
+          const targetUsd = Number(pairSetting("DLMM_TARGET_USD", pair) ?? NaN);
+          const halfWidth = Math.max(1, Math.min(50, Number(pairSetting("DLMM_HALF_WIDTH", pair) ?? 3)));
+          if (!(targetUsd > 0)) console.log(`  [dlmm ${pair}] no DLMM_TARGET_USD__${pair.toUpperCase().replace(/-/g, "_")} set — observe only`);
+          if (pFail >= DLMM_FAIL_STREAK_LIMIT) console.log(`  [dlmm ${pair}] ⛔ ${pFail} consecutive failed adds ≥ ${DLMM_FAIL_STREAK_LIMIT} — broadcasts stopped until manually reset (${statePath})`);
+          pLive = targetUsd > 0 && extraPairsLive() && dlmmLiveGate({
+            dlmmLiveFlag: true,
+            live,
+            circuitOk,
+            safe: safety.safe,
+            dlmmFailStreak: pFail,
+            dlmmFailStreakLimit: DLMM_FAIL_STREAK_LIMIT,
+            dlmmRecenters: pRecenters,
+            maxTrades: f.maxTrades,
+            network: w.network,
+          });
+          const { sigmaDaily, source: volSource } = dlmmVol(pair);
+          const pinned = pinnedHalfWidth(pair);
+          const res = await recenterOnce(w, { pair, halfWidth, targetUsd: targetUsd > 0 ? targetUsd : 1, sigmaDaily }, pLive, (m) => console.log(m));
+          const attempted = pLive && res.action !== "hold" && !res.skipped;
+          ({ failStreak: pFail, recenters: pRecenters } = nextDlmmCounters({ failStreak: pFail, recenters: pRecenters }, { executed: res.executed, attempted }));
+          if ((!res.executed && attempted) || res.alert) dlmmFailedThisTick = true;
+          if (attempted) saveDlmmCounters({ failStreak: pFail, recenters: pRecenters }, statePath);
+          appendJournal({ t: new Date().toISOString(), type: pLive ? "dlmm-recenter" : "dlmm-observe", pair, sigmaDaily, volSource, dlmmFailStreak: pFail, ...res });
+          console.log(`  [dlmm ${pair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${pinned !== null ? " (pinned)" : ""}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day, ${volSource})` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : pLive ? "" : " (observe)"}`);
+        } catch (e) {
+          if (pLive) {
+            ({ failStreak: pFail, recenters: pRecenters } = nextDlmmCounters({ failStreak: pFail, recenters: pRecenters }, { executed: false, attempted: true }));
+            dlmmFailedThisTick = true;
+            saveDlmmCounters({ failStreak: pFail, recenters: pRecenters }, statePath);
+          }
+          appendJournal({ t: new Date().toISOString(), type: "dlmm-observe", pair, error: (e as Error).message, dlmmFailStreak: pFail });
         }
       }
       // Haven rotation (haven.ts): the full stablecoin capital-preservation reflex. Armed

@@ -57,8 +57,9 @@ import {
   type BinWithdraw,
 } from "./dlmm-write.js";
 import { sizeTwoSidedDeposit, decideRecenter, expectedDlp, minDlpFromExpected, divergenceBps, sumWithdrawResult } from "./dlmm-recenter.js";
-import { loadPending, savePending } from "./dlmm-pending-state.js";
-import { clearDeposit } from "./dlmm-fees.js";
+import { loadPending, savePending, pendingStatePath } from "./dlmm-pending-state.js";
+import { clearDeposit, depositPath } from "./dlmm-fees.js";
+import { pairSetting, isPrimaryPair, pairSettingName } from "./dlmm-pairs.js";
 import { recordDepositFromTx } from "./dlmm-fees-record.js";
 import { executeDescriptor } from "./dlmm-execute.js";
 // Shared source of truth for token resolution + pricing (handles STX facade vs sBTC etc.) AND
@@ -75,14 +76,16 @@ const GAS_RESERVE_USTX = 100_000_000n; // keep 100 STX for gas
 // below overrides this with the SAME vol-scaled width the live agent uses, so a manual
 // open/recenter through this CLI can never again size a position the automated agent's own
 // drift trigger disagrees with.
-const fallbackHalfWidth = () => Math.max(1, Math.min(50, Number(process.env.DLMM_HALF_WIDTH ?? 3))); // lazy, see targetUsd()
+// Settings are per pair (dlmm-pairs.ts): the plain names for the primary pair, <NAME>__<PAIR> for
+// an extra pair, with no fallback between them.
+const fallbackHalfWidth = () => Math.max(1, Math.min(50, Number(pairSetting("DLMM_HALF_WIDTH", PAIR) ?? 3))); // lazy, see targetUsd()
 // .env is loaded inside main() (getWallet), AFTER module load, so these must be read lazily:
 // read at load time they silently fell back to the defaults (found 2026-10-27: an attended $1,630
 // open was refused as "> 250" although .env said 1,700).
-const targetUsd = () => Number(process.env.DLMM_TARGET_USD ?? 40); // recenter re-adds to this size
+const targetUsd = () => Number(pairSetting("DLMM_TARGET_USD", PAIR) ?? 40); // recenter re-adds to this size
 // Same cap as dlmm-recenter-exec.ts's executeAdd, same reasoning: configurable, not a bare
 // 250, so a deliberately-larger pilot position doesn't need another code edit each time.
-const maxTargetUsd = () => Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
+const maxTargetUsd = () => Number(pairSetting("DLMM_MAX_TARGET_USD", PAIR) ?? 250);
 const ADD_MIN_DLP_SLIPPAGE_BPS = 100; // matches dlmm-recenter-exec.ts's live-agent value
 const FEE_USTX = 300_000n;
 const DEADLINE_SECS = 600;
@@ -129,12 +132,13 @@ async function doOpen(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: TokenMe
   const xSym = xTok.asset || "STX";
   const xdp = xTok.decimals === 8 ? 6 : 3;
   const xPrice = await priceOfToken(xTok);
+  const yPrice = await priceOfToken(yTok); // 1 for USDCx; BTC/USD when Y is sBTC (stx-sbtc)
   const nativeStx = (await getStxBalance(w.address, w.network)).microStx;
   if (nativeStx < FEE_USTX) throw new Error(`insufficient native STX for gas (need ~${Number(FEE_USTX) / 1e6})`);
   const xBalRaw = xTok.native ? nativeStx : await ftBalance(w.address, `${xTok.principal}::${xTok.asset}`);
   const availX = xTok.native ? (xBalRaw > GAS_RESERVE_USTX ? xBalRaw - GAS_RESERVE_USTX : 0n) : xBalRaw;
   const availY = await ftBalance(w.address, `${yTok.principal}::${yTok.asset}`);
-  const size = sizeTwoSidedDeposit(target, xPrice, availX, availY, xTok.decimals, yTok.decimals);
+  const size = sizeTwoSidedDeposit(target, xPrice, availX, availY, xTok.decimals, yTok.decimals, yPrice);
   if (size.xBase <= 0n || size.yBase <= 0n)
     throw new Error(`cannot size two-sided: ${xSym} avail ${Number(availX) / xUnit}, ${yTok.asset} avail ${Number(availY) / yUnit}`);
 
@@ -194,7 +198,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
   if (!r.txid) throw new Error("withdraw broadcast returned no txid");
   const res = await waitForTxResult(r.txid, (m) => console.log(m));
   if (res.status !== "success") return false;
-  clearDeposit(); // the bins are gone; the next add records its own deposit
+  clearDeposit(depositPath(poolDef.key)); // the bins are gone; the next add records its own deposit
   if (readdLater) {
     // Record exactly what came back as a pending re-add, the same state the agent's own recenter
     // writes, so a later force-recenter (or the agent's next cycle) rebalances and re-adds it.
@@ -204,7 +208,7 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
       pair: poolDef.key, xBase: got.x, yBase: got.y,
       before: { x: Number(pos.totalX) / xUnit, y: Number(pos.totalY) / yUnit },
       t: new Date().toISOString(), abortedSwaps: 0,
-    });
+    }, pendingStatePath(poolDef.key));
     console.log(`  recorded a pending re-add of ${Number(got.x) / xUnit} ${xTok.asset || "STX"} + ${Number(got.y) / yUnit} ${yTok.asset}`);
   }
   return true;
@@ -232,18 +236,19 @@ async function main() {
   const pos = await readUserPosition(poolDef, w.address);
   // Same vol-scaled width the live agent uses (resolveHalfWidth, shared in dlmm-recenter-exec.ts)
   // — falls back to FALLBACK_HALF_WIDTH only when there isn't yet enough telemetry history.
-  const sigmaDaily = dlmmSigmaDaily();
+  const sigmaDaily = dlmmSigmaDaily(PAIR);
   // An explicit --half-width=N is a deliberate human choice and wins. Otherwise use the live
   // agent's vol-scaled width. The silent ±3 fallback is no longer allowed to OPEN anything:
   // on 2026-10-07 a manual recenter run from a laptop (no vol history there) opened a 7-bin
   // position that went out of range within hours. Broadcasting open/recenter without vol data
   // or an explicit width now refuses below; previews and status still work.
-  const halfWidth = explicitHalfWidth ?? resolveHalfWidth(sigmaDaily, st.binStep, fallbackHalfWidth());
-  const pinned = pinnedHalfWidth(); // DLMM_PIN_HALF_WIDTH: a deliberate width, never the silent fallback
+  const halfWidth = explicitHalfWidth ?? resolveHalfWidth(sigmaDaily, st.binStep, fallbackHalfWidth(), {}, PAIR);
+  const pinned = pinnedHalfWidth(PAIR); // DLMM_PIN_HALF_WIDTH(__<PAIR>): a deliberate width, never the silent fallback
+  const pinName = isPrimaryPair(PAIR) ? "DLMM_PIN_HALF_WIDTH" : pairSettingName("DLMM_PIN_HALF_WIDTH", PAIR);
   const widthIsFallback = explicitHalfWidth === null && pinned === null && !(sigmaDaily != null && sigmaDaily > 0);
   const decision = decideRecenter(st.activeBinId, { lo: pos.lowerSignedBin, hi: pos.upperSignedBin }, halfWidth);
 
-  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | half-width ${halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback — no vol history yet)"}${explicitHalfWidth !== null ? " [set by --half-width]" : pinned !== null ? " [pinned by DLMM_PIN_HALF_WIDTH]" : ""} | x=${xTok.asset || "STX"} y=${yTok.asset}`);
+  console.log(`pair: ${PAIR} | active bin ${st.activeBinId} | step ${st.binStep}bps | half-width ${halfWidth}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day)` : " (fallback — no vol history yet)"}${explicitHalfWidth !== null ? " [set by --half-width]" : pinned !== null ? ` [pinned by ${pinName}]` : ""} | x=${xTok.asset || "STX"} y=${yTok.asset}`);
   const xUnit = 10 ** xTok.decimals, yUnit = 10 ** yTok.decimals;
   const xdp = xTok.decimals === 8 ? 6 : 3;
   console.log(`position: ${pos.bins.length ? `bins [${pos.lowerSignedBin}..${pos.upperSignedBin}], ~${(Number(pos.totalX) / xUnit).toFixed(xdp)} ${xTok.asset || "STX"} + ${(Number(pos.totalY) / yUnit).toFixed(3)} ${yTok.asset}` : "none"}`);
@@ -258,7 +263,7 @@ async function main() {
     if (!Number.isFinite(xQty) || !Number.isFinite(yQty)) throw new Error("usage: set-basis <xQty> <yQty> [iso-time]");
     const t = ts ?? new Date().toISOString();
     if (Number.isNaN(Date.parse(t))) throw new Error("set-basis: bad iso-time");
-    setDlmmBasis({ xQty, yQty, t });
+    setDlmmBasis({ xQty, yQty, t }, PAIR);
     console.log(`cost basis set to ${xQty} x + ${yQty} y (since ${t}).`);
     if (isPublishConfigured()) {
       const ok = await publishMetrics();
@@ -272,7 +277,7 @@ async function main() {
     // comment). Resets dlmmBasis to the CURRENTLY confirmed position and pushes straight to
     // the gist, rather than waiting up to one agent cycle for the dashboard to catch up.
     if (pos.bins.length === 0) throw new Error("no open DLMM position to reset the basis to");
-    setDlmmBasis({ xQty: Number(pos.totalX) / xUnit, yQty: Number(pos.totalY) / yUnit, t: new Date().toISOString() });
+    setDlmmBasis({ xQty: Number(pos.totalX) / xUnit, yQty: Number(pos.totalY) / yUnit, t: new Date().toISOString() }, PAIR);
     console.log("cost basis reset to the confirmed deposited legs.");
     if (isPublishConfigured()) {
       const ok = await publishMetrics();
@@ -314,7 +319,7 @@ async function main() {
             xQty: Number(confirmedPos.totalX) / xUnit,
             yQty: Number(confirmedPos.totalY) / yUnit,
             t: new Date().toISOString(),
-          });
+          }, PAIR);
           console.log("   cost basis reset to the confirmed deposited legs.");
         } catch (err) {
           console.log(`   (basis reset skipped: ${(err as Error).message})`);
@@ -326,7 +331,7 @@ async function main() {
   }
 
   if (action === "force-recenter") {
-    const pending = loadPending();
+    const pending = loadPending(pendingStatePath(PAIR));
     const resume = pos.bins.length === 0 && pending?.pair === PAIR;
     if (pos.bins.length === 0 && !resume) throw new Error("no position to recenter and no pending re-add");
     refuseFallbackWidth();
@@ -406,7 +411,7 @@ async function main() {
           xQty: Number(confirmedPos.totalX) / xUnit,
           yQty: Number(confirmedPos.totalY) / yUnit,
           t: new Date().toISOString(),
-        });
+        }, PAIR);
         console.log("   cost basis reset to the confirmed deposited legs.");
       } catch (err) {
         console.log(`   (basis reset skipped: ${(err as Error).message})`);

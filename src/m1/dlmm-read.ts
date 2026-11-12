@@ -114,6 +114,9 @@ export const DLMM_POOLS: readonly DlmmPool[] = [
   // (active bin 500, price 0.27 vs 0.30 market), and the attended swap refused it on the 3%
   // divergence guard. Used for converting STX to USDCx; not a position pair.
   { key: "stx-usdcx-v1", name: "dlmm-pool-stx-usdcx-v-1-bps-10", pin: pinOf(STX_T, USDCX_T) },
+  // STX/sBTC, 15 bps bins: X is native STX (the token-stx facade), Y is sBTC, so neither leg is a
+  // dollar. Candidate second position pair (DLMM_EXTRA_PAIRS); verified on mainnet 2026-11-12.
+  { key: "stx-sbtc", name: "dlmm-pool-stx-sbtc-v-1-bps-15", pin: pinOf(STX_T, SBTC_T) },
 ] as const;
 
 export interface DlmmState {

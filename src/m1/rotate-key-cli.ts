@@ -46,7 +46,8 @@ import {
 import { getWallet, apiBase, type Wallet } from "./wallet.js";
 import { hiroHeaders } from "./rpc.js";
 import { killFilePresent, killPath } from "./kill.js";
-import { loadPending } from "./dlmm-pending-state.js";
+import { loadPending, pendingStatePath } from "./dlmm-pending-state.js";
+import { extraDlmmPairs } from "./dlmm-pairs.js";
 import { addWalletMigration } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 import { parseBalances, planRotation, isDrained, fmtUnits, rotationAssets, ROTATION_FEE_USTX, type WalletBalances } from "./key-rotation.js";
@@ -171,7 +172,13 @@ function printPlan(old: WalletBalances, fresh: WalletBalances, from: string, to:
 
 // A pending re-add is expected here (withdraw --readd-later): it travels with the tokens.
 function notePending(): void {
-  const p = loadPending();
+  // The primary pair's, then any extra pair's (dlmm-pairs.ts), each in its own file.
+  let extras: string[] = [];
+  try { extras = extraDlmmPairs(); } catch { /* a bad DLMM_EXTRA_PAIRS is reported by the agent */ }
+  for (const pair of [null, ...extras]) notePendingAt(pendingStatePath(pair));
+}
+function notePendingAt(path: string): void {
+  const p = loadPending(path);
   if (p) console.log(`  pending DLMM re-add (${p.pair}): ${p.xBase} x + ${p.yBase} y base units; resume it from the new wallet with force-recenter`);
 }
 

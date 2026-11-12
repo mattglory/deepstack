@@ -333,6 +333,32 @@ test("DLMM step: invoked per DLMM_OBSERVE_PAIR, live flag per DLMM_LIVE / --live
   noBroadcast(); // the XYK leg was in band; DLMM broadcasts are recenterOnce's (faked) business
 });
 
+test("extra DLMM pairs: run after the primary; live only with DLMM_LIVE + DLMM_EXTRA_LIVE + the pair's own target", async () => {
+  const run = async (env: Record<string, string>) => {
+    resetHarness(baseWorld());
+    Object.assign(process.env, { DLMM_OBSERVE_PAIR: "sbtc-usdcx", DLMM_EXTRA_PAIRS: "stx-sbtc", DLMM_LIVE: "1", ...env });
+    await runAgent(LIVE);
+    return rec.recenter;
+  };
+  let r = await run({});
+  assert.deepEqual(r.map((x) => x.cfg.pair), ["sbtc-usdcx", "stx-sbtc"]);
+  assert.equal(r[0].live, true, "the primary is unchanged");
+  assert.equal(r[1].live, false, "no DLMM_EXTRA_LIVE → the extra pair observes");
+
+  r = await run({ DLMM_EXTRA_LIVE: "1" });
+  assert.equal(r[1].live, false, "no DLMM_TARGET_USD__STX_SBTC → observe; the primary's target is never borrowed");
+
+  r = await run({ DLMM_EXTRA_LIVE: "1", DLMM_TARGET_USD__STX_SBTC: "800" });
+  assert.equal(r[1].live, true);
+  assert.equal(r[1].cfg.targetUsd, 800);
+  assert.ok(rec.journal.some((e) => e.type === "dlmm-recenter" && e.pair === "stx-sbtc"));
+
+  r = await run({ DLMM_EXTRA_LIVE: "1", DLMM_EXTRA_PAIRS: "nope" });
+  assert.deepEqual(r.map((x) => x.cfg.pair), ["sbtc-usdcx"], "a bad extra-pair list skips only the extras");
+  assert.deepEqual(rec.health, ["fail"], "and alerts");
+  noBroadcast();
+});
+
 test("DLMM live attempt that fails: healthcheck pings fail, fail streak persisted", async () => {
   resetHarness(baseWorld());
   Object.assign(process.env, { DLMM_OBSERVE_PAIR: "sbtc-usdcx", DLMM_LIVE: "1" });

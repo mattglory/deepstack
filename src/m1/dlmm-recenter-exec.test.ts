@@ -683,3 +683,51 @@ test("stale DefiLlama price (20 min) -> treated as unavailable: no open", async 
   assert.deepEqual(fns(), []);
   assert.match(r.res!.reason, /reference price unavailable before open: .*BTC price \(DefiLlama\): stale/);
 });
+
+// ---- extra pairs (dlmm-pairs.ts) ------------------------------------------------------------
+
+/** Run `fn` with sbtc-usdcx configured as an EXTRA pair (the primary is another pool). */
+async function asExtraPair(fn: () => Promise<void>) {
+  process.env.DLMM_OBSERVE_PAIR = "stx-usdcx";
+  process.env.DLMM_EXTRA_PAIRS = "sbtc-usdcx";
+  try { await fn(); } finally { delete process.env.DLMM_OBSERVE_PAIR; delete process.env.DLMM_EXTRA_PAIRS; }
+}
+const EXTRA_PENDING_PATH = PENDING_PATH.replace(/\.json$/, ".sbtc-usdcx.json");
+
+test("extra pair with no position: never opened by the agent (held, nothing broadcast, not an attempt)", async () => {
+  await asExtraPair(async () => {
+    chain.sbtc = 1_000_000n;
+    chain.usdcx = 500_000_000n;
+    const r = await cycle(await load());
+    assert.equal(r.res!.action, "hold");
+    assert.equal(r.res!.skipped, true);
+    assert.match(r.res!.reason, /opened by hand/);
+    assert.deepEqual(fns(), []);
+    assert.deepEqual(streakEffect(r), { attempted: false, executed: false, tickFailed: false });
+  });
+});
+
+test("extra pair: an attended open (force) still works, and its basis is the pair's own", async () => {
+  await asExtraPair(async () => {
+    chain.sbtc = 1_000_000n;
+    chain.usdcx = 500_000_000n;
+    chain.plan = [ok];
+    const r = await cycle(await load(), { cfg: { force: true } });
+    assert.equal(r.res!.executed, true);
+    assert.deepEqual(fns(), [ADD]);
+    assert.equal(chain.basis.length, 1);
+    assert.equal(chain.basis[0].pair, "sbtc-usdcx");
+  });
+});
+
+test("extra pair recenter: the pending re-add lives in the pair's own file, never the primary's; basis adjusted for the pair", async () => {
+  await asExtraPair(async () => {
+    outOfRange(50_000_000n);
+    chain.plan = [ok]; // the withdraw confirms; the swap is never confirmed this cycle
+    chain.plan.push({ status: "pending" } as never);
+    await cycle(await load());
+    assert.equal(existsSync(PENDING_PATH), false, "the primary's pending file is untouched");
+    assert.equal(existsSync(EXTRA_PENDING_PATH), true);
+    assert.equal(JSON.parse(readFileSync(EXTRA_PENDING_PATH, "utf8")).pair, "sbtc-usdcx");
+  });
+});

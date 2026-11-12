@@ -97,6 +97,7 @@ export const HELD = [
   "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-2-bps-10::pool-token",
   "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token",
   "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10::pool-token",
+  "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-sbtc-v-1-bps-15::pool-token",
 ];
 /** The expected wallet lines: the caps first, then "≤ 0" for every other held asset, in order. */
 export const walletLines = (s: string, caps: [string, bigint][]) => [

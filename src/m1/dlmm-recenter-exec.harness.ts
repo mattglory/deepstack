@@ -35,7 +35,7 @@ export const TMP = mkdtempSync(join(tmpdir(), "deepstack-dlmm-harness-"));
 const ENV_CLEARED = [
   "KILL_SWITCH", "DLMM_PIN_HALF_WIDTH", "DLMM_MAX_TARGET_USD", "DLMM_MAX_POOL_SHARE_BPS",
   "DLMM_REBALANCE_SLIPPAGE_BPS", "DLMM_REBALANCE_MAX_DIVERGENCE_BPS", "DLMM_REBALANCE_CHUNK_VALUE_Y",
-  "DLMM_WITHDRAW_MIN_OUT_TOLERANCE_BPS",
+  "DLMM_WITHDRAW_MIN_OUT_TOLERANCE_BPS", "DLMM_OBSERVE_PAIR", "DLMM_EXTRA_PAIRS",
 ];
 export const APP_DIR = join(TMP, "app");
 export const PENDING_PATH = join(TMP, "journal", "dlmm-pending-readd.json");
@@ -103,7 +103,7 @@ export interface Chain {
   plan: Step[]; // outcomes for the next broadcasts, in order
   txs: Map<string, Tx>;
   broadcasts: Broadcast[];
-  basis: { xQty: number; yQty: number; t: string }[]; // setDlmmBasis calls
+  basis: { xQty: number; yQty: number; t: string; pair?: string | null }[]; // setDlmmBasis calls (pair: the 2nd argument)
   depositsRecorded: string[];
   depositsCleared: number;
   fetches: string[];
@@ -295,7 +295,7 @@ mock.module("./metrics.js", {
     ...realMetrics,
     loadHistory: () => [],
     loadVenueBases: () => ({ dlmmBasis: { xQty: 0.001, yQty: 100, t: "2026-11-01T00:00:00Z" } }),
-    setDlmmBasis: (b: { xQty: number; yQty: number; t: string }) => void chain.basis.push(b),
+    setDlmmBasis: (b: { xQty: number; yQty: number; t: string }, pair?: string | null) => void chain.basis.push({ ...b, pair }),
   },
 });
 const realFees = await import("./dlmm-fees.js");
