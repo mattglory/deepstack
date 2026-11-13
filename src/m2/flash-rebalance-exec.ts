@@ -8,7 +8,7 @@
 // live===true — execute it. live===false is pure observe: sizes the trade and returns,
 // touches no key and no capital.
 
-import { existsSync } from "node:fs";
+import { isKilled } from "../m1/kill.js";
 import { fetchCallReadOnlyFunction, fetchNonce, makeContractCall, broadcastTransaction, cvToJSON, Cl, Pc, PostConditionMode } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "../m1/rpc.js";
 import { type Wallet, getStxBalance } from "../m1/wallet.js";
@@ -180,7 +180,7 @@ export async function flashRebalanceOnce(
   if (cfg.amountStxBase <= 0n) return { ...base, action: "skip", reason: "no deficit", skipped: true };
 
   // Same manual kill switch as dlmm-recenter-exec.ts and the XYK path — one check, same file.
-  if (process.env.KILL_SWITCH === "1" || existsSync("KILL")) {
+  if (isKilled()) {
     return { ...base, action: "skip", reason: "kill switch engaged — flash-rebalance skipped", skipped: true };
   }
 
@@ -203,6 +203,8 @@ export async function flashRebalanceOnce(
   if (!sized.worthwhile) return { ...base, action: "skip", reason: sized.reason, skipped: true };
   if (!live) return { ...base, action: "skip", reason: `sized ${sized.amountBase} — observe mode`, armedAmountStxBase: sized.amountBase };
 
+  // Re-checked immediately before each broadcast (C8 / DSA-27), not only once per cycle.
+  if (isKilled()) return { ...base, action: "skip", reason: "kill switch engaged — flash-rebalance skipped before arm", skipped: true };
   log(`  flash-rebalance 1/2 — arm ${Number(sized.amountBase) / 1e6} STX`);
   const armed = await armRebalance(w, sized.amountBase, { broadcast: true, slipBps: cfg.slipBps });
   if (!armed.txid) throw new Error("arm broadcast returned no txid");
@@ -213,6 +215,10 @@ export async function flashRebalanceOnce(
     return { ...base, action: "flash-rebalance", reason: outcome.reason, armedAmountStxBase: sized.amountBase, armTxid: armed.txid, executed: outcome.executed };
   }
 
+  if (isKilled()) {
+    // The arm alone moves no assets and expires; no loan is taken.
+    return { ...base, action: "skip", reason: "kill switch engaged — armed but flash-loan not sent", armedAmountStxBase: sized.amountBase, armTxid: armed.txid, skipped: true };
+  }
   log(`  flash-rebalance 2/2 — flash-loan ${Number(sized.amountBase) / 1e6} STX`);
   const flashed = await executeFlashLoanRebalance(w, sized.amountBase, { broadcast: true });
   if (!flashed.txid) throw new Error("flash-loan broadcast returned no txid");
