@@ -48,6 +48,16 @@ least 71% of windows. **The cost is upside**: the average one-year window ended 
 29% (ETH) below holding, because whipsaws sell low and buy back higher. Falls are reduced, not
 removed: the rule acts on daily closes, after a fall has started.
 
+### Volatility targeting: tested, not adopted (pre-registered 2026-11-13)
+
+Scaling the sBTC share down when 20-day volatility is above 50% a year (`validate_vol.py`) was
+tested against the trend rule alone, with pass criteria written down first. It **failed**: it cut
+the worst fall further (BTC 36% to 30%, ETH 35% to 23%, with the same or fewer >20% losses), but
+the average one-year return fell 9 to 13 points below the trend rule, against an allowed 3. It
+does not react earlier in a useful way; it is a risk dial (smaller falls for less return), the
+same trade-off as a lower risk share (open question 1). Volatility alone, without the trend rule,
+was worse than the trend rule on large losses. The design keeps the trend rule only.
+
 What may be said publicly: "a trend rule that, in historical simulations, roughly halved the worst
 falls at the cost of some upside". Not a return figure, and never "safe" without that qualifier.
 
