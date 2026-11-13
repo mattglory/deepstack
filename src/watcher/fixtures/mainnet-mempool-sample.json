@@ -1,0 +1,53 @@
+{
+ "limit": 50,
+ "offset": 0,
+ "total": 3,
+ "results": [
+  {
+   "tx_id": "0x11833d594ca34ad991ab36201a3466518c46d586e706fbce3c56e0552e7907f7",
+   "nonce": 2,
+   "fee_rate": "225",
+   "sender_address": "SP3RZSXW54C1PSWPFEV3C97Y6CWHNJRG3C6A32VAB",
+   "sponsored": false,
+   "tx_status": "pending",
+   "tx_type": "contract_call",
+   "receipt_time": 1793664765,
+   "receipt_time_iso": "2026-11-03T00:12:45.000Z",
+   "contract_call": {
+    "contract_id": "SP2A7PT3DMWVT2BHHMKQ2T0Y4AA05NST96SDM2FCE.street-token",
+    "function_name": "transfer"
+   }
+  },
+  {
+   "tx_id": "0x94040593b0f6f5f82204c37171281532518e59e7d9ea57568c298b418d0f1216",
+   "nonce": 936,
+   "fee_rate": "3000",
+   "sender_address": "SP34M22KZDV4TYQZEAM10XC96TZR1G5W75FRHG3KA",
+   "sponsored": false,
+   "tx_status": "pending",
+   "tx_type": "contract_call",
+   "receipt_time": 1793664765,
+   "receipt_time_iso": "2026-11-03T00:12:45.000Z",
+   "contract_call": {
+    "contract_id": "SP1A27KFY4XERQCCRCARCYD1CC5N7M6688BSYADJ7.v0-8-market",
+    "function_name": "borrow"
+   }
+  },
+  {
+   "tx_id": "0x8fc0fa33ea1d26c52c5449f370b41bd46714808d8876e19726cc2ccd7fcf1e24",
+   "nonce": 3669920,
+   "fee_rate": "180",
+   "sender_address": "SP3SBQ9PZEMBNBAWTR7FRPE3XK0EFW9JWVX4G80S2",
+   "sponsored": false,
+   "tx_status": "pending",
+   "tx_type": "token_transfer",
+   "receipt_time": 1793664765,
+   "receipt_time_iso": "2026-11-03T00:12:45.000Z",
+   "token_transfer": {
+    "recipient_address": "SP3XXK8BG5X7CRH7W07RRJK3JZJXJ799WX3Y0SMCR",
+    "amount": "1",
+    "memo": "0x00000000000000000000000000000000000000000000000000000000000000000000"
+   }
+  }
+ ]
+}

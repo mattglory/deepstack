@@ -1,0 +1,49 @@
+{
+ "stx": {
+  "balance": "49966468",
+  "total_miner_rewards_received": "0",
+  "lock_tx_id": "",
+  "locked": "0",
+  "lock_height": 0,
+  "burnchain_lock_height": 0,
+  "burnchain_unlock_height": 0,
+  "estimated_balance": "49966468",
+  "pending_balance_inbound": "0",
+  "pending_balance_outbound": "0",
+  "total_sent": "24188308942",
+  "total_received": "24273749927",
+  "total_fees_sent": "35474517"
+ },
+ "fungible_tokens": {
+  "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1::pool-token": {
+   "balance": "13972867",
+   "total_sent": "8198968",
+   "total_received": "22171835"
+  },
+  "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token": {
+   "balance": "1309000937",
+   "total_sent": "2039878951",
+   "total_received": "3348879888"
+  },
+  "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-2-bps-10::pool-token": {
+   "balance": "0",
+   "total_sent": "16070176",
+   "total_received": "16070176"
+  },
+  "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token": {
+   "balance": "140",
+   "total_sent": "8038539",
+   "total_received": "8038679"
+  },
+  "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token": {
+   "balance": "64026003",
+   "total_sent": "6943008106",
+   "total_received": "7007034109"
+  },
+  "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-vault-token::deepstack-vault-shares": {
+   "balance": "0",
+   "total_sent": "100000000",
+   "total_received": "100000000"
+  }
+ }
+}

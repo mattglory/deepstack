@@ -1,0 +1,7 @@
+{
+ "server_version": "stacks-blockchain-api v9.7.1 (main:2a8245f1)",
+ "status": "ready",
+ "chain_tip": {
+  "block_height": 9399786
+ }
+}
