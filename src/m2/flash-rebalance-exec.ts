@@ -8,9 +8,10 @@
 // live===true — execute it. live===false is pure observe: sizes the trade and returns,
 // touches no key and no capital.
 
-import { existsSync } from "node:fs";
-import { fetchCallReadOnlyFunction, fetchNonce, makeContractCall, broadcastTransaction, cvToJSON, Cl, Pc, PostConditionMode } from "@stacks/transactions";
-import { withRpc, hiroFetch } from "../m1/rpc.js";
+import { isKilled } from "../m1/kill.js";
+import { fetchCallReadOnlyFunction, fetchNonce, makeContractCall, cvToJSON, Cl, PostConditionMode } from "@stacks/transactions";
+import { STX, walletOutflowConditions } from "../m1/post-conditions.js";
+import { withRpc, hiroFetch, broadcastSigned } from "../m1/rpc.js";
 import { type Wallet, getStxBalance } from "../m1/wallet.js";
 import { getSwapYForXQuote, minusSlippage } from "../m1/quotes.js";
 import { checkNonceSafety } from "../m1/nonce-safety.js";
@@ -104,9 +105,16 @@ export async function armRebalance(
     nonce,
     postConditionMode: PostConditionMode.Deny, // arming moves no assets
   });
-  const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-  if (!("txid" in res)) throw new Error(`arm broadcast failed: ${JSON.stringify(res)}`);
+  // Configured endpoints + failover + timeout, same signed tx (C2). A rejection ALSO carries a
+  // txid, so the old `"txid" in res` check read a rejected broadcast as sent.
+  const res = await broadcastSigned(tx);
+  if ("error" in res) throw new Error(`arm broadcast failed: ${res.error}`);
   return { txid: res.txid, minDx, quotedDx };
+}
+
+/** The flash-loan call's wallet post-conditions: STX ≤ repayCap, every other wallet asset ≤ 0. */
+export function flashLoanPostConditions(sender: string, repayCap: bigint) {
+  return walletOutflowConditions(sender, [{ key: STX, max: repayCap }]);
 }
 
 export async function executeFlashLoanRebalance(
@@ -127,14 +135,18 @@ export async function executeFlashLoanRebalance(
     network: "mainnet",
     fee: CALL_FEE,
     nonce,
-    // Allow mode: the core and receiver move STX/sBTC internally (borrowed leg, swap,
-    // forwarding) — same rationale as the agent's own swaps. The operator's own outflow is
-    // strictly capped at the repayment via the post-condition below.
+    // Allow mode: the core and the receiver contract move STX/sBTC between themselves and the
+    // XYK pool (borrowed leg, swap, forwarding), which Deny would have to enumerate per
+    // principal. The operator wallet's own outflow is its STX repayment only (0x55b4e158…: the
+    // one transfer the wallet itself sends), capped at repayCap; every other wallet asset is
+    // "sends ≤ 0" (post-conditions.ts; C3 / DSA-09).
     postConditionMode: PostConditionMode.Allow,
-    postConditions: [Pc.principal(w.address).willSendLte(repayCap).ustx()],
+    postConditions: flashLoanPostConditions(w.address, repayCap),
   });
-  const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-  if (!("txid" in res)) throw new Error(`flash-loan broadcast failed: ${JSON.stringify(res)}`);
+  // Configured endpoints + failover + timeout, same signed tx (C2). A rejection ALSO carries a
+  // txid, so the old `"txid" in res` check read a rejected broadcast as sent.
+  const res = await broadcastSigned(tx);
+  if ("error" in res) throw new Error(`flash-loan broadcast failed: ${res.error}`);
   return { txid: res.txid, repayCap };
 }
 
@@ -180,7 +192,7 @@ export async function flashRebalanceOnce(
   if (cfg.amountStxBase <= 0n) return { ...base, action: "skip", reason: "no deficit", skipped: true };
 
   // Same manual kill switch as dlmm-recenter-exec.ts and the XYK path — one check, same file.
-  if (process.env.KILL_SWITCH === "1" || existsSync("KILL")) {
+  if (isKilled()) {
     return { ...base, action: "skip", reason: "kill switch engaged — flash-rebalance skipped", skipped: true };
   }
 
@@ -203,6 +215,8 @@ export async function flashRebalanceOnce(
   if (!sized.worthwhile) return { ...base, action: "skip", reason: sized.reason, skipped: true };
   if (!live) return { ...base, action: "skip", reason: `sized ${sized.amountBase} — observe mode`, armedAmountStxBase: sized.amountBase };
 
+  // Re-checked immediately before each broadcast (C8 / DSA-27), not only once per cycle.
+  if (isKilled()) return { ...base, action: "skip", reason: "kill switch engaged — flash-rebalance skipped before arm", skipped: true };
   log(`  flash-rebalance 1/2 — arm ${Number(sized.amountBase) / 1e6} STX`);
   const armed = await armRebalance(w, sized.amountBase, { broadcast: true, slipBps: cfg.slipBps });
   if (!armed.txid) throw new Error("arm broadcast returned no txid");
@@ -213,6 +227,10 @@ export async function flashRebalanceOnce(
     return { ...base, action: "flash-rebalance", reason: outcome.reason, armedAmountStxBase: sized.amountBase, armTxid: armed.txid, executed: outcome.executed };
   }
 
+  if (isKilled()) {
+    // The arm alone moves no assets and expires; no loan is taken.
+    return { ...base, action: "skip", reason: "kill switch engaged — armed but flash-loan not sent", armedAmountStxBase: sized.amountBase, armTxid: armed.txid, skipped: true };
+  }
   log(`  flash-rebalance 2/2 — flash-loan ${Number(sized.amountBase) / 1e6} STX`);
   const flashed = await executeFlashLoanRebalance(w, sized.amountBase, { broadcast: true });
   if (!flashed.txid) throw new Error("flash-loan broadcast returned no txid");
