@@ -43,8 +43,9 @@
 
 import { fetchNonce } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
+import { killFilePresent, killPath } from "./kill.js";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
-import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, type DlmmPool, type DlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, pinMismatch, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
 import {
   distributeAcrossRange,
@@ -214,6 +215,11 @@ async function main() {
   const { action, amount, rest, yes, explicitHalfWidth } = parseArgs();
   if (!["status", "open", "recenter", "withdraw", "reset-basis", "set-basis", "swap", "force-recenter"].includes(action ?? "")) throw new Error("usage: m1:dlmm-recenter -- <status | open <usd> | recenter | withdraw | swap <x-for-y|y-for-x> <amount> | reset-basis | set-basis <xQty> <yQty> [iso-time]> [--yes-mainnet]");
 
+  // Broadcasting actions share the agent wallet's nonce, so they require the agent paused
+  // (C8 / DSA-27), like m1:withdraw and m1:rotate-key. status/set-basis/reset-basis never broadcast.
+  if (yes && !["status", "set-basis", "reset-basis"].includes(action ?? "") && !killFilePresent()) {
+    throw new Error(`refusing: pause the agent first (touch ${killPath()}) so the two never send at once`);
+  }
   const w = await getWallet();
   if (w.network !== "mainnet") throw new Error(`refusing: STACKS_NETWORK is ${w.network}; DLMM is mainnet-only.`);
   const poolDef = DLMM_POOLS.find((p) => p.key === PAIR);
@@ -221,6 +227,8 @@ async function main() {
   const st = await readDlmmState(poolDef);
   if (!st) throw new Error(`could not read pool state for ${PAIR}`);
   const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
+  const mismatch = pinMismatch(poolDef, st, xTok, yTok); // C4: never build a transaction from RPC-substituted tokens
+  if (mismatch) throw new Error(`refusing: RPC values differ from the pinned pool definition: ${mismatch}`);
   const pos = await readUserPosition(poolDef, w.address);
   // Same vol-scaled width the live agent uses (resolveHalfWidth, shared in dlmm-recenter-exec.ts)
   // — falls back to FALLBACK_HALF_WIDTH only when there isn't yet enough telemetry history.
