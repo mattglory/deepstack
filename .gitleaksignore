@@ -7,3 +7,6 @@
 9510e649fdc6188a9142b4085a81095fdf4b048a:src/m1/dlmm-write.test.ts:generic-api-key:112
 # 2026-11-03: the first version of this file quoted that test line in a comment.
 17dc689c35f65e901c3cb1d92c4c2f27b95be2e2:.gitleaksignore:generic-api-key:4
+# 2026-11-10: generic-api-key in the C4 pin table: the value is the same public USDCx token
+# contract principal; the rule keys on the object's field name.
+757790ce513c2ab6d667ba0f66381b66d7dc777f:src/m1/dlmm-read.ts:generic-api-key:64
