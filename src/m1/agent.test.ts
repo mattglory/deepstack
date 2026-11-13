@@ -217,6 +217,7 @@ const gateBase = {
   dlmmFailStreakLimit: 2,
   dlmmRecenters: 0,
   maxTrades: 10,
+  network: "mainnet",
 };
 
 test("dlmmLiveGate: all conditions met → live", () => {
@@ -314,6 +315,7 @@ const flashGateBase = {
   flashFailStreakLimit: 2,
   flashAttempts: 0,
   maxTrades: 10,
+  network: "mainnet",
 };
 
 test("flashLiveGate: all conditions met → live", () => {
@@ -400,4 +402,16 @@ test("worthTrading: a 0.019 STX rebalance is not worth a 0.05 STX fee", () => {
   assert.equal(worthTrading(0.019131, 5), false);
   assert.equal(worthTrading(5, 5), true);
   assert.equal(worthTrading(50, 5), true);
+});
+
+// C8 / DSA-26 (assessment A4 F-13): the DLMM and flash executors hardcode "mainnet", so with
+// STACKS_NETWORK=testnet and --live --yes-mainnet they would sign MAINNET transactions with
+// whatever key is configured. The gates now require the wallet's network to be mainnet.
+test("dlmmLiveGate: a non-mainnet wallet blocks it", () => {
+  assert.equal(dlmmLiveGate({ ...gateBase, network: "testnet" }), false);
+  assert.equal(dlmmLiveGate({ ...gateBase, network: "" }), false);
+});
+
+test("flashLiveGate: a non-mainnet wallet blocks it", () => {
+  assert.equal(flashLiveGate({ ...flashGateBase, network: "testnet" }), false);
 });
