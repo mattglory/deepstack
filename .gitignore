@@ -29,3 +29,6 @@ research_notes/
 ms-*.hex
 ms-*.hex.sig*.json
 .env.testnet*
+
+# vault v2 deployment records (m1:vault-v2 deploy/verify): txids and plans, kept locally
+/deployments/
