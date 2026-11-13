@@ -14,11 +14,11 @@
 // kept; target is hard-capped. If a withdraw does not confirm, the recenter aborts before the
 // re-add (funds sit safely in the wallet as loose tokens — no half-built position).
 
-import { existsSync } from "node:fs";
+import { isKilled } from "./kill.js";
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
-import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, type DlmmPool, type DlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, pinMismatch, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { exceedsPoolShare } from "./agent.js";
 import { setDlmmBasis, loadHistory, loadVenueBases } from "./metrics.js";
 import { readUserPosition, type DlmmPosition } from "./dlmm-position.js";
@@ -254,7 +254,7 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   // was also capping every future autonomous recenter of the position at $250, not just a
   // one-off manual open (found 2026-09-30 sizing a deliberate $600 position — the position
   // would have shrunk back to $250 the moment it next needed a genuine recenter).
-  const cap = cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
+  const cap = maxTargetUsd(cfg);
   if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) throw new Error(`target must be >0 and ≤ ${cap}`);
   const xPrice = await priceOfToken(xTok);
   const nativeStx = (await getStxBalance(w.address, w.network)).microStx;
@@ -305,6 +305,10 @@ async function executeAdd(w: Wallet, poolDef: DlmmPool, st: DlmmState, xTok: Tok
   return r.txid;
 }
 
+function maxTargetUsd(cfg: RecenterConfig): number {
+  return cfg.maxTargetUsd ?? Number(process.env.DLMM_MAX_TARGET_USD ?? 250);
+}
+
 // Scale an explicit re-add down proportionally if it would exceed the configured ceiling (USD).
 function capToTarget(a: { xBase: bigint; yBase: bigint }, xPriceUsd: number, xDec: number, yDec: number, capUsd: number) {
   const valueUsd = (Number(a.xBase) / 10 ** xDec) * xPriceUsd + Number(a.yBase) / 10 ** yDec;
@@ -348,6 +352,18 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     if (!s0) throw new Error(`could not read pool state for ${cfg.pair}`);
     st = s0;
     [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
+    // C4 / DSA-10: stop before any sizing, descriptor or broadcast if the RPC disagrees with
+    // the pool's pinned tokens/core/decimals. A skip (no attempt, so no failed-add count), but
+    // with alert set: a mismatch means an RPC or registry problem a human must look at.
+    const mismatch = pinMismatch(poolDef, st, xTok, yTok);
+    if (mismatch) {
+      log(`  [dlmm] ⛔ pool does not match its pinned definition: ${mismatch} — no DLMM broadcast this cycle`);
+      return {
+        action: "skip", reason: `RPC values differ from the pinned pool definition: ${mismatch}`,
+        activeBin: st.activeBinId, posLo: null, posHi: null, posX: 0, posY: 0, halfWidth: cfg.halfWidth,
+        executed: false, skipped: true, alert: true,
+      };
+    }
     pos = await readUserPosition(poolDef, w.address);
   } catch (err) {
     return {
@@ -373,7 +389,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
         posX: 0, posY: 0, halfWidth, executed: false,
       };
       if (!live) return { ...baseP, reason: "pending re-add (observe: not resumed)" };
-      if (!cfg.force && (process.env.KILL_SWITCH === "1" || existsSync("KILL"))) return { ...baseP, reason: "kill switch engaged — pending re-add not resumed", skipped: true };
+      if (!cfg.force && isKilled()) return { ...baseP, reason: "kill switch engaged — pending re-add not resumed", skipped: true };
       const ns = await checkNonceSafety(w.address).catch((err) => ({ safe: false, reason: `nonce check failed: ${(err as Error).message}` }));
       if (!ns.safe) return { ...baseP, reason: ns.reason ?? "nonce check failed", skipped: true };
       return readdPending(w, poolDef, st, xTok, yTok, effCfg, pendingNow, baseP, log);
@@ -399,7 +415,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // Sep 21 incident's failure loop ran for ~7 hours with no way to stop it short of editing
   // .env and restarting the whole process. Same check, same file (KILL), now here too.
   // An attended force-recenter is run by the operator with the agent paused, so KILL is expected.
-  if (!cfg.force && (process.env.KILL_SWITCH === "1" || existsSync("KILL"))) {
+  if (!cfg.force && isKilled()) {
     return { ...base, reason: "kill switch engaged — DLMM broadcast skipped", skipped: true };
   }
 
@@ -441,6 +457,7 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   }
 
   if (dec.action === "open") {
+    if (!cfg.force && isKilled()) return { ...base, reason: "kill switch engaged — DLMM open skipped", skipped: true };
     const addTxid = await executeAdd(w, poolDef, st, xTok, yTok, effCfg, log);
     const s = await waitForTx(addTxid, log);
     if (s === "success") {
@@ -472,7 +489,17 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
   // fails outright, not if it succeeds at a bad price).
   const withdrawals: BinWithdraw[] = pos.bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: b.userX > 0n ? 1n : 0n, minY: b.userY > 0n ? 1n : 0n }));
   const wdesc = buildWithdrawLiquidity({ poolName: poolDef.name, xToken: st.xToken, yToken: st.yToken } as PoolRefs, withdrawals, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
+  // The re-add refuses a target above the ceiling (executeAdd), so refuse it here, before the
+  // withdraw: otherwise the position is pulled out, swapped, and left loose (found by the B5
+  // fault harness). A config error for a human, so a skip with an alert, not a failed attempt.
+  const cap = maxTargetUsd(cfg);
+  if (!(cfg.targetUsd > 0) || cfg.targetUsd > cap) {
+    return { ...base, reason: `target $${cfg.targetUsd} must be >0 and ≤ DLMM_MAX_TARGET_USD $${cap} — recenter not started`, skipped: true, alert: true };
+  }
   log(`  recenter 1/3 — withdraw ${pos.bins.length} bins`);
+  // Re-checked immediately before each broadcast of the sequence (C8 / DSA-27), not only once
+  // per cycle: an operator halt engaged mid-recenter stops before the next transaction.
+  if (!cfg.force && isKilled()) return { ...base, reason: "kill switch engaged — DLMM withdraw skipped", skipped: true };
   const wnonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
   const wr = await executeDescriptor(wdesc, { live: true, yesMainnet: true, senderKey: w.key, allowNoInputCaps: true, feeMicroStx: FEE_USTX, nonce: wnonce });
   if (!wr.txid) throw new Error("withdraw returned no txid");
@@ -559,6 +586,9 @@ async function readdPending(
     const sdesc = buildSwapSimple({ poolName: poolDef.name, xToken: xTok.principal, yToken: yTok.principal } as PoolRefs, step.direction, step.amountIn, step.minOut, { deadlineTime: Math.floor(Date.now() / 1000) + DEADLINE_SECS });
     const spcs = buildInputCaps(w.address, [{ token: inTok.principal, asset: inTok.asset, max: step.amountIn }]);
     log(`  rebalance swap ${i + 1}: ${step.direction} ${Number(step.amountIn) / 10 ** inTok.decimals} ${inTok.asset || "STX"} (min out ${step.minOut})`);
+    // The pending re-add is already saved (after the withdraw, and after each settled swap), so
+    // stopping here leaves it for a safe resume once KILL is cleared.
+    if (!cfg.force && isKilled()) return waitResult("kill switch engaged before rebalance swap");
     const snonce = await withRpc((baseUrl) => fetchNonce({ address: w.address, network: "mainnet", client: { baseUrl, fetch: hiroFetch(baseUrl) } }));
     const sr = await executeDescriptor(sdesc, { live: true, yesMainnet: true, senderKey: w.key, postConditions: spcs, feeMicroStx: FEE_USTX, nonce: snonce });
     if (sr.txid) { pending.pendingSwap = { txid: sr.txid, direction: step.direction }; savePending(pending); }
@@ -580,6 +610,7 @@ async function readdPending(
   // Balanced: re-add all of it, keeping 2% back for the pool's liquidity fee.
   const stAdd = (await readDlmmState(poolDef)) ?? stNow;
   log(`  re-add centered on active ${stAdd.activeBinId}: ${Number(pending.xBase) / xu} ${xTok.asset || "STX"} + ${Number(pending.yBase) / yu} ${yTok.asset}`);
+  if (!cfg.force && isKilled()) return waitResult("kill switch engaged before re-add");
   const addTxid = await executeAdd(w, poolDef, stAdd, xTok, yTok, cfg, log, { xBase: pending.xBase - pending.xBase / 50n, yBase: pending.yBase - pending.yBase / 50n });
   const as = await waitForTx(addTxid, log);
   const outcome = recenterSequenceOutcome("success", as);

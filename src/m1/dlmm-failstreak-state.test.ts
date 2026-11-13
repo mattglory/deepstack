@@ -78,7 +78,7 @@ test("a corrupt state file closes dlmmLiveGate even with every other term true",
   const c = loadDlmmCounters(STATE_PATH);
   const open = dlmmLiveGate({
     dlmmLiveFlag: true, live: true, circuitOk: true, safe: true,
-    dlmmFailStreak: c.failStreak, dlmmFailStreakLimit: 1_000_000, dlmmRecenters: c.recenters, maxTrades: 1_000_000,
+    dlmmFailStreak: c.failStreak, dlmmFailStreakLimit: 1_000_000, dlmmRecenters: c.recenters, maxTrades: 1_000_000, network: "mainnet",
   });
   assert.equal(open, false);
 });
