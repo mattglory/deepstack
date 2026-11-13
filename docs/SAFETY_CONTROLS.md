@@ -81,8 +81,14 @@ verdicts; the assessment line is printed and journaled every cycle.
 - **Manual kill switch**: setting `KILL_SWITCH=1` or creating a `KILL` file halts all
   trading immediately — verified live:
   `⛔ SAFETY HALT — manual kill-switch engaged (no trading this cycle)`.
-- **Session drawdown limit**: if portfolio value drops more than a configured fraction
-  (default 15%) from the session baseline, trading halts automatically.
+- **Drawdown limit**: if portfolio value drops more than a configured fraction
+  (default 15%) from the baseline, trading halts automatically (XYK, flash and DLMM).
+  The baseline is taken at the agent's first successful read and persisted in
+  `journal/drawdown-baseline.json` (`src/m1/risk-state.ts`), so a restart does not
+  re-baseline after a loss. Owner withdrawals recorded after it (capital-flow-cli) are
+  added back; a recorded key rotation carries it to the new wallet. If the file is
+  unreadable, or belongs to another pair or an unrelated wallet, every cycle halts until
+  a human inspects it. Operator reset: delete the file; the next read re-baselines.
 
 ## 7. Defense in depth (surrounding rails)
 
@@ -94,7 +100,10 @@ verdicts; the assessment line is printed and journaled every cycle.
   defaults (`src/m1/ai/tune.ts`). The LLM never signs or sizes a transaction.
 - **Confirmation polling**: after each broadcast the agent waits for on-chain
   confirmation before the next cycle — no double-trading on stale balances
-  (`waitForTx`, `src/m1/agent-cli.ts`), capped by `--max-trades` per run.
+  (`waitForTx`, `src/m1/agent-cli.ts`), capped by `--max-trades` over the agent's
+  lifetime: successful XYK trades are counted in `journal/xyk-trades.json`
+  (`src/m1/risk-state.ts`) and survive restarts. An unreadable file reads as the budget
+  exhausted (observe-only). Operator reset: delete the file.
 - **Key handling**: the signing key/seed is read only from a gitignored `.env`, never
   logged, never committed; dry-run builders sign with ephemeral random keys.
 - **Audit trail**: every cycle appends a decision record (observation, safety verdict,
