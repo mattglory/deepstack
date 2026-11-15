@@ -37,6 +37,19 @@ rsync -a --delete \
 git -C "$SRC" rev-parse --short HEAD > "$APP/.deployed-commit"
 
 echo "== deps + gates (do not deploy a red suite) =="
+# The code is already copied (rsync above, as root), so a failing gate must still hand the files
+# back to the service user and say so loudly. Found 2026-11-15: a deploy stopped at this step left
+# /opt/deepstack/dashboard owned by root, and the running agent silently stopped saving its
+# telemetry (EACCES on the atomic temp file) for ten hours.
+on_exit() {
+  status=$?
+  chown -R deepstack:deepstack "$APP" || true
+  if [ "$status" -ne 0 ]; then
+    echo "!! DEPLOY FAILED (exit $status) at the deps/test/typecheck gate: the NEW code is already in $APP"
+    echo "!! (file ownership restored). Fix the failure and re-run, or redeploy the previous commit."
+  fi
+}
+trap on_exit EXIT
 cd "$APP"
 npm install --no-fund --no-audit
 npm test
