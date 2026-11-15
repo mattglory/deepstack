@@ -94,6 +94,17 @@
       </div>
 
       <div class="panel">
+        <h2>Capital over time <span style="text-transform:none;letter-spacing:0;color:var(--faint)">· USD, one point per day, full history</span></h2>
+        <div id="capWrap" style="position:relative;display:none">
+          <svg id="capChart" width="100%" height="170" preserveAspectRatio="none"></svg>
+          <div id="capTip" style="position:absolute;pointer-events:none;display:none;background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:6px 9px;font-size:12px;color:var(--fg);white-space:nowrap;z-index:2"></div>
+          <div style="display:flex;justify-content:space-between;color:var(--faint);font-size:11px;margin-top:4px"><span id="capT0"></span><span id="capT1"></span></div>
+          <div class="legend" id="capLegend"></div>
+        </div>
+        <div class="note" id="capNote">loading…</div>
+      </div>
+
+      <div class="panel">
         <h2>Economics (fee-backed — not a guaranteed yield)</h2>
         <div class="econ" id="econ"></div>
         <div class="note" id="econNote"></div>
@@ -137,7 +148,7 @@
     </div>
 
     <script type="module">
-      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets, trackRecordEnd, capitalAllocation } from "./pnl-math.js";
+      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets, trackRecordEnd, capitalAllocation, dailyCapitalSeries } from "./pnl-math.js";
       const CFG = {
         // Fallback until telemetry loads; telemetry's wallet + walletMigrations take over after.
         wallet: "SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4",
@@ -286,7 +297,7 @@
         // allocation: where the capital sits, from the agent's latest sample (capitalAllocation,
         // pnl-math.js). Free balances alone ignored both positions. Falls back to the old free
         // STX/sBTC split only before the first heartbeat lands.
-        const ALLOC_COL = { stx: "var(--stx)", sbtc: "var(--btc)", xyk: "#2bb3a3", dlmm: "var(--blue)", usdcx: "var(--muted)" };
+        const ALLOC_COL = { stx: "var(--stx)", sbtc: "var(--btc)", xyk: "#2bb3a3", dlmm: "var(--blue)", "dlmm-pending": "#7aa7f5", "dlmm-extra": "#a371f7", usdcx: "var(--muted)" };
         const alloc = agentLastSample ? capitalAllocation(agentLastSample) : null;
         if (alloc && alloc.total > 0) {
           $("alloc").innerHTML = alloc.parts.map((p) => `<span style="width:${p.pct}%;background:${ALLOC_COL[p.key]}"></span>`).join("");
@@ -628,12 +639,73 @@
           return r.ok ? await r.json() : null;
         } catch { return null; }
       }
+      // Capital over time: the static history.json (stitched from the telemetry gist's revision
+      // history back to July 2026) + the agent's dailyHistory + the live samples, one point per
+      // day (dailyCapitalSeries, pnl-math.js). Stacked by where the capital sat, in USD at each
+      // day's STX price. Owner deposits and withdrawals are marked: a step there is capital
+      // moving in or out, not profit or loss.
+      let historyDays = null;
+      const CAP_ORDER = ["usdcx", "dlmm", "dlmm-pending", "dlmm-extra", "xyk", "sbtc", "stx"];
+      const CAP_LABEL = { stx: "Free STX", sbtc: "Free sBTC", xyk: "XYK position", dlmm: "DLMM position", "dlmm-pending": "DLMM, re-add pending", "dlmm-extra": "DLMM, other pairs", usdcx: "Free USDCx" };
+      const CAP_COL = { stx: "var(--stx)", sbtc: "var(--btc)", xyk: "#2bb3a3", dlmm: "var(--blue)", "dlmm-pending": "#7aa7f5", "dlmm-extra": "#a371f7", usdcx: "var(--muted)" };
+      function renderCapitalHistory(m) {
+        const wrap = $("capWrap"), note = $("capNote");
+        const series = dailyCapitalSeries(historyDays?.days ?? [], m?.dailyHistory ?? [], m?.samples ?? []);
+        if (series.length < 2) { wrap.style.display = "none"; note.textContent = "Not enough history yet."; return; }
+        wrap.style.display = "block";
+        const svg = $("capChart"), W = svg.clientWidth || 800, H = 170, P = 6;
+        svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+        const hi = Math.max(...series.map((d) => d.totalUsd)) * 1.05 || 1;
+        const X = (i) => P + (i / (series.length - 1)) * (W - 2 * P);
+        const Y = (v) => H - P - (v / hi) * (H - 2 * P);
+        const keys = CAP_ORDER.filter((k) => series.some((d) => (d.usd[k] ?? 0) > 0));
+        const base = series.map(() => 0);
+        let areas = "";
+        for (const k of keys) {
+          const top = series.map((d, i) => base[i] + (d.usd[k] ?? 0));
+          const up = top.map((v, i) => `${X(i)},${Y(v)}`).join(" ");
+          const down = base.map((v, i) => `${X(i)},${Y(v)}`).reverse().join(" ");
+          areas += `<polygon points="${up} ${down}" fill="${CAP_COL[k]}" opacity="0.85"/>`;
+          top.forEach((v, i) => (base[i] = v));
+        }
+        const idxOfDay = new Map(series.map((d, i) => [d.day, i]));
+        let marks = "";
+        for (const f of m?.capitalFlows ?? []) {
+          const i = idxOfDay.get(f.t.slice(0, 10));
+          if (i === undefined) continue;
+          marks += `<line x1="${X(i)}" x2="${X(i)}" y1="0" y2="${H}" stroke="${f.stx > 0 ? "var(--ok)" : "var(--bad)"}" stroke-width="1" stroke-dasharray="2 3" opacity="0.8"/>`;
+        }
+        svg.innerHTML = areas + marks + `<line id="capCross" x1="0" x2="0" y1="0" y2="${H}" stroke="var(--fg)" stroke-width="1" opacity="0"/>`;
+        $("capT0").textContent = series[0].day;
+        $("capT1").textContent = series[series.length - 1].day;
+        $("capLegend").innerHTML = keys.map((k) => `<span><i style="background:${CAP_COL[k]}"></i>${CAP_LABEL[k]}</span>`).join("") +
+          `<span><i style="background:var(--ok)"></i>owner deposit</span><span><i style="background:var(--bad)"></i>owner withdrawal</span>`;
+        const firstDlmm = series.find((d) => d.dlmmRecorded);
+        note.innerHTML = `Today ≈ <b>$${fmt(series[series.length - 1].totalUsd, 0)}</b>. Steps at the dashed lines are the owner adding or taking out capital, not profit or loss. ` +
+          `History before the live window is stitched from the agent's published telemetry; STX prices before 11 Sep 2026 are DefiLlama daily closes.` +
+          (firstDlmm && firstDlmm.day > series[0].day ? ` The agent did not value its DLMM position before ${firstDlmm.day}, so earlier totals leave it out.` : "");
+        const tip = $("capTip"), cross = svg.querySelector("#capCross");
+        svg.onmousemove = (e) => {
+          const r = svg.getBoundingClientRect();
+          const i = Math.max(0, Math.min(series.length - 1, Math.round(((e.clientX - r.left) / r.width) * (series.length - 1))));
+          const d = series[i];
+          cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("opacity", "0.4");
+          tip.style.display = "block";
+          tip.style.left = `${Math.min((X(i) / W) * r.width + 10, r.width - 190)}px`;
+          tip.style.top = "6px";
+          tip.innerHTML = `<b>${d.day} · $${fmt(d.totalUsd, 0)}</b><br>` + keys.filter((k) => (d.usd[k] ?? 0) > 0.5).reverse().map((k) => `<span style="color:var(--muted)">${CAP_LABEL[k]}</span> $${fmt(d.usd[k], 0)}`).join("<br>");
+        };
+        svg.onmouseleave = () => { tip.style.display = "none"; cross.setAttribute("opacity", "0"); };
+      }
+
       async function loadPilot() {
+        if (historyDays === null) historyDays = (await fetchMetrics("history.json")) ?? { days: [] };
         const sources = ["metrics.json"];
         if (CFG.metricsMirror) sources.push(CFG.metricsMirror);
         const copies = (await Promise.all(sources.map(fetchMetrics))).filter((m) => m && m.updated);
         copies.sort((a, b) => new Date(b.updated) - new Date(a.updated));
         renderPilot(copies[0] ?? null);
+        renderCapitalHistory(copies[0] ?? null);
       }
 
       async function load() {
