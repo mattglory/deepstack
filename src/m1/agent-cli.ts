@@ -23,6 +23,7 @@ import {
 } from "./actions.js";
 import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
+import { xykHoldReasonForPendingReadd } from "./dlmm-pending-state.js";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
@@ -398,6 +399,13 @@ async function act(
   }, { dlmmFeesSince: s.dlmmFeesSince });
   if (!safety.safe) {
     console.log(`  ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no trading this cycle)`);
+    return false;
+  }
+  // A pending DLMM re-add's tokens are in this wallet and look like free XYK inventory: hold.
+  const pendingHold = xykHoldReasonForPendingReadd();
+  if (pendingHold) {
+    console.log(`  ⏸ XYK hold: ${pendingHold}`);
+    tickJournal.lpDecision = { action: "none", reason: "DLMM re-add pending" };
     return false;
   }
 
