@@ -34,14 +34,19 @@ still worth a plan rather than assuming it'll never need to move.
 - **Triggered:** rotate immediately on any suspected VPS compromise, any operator
   access change you can't fully account for, or any sign the key material left this box.
 - **Procedure** (`npm run m1:rotate-key`, run on the VPS in `/opt/deepstack`; the new key is
-  generated there and never displayed or copied anywhere else):
+  generated there and never displayed. Since 2026-11 it is also encrypted at creation to two
+  custodians, and `move` refuses until one of them has recovered it offline: see
+  [KEY_CUSTODY.md](KEY_CUSTODY.md), which must be in place before step 3):
   1. `touch KILL` and `systemctl stop deepstack-agent`. Stopped, not only paused: a paused
      agent still records a sample every cycle, and one taken mid-move would chart the
      transfers as a loss.
   2. Withdraw the concentrated position, saving it as a pending re-add:
      `DLMM_PAIR=sbtc-usdcx npm run m1:dlmm-recenter -- withdraw --readd-later --yes-mainnet`.
-  3. `npm run m1:rotate-key -- new` writes the new key to `.env.rotation` (owner-only) and
-     prints only its address. `-- plan` shows what will move and anything that blocks it.
+  3. `npm run m1:rotate-key -- new` writes the new key to `.env.rotation` (owner-only) and an
+     encrypted copy to `.env.rotation.backup.asc` (to `KEY_BACKUP_RECIPIENT_FILES`, at least two
+     custodians), and prints only its address. Copy the backup off the server, have a custodian
+     recover it offline (`m1:key-backup-verify`), and record that with `-- attest`
+     ([KEY_CUSTODY.md](KEY_CUSTODY.md)). `-- plan` shows what will move and anything that blocks it.
   4. `-- move --yes-mainnet` (type the new address's last 6 characters): the XYK LP token,
      sBTC and USDCx are each sent with a deny-mode, exact-amount post-condition and confirmed
      before the next; STX goes last. The XYK position moves as a token, so it is never unwound.

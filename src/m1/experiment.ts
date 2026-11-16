@@ -9,7 +9,7 @@
 // vol-scaled band and the experiment ends for good. State persists to a JSON file so a VPS
 // restart cannot silently reset the counters (a guardrail that resets is no guardrail).
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface ExperimentConfig {
@@ -44,12 +44,29 @@ export function freshState(): ExperimentState {
   return { startedAt: null, rebalances: 0, costStx: 0, ended: false, endReason: null };
 }
 
+// Missing file = fresh experiment. A file that exists but cannot be read or parsed fails
+// closed to ENDED (C7, DSA-13): it used to read as a fresh experiment, resetting all three
+// caps and re-pinning the tight band. Ended is terminal and reverts to the vol band.
 export function loadExperimentState(path: string): ExperimentState {
+  let raw: string;
   try {
-    return { ...freshState(), ...JSON.parse(readFileSync(path, "utf8")) };
-  } catch {
-    return freshState();
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return freshState();
+    return unreadable(path, (e as Error).message);
   }
+  try {
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== "object" || Array.isArray(j)) return unreadable(path, "not a JSON object");
+    return { ...freshState(), ...j };
+  } catch (e) {
+    return unreadable(path, (e as Error).message);
+  }
+}
+
+function unreadable(path: string, why: string): ExperimentState {
+  console.error(`⛔ EXPERIMENT STATE UNREADABLE (${path}: ${why}) — treating the experiment as ENDED (vol band)`);
+  return { ...freshState(), ended: true, endReason: `state file unreadable (${why})` };
 }
 
 export function saveExperimentState(path: string, s: ExperimentState): void {
@@ -58,7 +75,9 @@ export function saveExperimentState(path: string, s: ExperimentState): void {
   } catch {
     /* dir exists */
   }
-  writeFileSync(path, JSON.stringify(s, null, 2));
+  const tmp = `${path}.tmp-${process.pid}`; // atomic: never leave a half-written file
+  writeFileSync(tmp, JSON.stringify(s, null, 2));
+  renameSync(tmp, path);
 }
 
 export interface ExperimentDecision {

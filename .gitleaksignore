@@ -1,0 +1,15 @@
+# Reviewed false positives for the Secret scan job (gitleaks). One fingerprint per line, each with
+# the reason it is not a secret. Add entries only after looking at the flagged line, and do not
+# quote the flagged text in these comments (the scanner reads this file too).
+#
+# 2026-11-03: generic-api-key in a unit test: the value is the public USDCx token contract
+# principal (SP120SBRB...usdcx); the rule keys on the test object's field name.
+9510e649fdc6188a9142b4085a81095fdf4b048a:src/m1/dlmm-write.test.ts:generic-api-key:112
+# 2026-11-03: the first version of this file quoted that test line in a comment.
+17dc689c35f65e901c3cb1d92c4c2f27b95be2e2:.gitleaksignore:generic-api-key:4
+# 2026-11-15: generic-api-key on the pinned pool definitions (#56): the value is the public USDCx
+# token contract principal again, keyed on the object's field name.
+757790ce513c2ab6d667ba0f66381b66d7dc777f:src/m1/dlmm-read.ts:generic-api-key:64
+# 2026-11-15: generic-api-key in the agent test harness (#63): a throwaway signing key that has
+# never held funds, used only by the faked broadcaster in tests.
+24e4c635de8c7485eab23c15ee1d264dedc70c59:src/m1/agent-cli.harness.ts:generic-api-key:117

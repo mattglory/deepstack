@@ -53,9 +53,10 @@ async function main(): Promise<void> {
   for (const r of rows) {
     console.log(`±${String(r.halfWidth).padEnd(5)} ${String(r.recenters).padStart(9)}  ${f(r.feesPerDay).padStart(8)}  ${f(r.ilPerDay).padStart(6)}  ${f(r.recenterPerDay).padStart(12)}  ${f(r.netPerDay).padStart(7)}`);
   }
-  const rec = recommendWidth(rows, current);
+  const rec = recommendWidth(rows, current, { spanDays, dataDays: Math.min(feeDays, netDays) });
   console.log(`\nrecommendation: ±${rec.halfWidth} (${rec.reason})`);
   console.log("assumes our share of liquidity near the price stays small, so fees and IL scale with concentration; recenters replayed on the recorded path.");
+  console.log("cautious rules: no width that recentered more than 0.5 times a day; with under 14 days of fee data, at most one step narrower.");
 }
 
 main().catch((e) => {

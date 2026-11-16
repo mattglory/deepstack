@@ -47,17 +47,34 @@ export function widthTable(a: {
 }
 
 /**
- * The width to use. Never narrower while fees do not beat impermanent loss at today's width
- * (narrowing would only multiply the loss), and only a change worth at least `minGainFrac` more
- * net than today's width, so noise does not move the range.
+ * The width to use, chosen cautiously:
+ * - never narrower while fees do not beat impermanent loss at today's width (narrowing would only
+ *   multiply the loss);
+ * - never a width that would have recentered more than `maxRecentersPerDay` on the recorded path:
+ *   each recenter is several transactions and locks in the loss of a price that left the range,
+ *   which this model does not price;
+ * - with fewer than `minDataDays` of measured fees, at most one cautious step: no narrower than
+ *   `thinDataStep` of today's width (2026-11-04: eight days in which price returned to its start
+ *   made impermanent loss read near zero, and the uncapped choice was ±10);
+ * - only a change worth at least `minGainFrac` more net than today's width, so noise does not
+ *   move the range.
  */
-export function recommendWidth(rows: WidthRow[], currentHalfWidth: number, minGainFrac = 0.2): { halfWidth: number; reason: string } {
+export function recommendWidth(
+  rows: WidthRow[], currentHalfWidth: number,
+  opts: { minGainFrac?: number; maxRecentersPerDay?: number; spanDays?: number; dataDays?: number; minDataDays?: number; thinDataStep?: number } = {},
+): { halfWidth: number; reason: string } {
+  const minGain = opts.minGainFrac ?? 0.2, maxRpd = opts.maxRecentersPerDay ?? 0.5, minDays = opts.minDataDays ?? 14, step = opts.thinDataStep ?? 0.7;
   const cur = rows.find((r) => r.halfWidth === currentHalfWidth);
   if (!cur) return { halfWidth: currentHalfWidth, reason: "current width not in the table" };
   if (cur.feesPerDay - cur.ilPerDay <= 0) return { halfWidth: currentHalfWidth, reason: "fees do not beat impermanent loss at today's width; narrowing would multiply the loss" };
-  const best = rows.reduce((b, r) => (r.netPerDay > b.netPerDay ? r : b), cur);
-  if (best.halfWidth === currentHalfWidth || best.netPerDay < cur.netPerDay * (1 + minGainFrac)) {
-    return { halfWidth: currentHalfWidth, reason: "no width beats today's by a clear margin" };
+  const thin = opts.dataDays != null && opts.dataDays < minDays;
+  const allowed = rows.filter((r) =>
+    (opts.spanDays == null || r.recenters / opts.spanDays <= maxRpd) &&
+    (!thin || r.halfWidth >= Math.floor(currentHalfWidth * step)));
+  const best = allowed.reduce((b, r) => (r.netPerDay > b.netPerDay ? r : b), cur);
+  const caveat = thin ? ` (provisional: ${opts.dataDays!.toFixed(1)} days of fee data, under ${minDays}, so at most one step)` : "";
+  if (best.halfWidth === currentHalfWidth || best.netPerDay < cur.netPerDay * (1 + minGain)) {
+    return { halfWidth: currentHalfWidth, reason: `no allowed width beats today's by a clear margin${caveat}` };
   }
-  return { halfWidth: best.halfWidth, reason: `about ${(best.netPerDay - cur.netPerDay).toFixed(2)}/day more net than ±${currentHalfWidth} on this data` };
+  return { halfWidth: best.halfWidth, reason: `about ${(best.netPerDay - cur.netPerDay).toFixed(2)}/day more net than ±${currentHalfWidth} on this data${caveat}` };
 }

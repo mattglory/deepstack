@@ -1,0 +1,15 @@
+{
+  "name": "deepstack-v3-own-bin-proof",
+  "version": "1.0.0",
+  "description": "Vault v3 step 1: a contract owns a Bitflow HODLMM position (simnet against mainnet state).",
+  "type": "module",
+  "private": true,
+  "scripts": { "test": "vitest run" },
+  "license": "MIT",
+  "dependencies": {
+    "@stacks/clarinet-sdk": "3.24.1",
+    "@stacks/transactions": "^7.2.0",
+    "vitest": "^4.1.8",
+    "vitest-environment-clarinet": "^3.0.0"
+  }
+}
