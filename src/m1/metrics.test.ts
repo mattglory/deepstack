@@ -9,7 +9,7 @@
 
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -276,6 +276,46 @@ test("dlmm fees: the latest on-chain figure is kept at the top; dropped when the
   assert.equal(m.dlmmFees, undefined);
 });
 
+// C7 / DSA-13: a corrupt metrics.json used to be silently replaced by a fresh file, destroying
+// the pilot history (and with it the vol history and drawdown peak). It must be moved aside
+// (metrics.json.corrupt-<ts>) for a human to recover; recording then starts a fresh file so
+// the agent keeps running.
+const corruptCopies = () => {
+  const base = METRICS_PATH.split("/").pop()!;
+  return readdirSync(tmpdir()).filter((f) => f.startsWith(`${base}.corrupt-`)).map((f) => join(tmpdir(), f));
+};
+
+test("corrupt metrics.json: moved aside intact, never overwritten; recording starts fresh", () => {
+  for (const f of corruptCopies()) rmSync(f, { force: true });
+  writeFileSync(METRICS_PATH, '{"samples":[ HISTORY');
+  recordSample("sbtc-stx", "SPX", 1800, sample(0));
+  const aside = corruptCopies();
+  assert.equal(aside.length, 1);
+  assert.equal(readFileSync(aside[0], "utf8"), '{"samples":[ HISTORY');
+  assert.equal(JSON.parse(readFileSync(METRICS_PATH, "utf8")).samples.length, 1);
+  for (const f of aside) rmSync(f, { force: true });
+});
+
+test("corrupt metrics.json: readers do not throw and do not lose the file", async () => {
+  const { loadHistory, currentDrawdown } = await import("./metrics.js");
+  for (const f of corruptCopies()) rmSync(f, { force: true });
+  writeFileSync(METRICS_PATH, "not json");
+  assert.deepEqual(loadHistory(), []);
+  assert.equal(currentDrawdown(100), 0);
+  const aside = corruptCopies();
+  assert.equal(aside.length, 1);
+  assert.equal(readFileSync(aside[0], "utf8"), "not json");
+  for (const f of aside) rmSync(f, { force: true });
+});
+
+test("metrics writes are atomic: no temp file is left behind", () => {
+  recordSample("sbtc-stx", "SPX", 1800, sample(200));
+  adjustLpBasis({ kind: "withdraw", fraction: 0.5 });
+  const base = METRICS_PATH.split("/").pop()!;
+  assert.deepEqual(readdirSync(tmpdir()).filter((f) => f.startsWith(`${base}.tmp`)), []);
+  assert.ok(JSON.parse(readFileSync(METRICS_PATH, "utf8")).lpBasis);
+});
+
 test("dlmmBasis fallback: y leg in USDCx, and a recenter's explicit basis is never overwritten (2026-11-06)", async () => {
   const { setDlmmBasis } = await import("./metrics.js");
   // Position worth 3,000 STX at $0.33: the y half is 1,500 STX = 495 USDCx, not 1,500.
@@ -287,4 +327,28 @@ test("dlmmBasis fallback: y leg in USDCx, and a recenter's explicit basis is nev
   setDlmmBasis({ xQty: 0.00104383, yQty: 3832.716818, t: "2026-11-06T00:20:00Z" });
   recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-06T00:22:00Z", 2900, 223_000, 0.33));
   assert.deepEqual(readDlmmBasis(), { xQty: 0.00104383, yQty: 3832.716818, t: "2026-11-06T00:20:00Z" });
+});
+
+test("dlmmBasis fallback: a recenter split across cycles keeps the agent's adjusted basis, whose t is the original open", async () => {
+  const { setDlmmBasis, loadVenueBases } = await import("./metrics.js");
+  const { adjustBasisForRecenter } = await import("./dlmm-recenter.js");
+  // Position opened earlier: explicit basis from `open`.
+  setDlmmBasis({ xQty: 0.001, yQty: 3800, t: "2026-11-01T00:00:00Z" });
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T22:00:00Z", 3000, 223_000, 0.33));
+  // Cycle N: withdraw confirmed, re-add not yet -> zero sample.
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T23:13:00Z", 0, 223_000, 0.33));
+  // Cycle N+1: re-add confirmed; the agent adjusts the basis exactly as dlmm-recenter-exec.ts does.
+  const prev = loadVenueBases().dlmmBasis!;
+  const next = adjustBasisForRecenter(prev, { x: 0.0011, y: 3700 }, { x: 0.00108, y: 3690 });
+  setDlmmBasis(next);
+  recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T23:49:00Z", 2950, 223_000, 0.33));
+  assert.deepEqual(readDlmmBasis(), next);
+});
+
+test("mergeDaily: the day's last sample per UTC day, merged and sorted; later wins", async () => {
+  const { mergeDaily } = await import("./metrics.js");
+  const s = (t: string, portfolioY: number) => ({ t, mid: 1, ext: null, xBase: "0", yBase: "0", lpValueY: 0, portfolioY, safe: true });
+  const daily = [s("2026-07-10T23:00:00Z", 1)];
+  const out = mergeDaily(daily, [s("2026-07-11T01:00:00Z", 2), s("2026-07-11T23:30:00Z", 3), s("2026-07-10T23:30:00Z", 4)]);
+  assert.deepEqual(out.map((x) => [x.t.slice(0, 10), x.portfolioY]), [["2026-07-10", 4], ["2026-07-11", 3]]);
 });

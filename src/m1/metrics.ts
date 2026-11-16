@@ -67,6 +67,8 @@ export interface MetricsSample {
   dlmmActiveBin?: number; // DLMM pool's active bin this tick (absent when the read failed) — the vol source for range width
   dlmmBinStep?: number; // that pool's bin step in bps, so a bin series is never mixed across pools
   dlmmFeesUsdcx?: number; // fees the DLMM position has earned since its deposit, from chain data (dlmm-fees.ts)
+  dlmmPendingX?: number; // a pending DLMM re-add's withdrawn x (human units), loose in the wallet until re-added
+  dlmmPendingY?: number; // and its y (USDCx)
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
   // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y
@@ -108,6 +110,9 @@ export interface MetricsFile {
   // accurate basis (the position's real x/y split, not a 50/50 guess) can be seeded
   // manually when the true composition is known, e.g. via a historical on-chain read.
   dlmmBasis?: { xQty: number; yQty: number; t: string };
+  // When setDlmmBasis last wrote dlmmBasis. Kept apart from dlmmBasis.t, which is the "since"
+  // date and stays at the original open across a recenter (adjustBasisForRecenter).
+  dlmmBasisSetAt?: string;
   // Official pilot window. When set, the dashboard scopes uptime, IL-adjusted return,
   // and the price chart to the window, and the P&L report defaults its --since to it.
   // Set once by `m2:pilot-start` on the pilot box; funding must be complete BEFORE this.
@@ -139,17 +144,65 @@ export interface MetricsFile {
   walletMigrations?: WalletMigration[];
   // Latest on-chain fee figure for the current DLMM position (dlmm-fees.ts), with its deposit time.
   dlmmFees?: { usdcx: number; since: string; t: string };
+  // One sample per UTC day for days that have left the rolling `samples` window, so the
+  // dashboard's capital history is never limited to the last MAX_SAMPLES cycles.
+  dailyHistory?: MetricsSample[];
   updated: string;
   deployedCommit?: string; // short git hash running when `updated` was written
 }
 
+// A missing file is null (fresh box). A file that exists but cannot be read or parsed is NOT
+// silently replaced any more (C7, DSA-13): it used to read as null, and the next recordSample
+// overwrote the whole pilot history with a fresh file. It is now moved aside to
+// metrics.json.corrupt-<ts> (kept for a human to recover) and logged, and THEN reads as null,
+// so recording starts a fresh file and the agent keeps running. If it cannot be moved aside,
+// load() throws: writers (all wrapped in try/catch, or a CLI) then skip the write rather than
+// overwrite it, and readers go through loadOrNull().
 function load(): MetricsFile | null {
+  let raw: string;
   try {
-    if (!existsSync(METRICS_PATH)) return null;
-    return JSON.parse(readFileSync(METRICS_PATH, "utf8")) as MetricsFile;
-  } catch {
-    return null; // corrupt file -> start fresh rather than crash the agent
+    raw = readFileSync(METRICS_PATH, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    return quarantine((e as Error).message);
   }
+  try {
+    const m = JSON.parse(raw);
+    if (m && typeof m === "object" && Array.isArray(m.samples)) return m as MetricsFile;
+    return quarantine("not a metrics object");
+  } catch (e) {
+    return quarantine((e as Error).message);
+  }
+}
+
+function quarantine(why: string): null {
+  const aside = `${METRICS_PATH}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  try {
+    renameSync(METRICS_PATH, aside);
+  } catch (e) {
+    throw new Error(`${METRICS_PATH} unreadable (${why}) and could not be moved aside (${(e as Error).message}); refusing to overwrite it`);
+  }
+  console.error(`⛔ METRICS FILE UNREADABLE (${why}) — moved aside to ${aside}; starting a fresh ${METRICS_PATH}`);
+  return null;
+}
+
+// Readers must never take the agent down over metrics (same policy as before).
+function loadOrNull(): MetricsFile | null {
+  try {
+    return load();
+  } catch (e) {
+    console.error(`⛔ ${(e as Error).message}`);
+    return null;
+  }
+}
+
+// Atomic (temp file + rename), like addCapitalFlow: a crash or full disk mid-write leaves the
+// previous file, never a half-written one that the next load() would have to quarantine.
+function writeMetrics(m: MetricsFile): void {
+  mkdirSync(dirname(METRICS_PATH), { recursive: true });
+  const tmp = `${METRICS_PATH}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(m));
+  renameSync(tmp, METRICS_PATH);
 }
 
 /**
@@ -158,7 +211,7 @@ function load(): MetricsFile | null {
  * error, or the agent can't run on a fresh box.
  */
 export function loadHistory(): MetricsSample[] {
-  return load()?.samples ?? [];
+  return loadOrNull()?.samples ?? [];
 }
 
 /**
@@ -169,7 +222,7 @@ export function loadHistory(): MetricsSample[] {
  * the formula these bases feed.
  */
 export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?: MetricsFile["dlmmBasis"] } {
-  const m = load();
+  const m = loadOrNull();
   return { lpBasis: m?.lpBasis, dlmmBasis: m?.dlmmBasis };
 }
 
@@ -183,7 +236,7 @@ export function loadVenueBases(): { lpBasis?: MetricsFile["lpBasis"]; dlmmBasis?
 // read as a drawdown: a 700 STX withdrawal is not a trading loss, and must not push the agent
 // into its defensive regime.
 export function currentDrawdown(portfolioYNow: number, nowT = new Date().toISOString()): number {
-  const hist = load()?.samples ?? [];
+  const hist = loadOrNull()?.samples ?? [];
   if (hist.length === 0 || !(portfolioYNow > 0)) return 0;
   const flows = loadCapitalFlows();
   const now = portfolioYNow + withdrawnStx(flows, null, nowT);
@@ -214,7 +267,7 @@ function readFlowsFile(): CapitalFlow[] {
 /** The flows file, plus any flows recorded inside metrics.json before the file existed. */
 export function loadCapitalFlows(): CapitalFlow[] {
   const byTx = new Map<string, CapitalFlow>();
-  for (const f of [...(load()?.capitalFlows ?? []), ...readFlowsFile()]) byTx.set(f.txid, f);
+  for (const f of [...(loadOrNull()?.capitalFlows ?? []), ...readFlowsFile()]) byTx.set(f.txid, f);
   return [...byTx.values()].sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
 }
 
@@ -259,6 +312,20 @@ export function addWalletMigration(mg: WalletMigration): "added" | "exists" {
 /** True when a recorded migration moved the agent from `from` to `to`. */
 export function isRecordedMigration(migrations: WalletMigration[], from: string, to: string): boolean {
   return migrations.some((x) => x.from === from && x.to === to);
+}
+
+/**
+ * Keep the day's last sample for each UTC day in `dropped`, merged into `daily` (one entry per
+ * day, sorted). Pure. Used when samples leave the rolling window, so long-run history survives.
+ */
+export function mergeDaily(daily: MetricsSample[], dropped: MetricsSample[]): MetricsSample[] {
+  const byDay = new Map(daily.map((s) => [s.t.slice(0, 10), s] as const));
+  for (const s of dropped) {
+    const day = s.t.slice(0, 10);
+    const prev = byDay.get(day);
+    if (!prev || Date.parse(s.t) >= Date.parse(prev.t)) byDay.set(day, s);
+  }
+  return [...byDay.keys()].sort().map((d) => byDay.get(d)!);
 }
 
 export function recordSample(
@@ -308,7 +375,9 @@ export function recordSample(
     // `set-basis`) is never overwritten here. Found 2026-11-06: a recenter whose withdraw and
     // re-add fell in different cycles left one zero sample, and this fallback then replaced the
     // agent's correct, adjusted basis with a 50/50 guess.
-    const basisSetSinceLastSample = !!m.dlmmBasis && !!prevSample && Date.parse(m.dlmmBasis.t) > Date.parse(prevSample.t);
+    // dlmmBasisSetAt, not dlmmBasis.t: a recenter keeps the original t, so t alone misses it.
+    const setAt = m.dlmmBasisSetAt ?? m.dlmmBasis?.t;
+    const basisSetSinceLastSample = !!m.dlmmBasis && !!prevSample && !!setAt && Date.parse(setAt) > Date.parse(prevSample.t);
     if ((!m.dlmmBasis || prevDlmmValueY <= 0) && !basisSetSinceLastSample && s.mid > 0 && (s.dlmmValueY ?? 0) > 0 && (s.stxUsd ?? 0) > 0) {
       // 50/50-by-value fallback when nothing better exists. dlmmValueY is in STX, but the DLMM
       // basis's y leg is USDCx (the pool is sBTC/USDCx), so the y half is converted at stxUsd.
@@ -317,7 +386,10 @@ export function recordSample(
       m.dlmmBasis = { xQty: s.dlmmValueY! / 2 / s.mid, yQty: (s.dlmmValueY! / 2) * s.stxUsd!, t: s.t };
     }
     m.samples.push(s);
-    if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);
+    if (m.samples.length > MAX_SAMPLES) {
+      m.dailyHistory = mergeDaily(m.dailyHistory ?? [], m.samples.slice(0, m.samples.length - MAX_SAMPLES));
+      m.samples = m.samples.slice(-MAX_SAMPLES);
+    }
     // Carry the owner-flow list (its own file) into metrics.json for the dashboard.
     const flows = loadCapitalFlows();
     if (flows.length) m.capitalFlows = flows;
@@ -326,8 +398,7 @@ export function recordSample(
     else if (!((s.dlmmValueY ?? 0) > 0)) delete m.dlmmFees; // no position: no fee figure
     m.updated = s.t;
     m.deployedCommit = deployedCommit();
-    mkdirSync(dirname(METRICS_PATH), { recursive: true });
-    writeFileSync(METRICS_PATH, JSON.stringify(m));
+    writeMetrics(m);
   } catch (err) {
     // Metrics are evidence, not safety-critical — never take the agent down over them.
     console.warn(`(metrics write skipped: ${(err as Error).message})`);
@@ -357,7 +428,7 @@ export function markPilotStart(): { startedAt: string; portfolioY: number } {
   // top-level lpBasis/dlmmBasis, which are meant to evolve with real capital events.
   if (m.lpBasis) m.pilotBaseline.lpBasis = { xQty: m.lpBasis.xQty, yQty: m.lpBasis.yQty };
   if (m.dlmmBasis) m.pilotBaseline.dlmmBasis = { xQty: m.dlmmBasis.xQty, yQty: m.dlmmBasis.yQty };
-  writeFileSync(METRICS_PATH, JSON.stringify(m));
+  writeMetrics(m);
   return { startedAt: s.t, portfolioY: s.portfolioY };
 }
 
@@ -390,7 +461,7 @@ export function adjustLpBasis(
       m.lpBasis = { xQty: b.xQty * keep, yQty: b.yQty * keep, t: b.t };
       if (last) last.lpValueY *= keep;
     }
-    writeFileSync(METRICS_PATH, JSON.stringify(m));
+    writeMetrics(m);
   } catch (err) {
     console.warn(`(lp basis update skipped: ${(err as Error).message})`);
   }
@@ -412,9 +483,9 @@ export function setDlmmBasis(basis: { xQty: number; yQty: number; t: string } | 
   try {
     const m = load();
     if (!m) return;
-    if (basis) m.dlmmBasis = basis;
-    else delete m.dlmmBasis;
-    writeFileSync(METRICS_PATH, JSON.stringify(m));
+    if (basis) { m.dlmmBasis = basis; m.dlmmBasisSetAt = new Date().toISOString(); }
+    else { delete m.dlmmBasis; delete m.dlmmBasisSetAt; }
+    writeMetrics(m);
   } catch (err) {
     console.warn(`(dlmm basis update skipped: ${(err as Error).message})`);
   }
