@@ -53,6 +53,70 @@ export function adjustedPortfolio(m, s) {
   return s.portfolioY + withdrawnUpTo(m, s.t);
 }
 
+// The performance chart is a top-up-free track record (see renderPerformance in index.html).
+// An STX withdrawal can be added back exactly, but an owner DEPOSIT that is then put to work in
+// other tokens cannot: the comparison keeps treating it as STX held, so the curve ends up
+// tracking the STX price instead of the agent. Found 2026-11-12: after the 27 Oct deposits
+// (12,300 STX turned into sBTC/USDCx for the DLMM) the curve swung from +19% to -45% in step
+// with STX/USD, while the per-venue P&L cards read about -27 STX in total. The track record
+// therefore ends at the first deposit after `since`; per-venue P&L covers the time after it.
+// Returns that deposit's time (ISO string), or null if there is none.
+export function trackRecordEnd(m, since) {
+  const from = Date.parse(since ?? 0) || 0;
+  const deposits = (m.capitalFlows ?? []).filter((f) => f.stx > 0 && Date.parse(f.t) > from);
+  if (!deposits.length) return null;
+  return deposits.reduce((a, f) => (Date.parse(f.t) < Date.parse(a.t) ? f : a)).t;
+}
+
+// Where the capital sits, from one telemetry sample, in STX: free STX, free sBTC, the XYK LP
+// position, the DLMM position and free USDCx. The allocation bar used to show only the free
+// wallet balances, which ignore both positions (about 50 STX out of ~15,000 on 2026-11-12).
+// A pending DLMM re-add (dlmmPendingX sBTC + dlmmPendingY USDCx, recorded from 2026-11-15) is
+// shown as its own slice and taken out of the free balances it is sitting in, capped at them:
+// those tokens belong to the DLMM, they are only between a withdraw and a re-add.
+export function capitalAllocation(s) {
+  const usdPerStx = s.stxUsd > 0 ? s.stxUsd : 0;
+  let freeSbtc = s.mid > 0 ? (Number(s.xBase ?? 0) / 1e8) * s.mid : 0;
+  let freeUsdcx = s.freeUsdcxValueY ?? 0;
+  const pendX = s.mid > 0 ? Math.min(freeSbtc, (s.dlmmPendingX ?? 0) * s.mid) : 0;
+  const pendY = usdPerStx > 0 ? Math.min(freeUsdcx, (s.dlmmPendingY ?? 0) / usdPerStx) : 0;
+  freeSbtc -= pendX;
+  freeUsdcx -= pendY;
+  const parts = [
+    { key: "stx", label: "Free STX", valueY: Number(s.yBase ?? 0) / 1e6 },
+    { key: "sbtc", label: "Free sBTC", valueY: freeSbtc },
+    { key: "xyk", label: "XYK position", valueY: s.lpValueY ?? 0 },
+    { key: "dlmm", label: "DLMM position", valueY: s.dlmmValueY ?? 0 },
+    { key: "dlmm-pending", label: "DLMM, re-add pending", valueY: pendX + pendY },
+    // Extra DLMM pairs (src/m1/dlmm-pairs.ts), one slice each.
+    ...Object.entries(s.dlmmPairs ?? {}).map(([pair, p]) => ({ key: "dlmm-extra", label: `DLMM ${pair}`, valueY: p?.valueY ?? 0 })),
+    { key: "usdcx", label: "Free USDCx", valueY: freeUsdcx },
+  ].filter((p) => p.valueY > 0);
+  const total = parts.reduce((a, p) => a + p.valueY, 0);
+  return { total, parts: parts.map((p) => ({ ...p, pct: total > 0 ? (p.valueY / total) * 100 : 0 })) };
+}
+
+// One point per UTC day for the "capital over time" chart: the day's last sample, from three
+// sources merged by date, later sources winning: the static history.json (stitched from the
+// gist's revision history, back to July 2026), the agent's own dailyHistory (days that have
+// left the rolling sample window), and the live samples. Days without a USD price are dropped.
+export function dailyCapitalSeries(historyDays = [], dailyHistory = [], samples = []) {
+  const byDay = new Map();
+  [historyDays, dailyHistory, samples].forEach((src, rank) => {
+    for (const s of src ?? []) {
+      if (!s?.t) continue;
+      const day = s.t.slice(0, 10);
+      const prev = byDay.get(day);
+      if (!prev || rank > prev.rank || Date.parse(s.t) >= Date.parse(prev.s.t)) byDay.set(day, { s, rank });
+    }
+  });
+  return [...byDay.keys()].sort().map((day) => byDay.get(day).s).filter((s) => s.stxUsd > 0).map((s) => {
+    const a = capitalAllocation(s);
+    const usd = Object.fromEntries(a.parts.map((p) => [p.key, (p.valueY * s.stxUsd)]));
+    return { t: s.t, day: s.t.slice(0, 10), totalUsd: a.total * s.stxUsd, usd, dlmmRecorded: s.dlmmValueY !== undefined };
+  });
+}
+
 // Glitch filter for the performance chart's series: a failed LP/DLMM-value read shows up as
 // an implausible portfolio spike/drop relative to the HODL baseline, not as a missing sample
 // — drop points where the two diverge by more than this fraction of the HODL value, well
