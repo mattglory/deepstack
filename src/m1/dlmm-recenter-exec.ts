@@ -18,7 +18,7 @@ import { existsSync } from "node:fs";
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
-import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, type DlmmPool, type DlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, pinMismatch, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { exceedsPoolShare } from "./agent.js";
 import { setDlmmBasis, loadHistory, loadVenueBases } from "./metrics.js";
 import { readUserPosition, type DlmmPosition } from "./dlmm-position.js";
@@ -348,6 +348,18 @@ export async function recenterOnce(w: Wallet, cfg: RecenterConfig, live: boolean
     if (!s0) throw new Error(`could not read pool state for ${cfg.pair}`);
     st = s0;
     [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
+    // C4 / DSA-10: stop before any sizing, descriptor or broadcast if the RPC disagrees with
+    // the pool's pinned tokens/core/decimals. A skip (no attempt, so no failed-add count), but
+    // with alert set: a mismatch means an RPC or registry problem a human must look at.
+    const mismatch = pinMismatch(poolDef, st, xTok, yTok);
+    if (mismatch) {
+      log(`  [dlmm] ⛔ pool does not match its pinned definition: ${mismatch} — no DLMM broadcast this cycle`);
+      return {
+        action: "skip", reason: `RPC values differ from the pinned pool definition: ${mismatch}`,
+        activeBin: st.activeBinId, posLo: null, posHi: null, posX: 0, posY: 0, halfWidth: cfg.halfWidth,
+        executed: false, skipped: true, alert: true,
+      };
+    }
     pos = await readUserPosition(poolDef, w.address);
   } catch (err) {
     return {

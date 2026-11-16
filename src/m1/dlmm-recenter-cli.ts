@@ -44,7 +44,7 @@
 import { fetchNonce } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
-import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, type DlmmPool, type DlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, pinMismatch, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
 import {
   distributeAcrossRange,
@@ -221,6 +221,8 @@ async function main() {
   const st = await readDlmmState(poolDef);
   if (!st) throw new Error(`could not read pool state for ${PAIR}`);
   const [xTok, yTok] = await Promise.all([resolveToken(st.xToken), resolveToken(st.yToken)]);
+  const mismatch = pinMismatch(poolDef, st, xTok, yTok); // C4: never build a transaction from RPC-substituted tokens
+  if (mismatch) throw new Error(`refusing: RPC values differ from the pinned pool definition: ${mismatch}`);
   const pos = await readUserPosition(poolDef, w.address);
   // Same vol-scaled width the live agent uses (resolveHalfWidth, shared in dlmm-recenter-exec.ts)
   // — falls back to FALLBACK_HALF_WIDTH only when there isn't yet enough telemetry history.

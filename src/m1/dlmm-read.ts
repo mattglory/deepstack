@@ -36,23 +36,84 @@ export function binSignedId(uintKey: number): number {
   return uintKey - CENTER_BIN_ID;
 }
 
+// What the plain readers below need: they read by contract name and never use the pin, so an
+// unpinned candidate pool (pool-watch-cli) can be read too. Pinned paths check pinMismatch.
+export type DlmmPoolRef = Pick<DlmmPool, "key" | "name">;
+
 export interface DlmmPool {
   key: string; // short label
   name: string; // contract name under DEPLOYER
+  pin: DlmmPin;
+}
+
+// What the pool's tokens and core MUST be (C4 / DSA-10). These used to come only from RPC
+// (get-pool-for-swap, the token's contract interface and get-decimals), and they become trait
+// arguments, post-condition targets and the decimals behind USD sizing, so a compromised or
+// misconfigured endpoint could substitute them. recenterOnce and the DLMM valuation skip the
+// cycle when the RPC-reported values differ (pinMismatch). Asset "" is the native-STX facade,
+// which has no SIP-010 asset. Values verified on mainnet 2026-11-03 (api.mainnet.hiro.so).
+export interface DlmmPin {
+  xToken: string;
+  yToken: string;
+  coreAddress: string;
+  xAsset: string;
+  yAsset: string;
+  xDecimals: number;
+  yDecimals: number;
+}
+
+const CORE = "SP1PFR4V08H1RAZXREBGFFQ59WB739XM8VVGTFSEA.dlmm-core-v-1-1";
+const STX_T = { token: "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2", asset: "", decimals: 6 };
+const STSTX_T = { token: "SP4SZE494VC2YC5JYG7AYFQ44F5Q4PYV7DVMDPBG.ststx-token", asset: "ststx", decimals: 6 };
+const USDCX_T = { token: "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx", asset: "usdcx-token", decimals: 6 };
+const SBTC_T = { token: "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token", asset: "sbtc-token", decimals: 8 };
+const pinOf = (x: typeof STX_T, y: typeof STX_T): DlmmPin => ({
+  xToken: x.token, yToken: y.token, coreAddress: CORE, xAsset: x.asset, yAsset: y.asset, xDecimals: x.decimals, yDecimals: y.decimals,
+});
+
+/**
+ * null when the RPC-reported pool state (and, if given, the resolved token metadata) matches the
+ * pool's pin; otherwise a description of every difference. Pure.
+ */
+export function pinMismatch(
+  pool: DlmmPool,
+  st: { xToken: string; yToken: string; coreAddress: string },
+  x?: { principal: string; asset: string; decimals: number },
+  y?: { principal: string; asset: string; decimals: number },
+): string | null {
+  const p = pool.pin;
+  const bad: string[] = [];
+  const cmp = (what: string, got: unknown, want: unknown) => {
+    if (got !== want) bad.push(`${what} ${String(got)} != pinned ${String(want)}`);
+  };
+  cmp("x-token", st.xToken, p.xToken);
+  cmp("y-token", st.yToken, p.yToken);
+  cmp("core", st.coreAddress, p.coreAddress);
+  if (x) {
+    cmp("x-token", x.principal, p.xToken);
+    cmp("x asset", x.asset, p.xAsset);
+    cmp("x decimals", x.decimals, p.xDecimals);
+  }
+  if (y) {
+    cmp("y-token", y.principal, p.yToken);
+    cmp("y asset", y.asset, p.yAsset);
+    cmp("y decimals", y.decimals, p.yDecimals);
+  }
+  return bad.length ? `${pool.key}: ${bad.join("; ")}` : null;
 }
 
 // The pools that matter to DeepStack (see the private venue map). stSTX-STX is the lowest-IL
 // pair on Stacks; STX-USDCx is the haven-rotation destination; sBTC-USDCx is the clean-oracle
 // stablecoin pair (the concentrated analog of the current sBTC-STX home).
 export const DLMM_POOLS: readonly DlmmPool[] = [
-  { key: "ststx-stx", name: "dlmm-pool-ststx-stx-v-1-bps-1" },
-  { key: "stx-usdcx", name: "dlmm-pool-stx-usdcx-v-2-bps-10" },
-  { key: "sbtc-usdcx", name: "dlmm-pool-sbtc-usdcx-v-1-bps-10" },
+  { key: "ststx-stx", name: "dlmm-pool-ststx-stx-v-1-bps-1", pin: pinOf(STSTX_T, STX_T) },
+  { key: "stx-usdcx", name: "dlmm-pool-stx-usdcx-v-2-bps-10", pin: pinOf(STX_T, USDCX_T) },
+  { key: "sbtc-usdcx", name: "dlmm-pool-sbtc-usdcx-v-1-bps-10", pin: pinOf(SBTC_T, USDCX_T) },
   // The v-1 STX-USDCx pool is where STX-USDCx liquidity actually is (2026-10-27: active bin ~102,
   // ~60k STX + ~$23k USDCx within 5 bins). The v-2 pool above sat at the top edge of its range
   // (active bin 500, price 0.27 vs 0.30 market), and the attended swap refused it on the 3%
   // divergence guard. Used for converting STX to USDCx; not a position pair.
-  { key: "stx-usdcx-v1", name: "dlmm-pool-stx-usdcx-v-1-bps-10" },
+  { key: "stx-usdcx-v1", name: "dlmm-pool-stx-usdcx-v-1-bps-10", pin: pinOf(STX_T, USDCX_T) },
 ] as const;
 
 export interface DlmmState {
@@ -102,7 +163,7 @@ export function sumBinWindow(
   return { xTotal, yTotal, binsWithLiquidity };
 }
 
-async function callRead(pool: DlmmPool, fn: string, args: any[] = []): Promise<any | null> {
+async function callRead(pool: DlmmPoolRef, fn: string, args: any[] = []): Promise<any | null> {
   try {
     return cvToJSON(
       await withRpc((baseUrl) =>
@@ -216,7 +277,7 @@ export async function readShareFloors(coreAddress: string): Promise<{ minBinShar
 }
 
 /** Read the pool's swap-facing state: active bin, step, tokens, core, and activity. */
-export async function readDlmmState(pool: DlmmPool): Promise<DlmmState | null> {
+export async function readDlmmState(pool: DlmmPoolRef): Promise<DlmmState | null> {
   const j = await callRead(pool, "get-pool-for-swap", [Cl.bool(true)]);
   const t = j?.value?.value;
   if (!t) return null;
@@ -235,7 +296,7 @@ export async function readDlmmState(pool: DlmmPool): Promise<DlmmState | null> {
 }
 
 /** Sum liquidity across a window of bins centred on the active bin. */
-export async function readLocalDepth(pool: DlmmPool, activeBinId: number, halfWindow = 10): Promise<DlmmDepth> {
+export async function readLocalDepth(pool: DlmmPoolRef, activeBinId: number, halfWindow = 10): Promise<DlmmDepth> {
   const bins: Array<{ x: bigint; y: bigint } | null> = [];
   let binsSkipped = 0;
   for (let signedId = activeBinId - halfWindow; signedId <= activeBinId + halfWindow; signedId++) {
