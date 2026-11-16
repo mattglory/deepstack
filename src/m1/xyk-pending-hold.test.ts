@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { savePending, clearPending, xykHoldReasonForPendingReadd } from "./dlmm-pending-state.js";
@@ -12,4 +12,10 @@ test("XYK holds while a DLMM re-add is pending, and only then (2026-11-15 incide
   assert.match(xykHoldReasonForPendingReadd(path) ?? "", /DLMM re-add is pending \(sbtc-usdcx/);
   clearPending(path);
   assert.equal(xykHoldReasonForPendingReadd(path), null, "finished or abandoned: trading resumes");
+});
+
+test("XYK also holds when the pending re-add file exists but cannot be read (fail closed)", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xyk-hold-")), "dlmm-pending-readd.json");
+  writeFileSync(path, '{"pair":"sbtc-usdcx","xBase":"4118');
+  assert.match(xykHoldReasonForPendingReadd(path) ?? "", /cannot be read/);
 });

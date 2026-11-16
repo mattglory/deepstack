@@ -57,10 +57,15 @@ export function clearPending(path = pendingStatePath()): void {
 // 2026-11-14/15 a re-add stopped after three aborted rebalance swaps, and over the next ten hours
 // the XYK step counted the loose sBTC as its own, added it to the XYK pool eight times and sold
 // some for STX nine times, about 0.019 sBTC of the 0.041 the re-add was waiting for.
-// Returns why the XYK step must hold this cycle, or null. Unreadable or other-shaped files are
-// handled by loadPending (null); a pending record is enough to hold.
+// Returns why the XYK step must hold this cycle, or null. A pending record is enough to hold. So is
+// a file that exists but cannot be read: loadPending returns null for it, and treating that as
+// "nothing pending" would let the XYK step trade the loose tokens again (fail closed).
 export function xykHoldReasonForPendingReadd(path = pendingStatePath()): string | null {
   const p = loadPending(path);
-  if (!p) return null;
+  if (!p) {
+    return existsSync(path)
+      ? `the pending DLMM re-add file ${path} exists but cannot be read; the XYK step holds until a human fixes or removes it`
+      : null;
+  }
   return `a DLMM re-add is pending (${p.pair}, since ${p.t}); its withdrawn tokens are in the wallet, so the XYK step holds until it is finished or abandoned`;
 }
