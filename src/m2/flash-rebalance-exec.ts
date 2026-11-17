@@ -9,7 +9,8 @@
 // touches no key and no capital.
 
 import { isKilled } from "../m1/kill.js";
-import { fetchCallReadOnlyFunction, fetchNonce, makeContractCall, cvToJSON, Cl, Pc, PostConditionMode } from "@stacks/transactions";
+import { fetchCallReadOnlyFunction, fetchNonce, makeContractCall, cvToJSON, Cl, PostConditionMode } from "@stacks/transactions";
+import { STX, walletOutflowConditions } from "../m1/post-conditions.js";
 import { withRpc, hiroFetch, broadcastSigned } from "../m1/rpc.js";
 import { type Wallet, getStxBalance } from "../m1/wallet.js";
 import { getSwapYForXQuote, minusSlippage } from "../m1/quotes.js";
@@ -111,6 +112,11 @@ export async function armRebalance(
   return { txid: res.txid, minDx, quotedDx };
 }
 
+/** The flash-loan call's wallet post-conditions: STX ≤ repayCap, every other wallet asset ≤ 0. */
+export function flashLoanPostConditions(sender: string, repayCap: bigint) {
+  return walletOutflowConditions(sender, [{ key: STX, max: repayCap }]);
+}
+
 export async function executeFlashLoanRebalance(
   w: Wallet,
   amountStxBase: bigint,
@@ -129,11 +135,13 @@ export async function executeFlashLoanRebalance(
     network: "mainnet",
     fee: CALL_FEE,
     nonce,
-    // Allow mode: the core and receiver move STX/sBTC internally (borrowed leg, swap,
-    // forwarding) — same rationale as the agent's own swaps. The operator's own outflow is
-    // strictly capped at the repayment via the post-condition below.
+    // Allow mode: the core and the receiver contract move STX/sBTC between themselves and the
+    // XYK pool (borrowed leg, swap, forwarding), which Deny would have to enumerate per
+    // principal. The operator wallet's own outflow is its STX repayment only (0x55b4e158…: the
+    // one transfer the wallet itself sends), capped at repayCap; every other wallet asset is
+    // "sends ≤ 0" (post-conditions.ts; C3 / DSA-09).
     postConditionMode: PostConditionMode.Allow,
-    postConditions: [Pc.principal(w.address).willSendLte(repayCap).ustx()],
+    postConditions: flashLoanPostConditions(w.address, repayCap),
   });
   // Configured endpoints + failover + timeout, same signed tx (C2). A rejection ALSO carries a
   // txid, so the old `"txid" in res` check read a rejected broadcast as sent.
