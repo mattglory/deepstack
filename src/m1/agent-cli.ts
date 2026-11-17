@@ -23,6 +23,7 @@ import {
 } from "./actions.js";
 import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
+import { xykHoldReasonForPendingReadd, loadPending } from "./dlmm-pending-state.js";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
@@ -31,7 +32,7 @@ import { scanStstxGap } from "./ststx-gap.js";
 import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmVol, pinnedHalfWidth } from "./dlmm-recenter-exec.js";
 import { readUserPosition } from "./dlmm-position.js";
 import { loadDeposit, feesEarned } from "./dlmm-fees.js";
-import { DLMM_POOLS, readDlmmState } from "./dlmm-read.js";
+import { DLMM_POOLS, readDlmmState, pinMismatch } from "./dlmm-read.js";
 import { isKilled } from "./kill.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
@@ -185,6 +186,11 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
       return last;
     }
     const [pos, xTok, yTok] = await Promise.all([readUserPosition(poolDef, w.address), resolveToken(st.xToken), resolveToken(st.yToken)]);
+    const mismatch = pinMismatch(poolDef, st, xTok, yTok); // C4: never value with RPC-substituted tokens/decimals
+    if (mismatch) {
+      console.warn(`  [dlmm-value] ⛔ pool does not match its pinned definition (${mismatch}) — skipping DLMM valuation this tick`);
+      return last;
+    }
     const usdPerStx = await stxPriceUsd();
     lastUsdPerStx = usdPerStx;
     const xValueY = (Number(pos.totalX) / 10 ** xTok.decimals) * midXinY;
@@ -207,6 +213,16 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     console.warn(`  [dlmm-value] read failed, reusing last known values (dlmm ${last.dlmmValueY.toFixed(2)}, free-y ${last.freeUsdcxValueY.toFixed(2)}): ${briefError((err as Error).message)}`);
     return last;
   }
+}
+
+// A pending DLMM re-add's withdrawn tokens, in human units, for the sample (the dashboard shows
+// them as the DLMM's, not as free balance). Primary pair only; empty when there is none.
+const PENDING_DECIMALS: Record<string, [number, number]> = { "sbtc-usdcx": [8, 6], "stx-usdcx": [6, 6], "ststx-stx": [6, 6] };
+function pendingReaddAmounts(): { dlmmPendingX?: number; dlmmPendingY?: number } {
+  const p = loadPending();
+  const dec = p ? PENDING_DECIMALS[p.pair] : undefined; // the pinned decimals once #56's pins land
+  if (!p || !dec || p.pair !== process.env.DLMM_OBSERVE_PAIR) return {};
+  return { dlmmPendingX: Number(p.xBase) / 10 ** dec[0], dlmmPendingY: Number(p.yBase) / 10 ** dec[1] };
 }
 
 async function readMarket(w: Wallet): Promise<Snapshot> {
@@ -392,6 +408,7 @@ async function act(
     dlmmActiveBin: s.dlmmActiveBin,
     dlmmBinStep: s.dlmmBinStep,
     dlmmFeesUsdcx: s.dlmmFeesUsdcx,
+    ...pendingReaddAmounts(),
     portfolioY: s.portfolioY,
     safe: safety.safe,
     poolX: s.xReserve,
@@ -399,6 +416,13 @@ async function act(
   }, { dlmmFeesSince: s.dlmmFeesSince });
   if (!safety.safe) {
     console.log(`  ⛔ SAFETY HALT — ${safety.reasons.join("; ")} (no trading this cycle)`);
+    return false;
+  }
+  // A pending DLMM re-add's tokens are in this wallet and look like free XYK inventory: hold.
+  const pendingHold = xykHoldReasonForPendingReadd();
+  if (pendingHold) {
+    console.log(`  ⏸ XYK hold: ${pendingHold}`);
+    tickJournal.lpDecision = { action: "none", reason: "DLMM re-add pending" };
     return false;
   }
 
