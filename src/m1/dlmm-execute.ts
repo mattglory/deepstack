@@ -13,7 +13,8 @@
 // same trap that aborted the first XYK swap (95b112e1). Callers MUST pass input-cap
 // post-conditions (see dlmm-write.buildInputCaps); broadcasting with none is refused.
 
-import { makeContractCall, broadcastTransaction, PostConditionMode, type PostCondition } from "@stacks/transactions";
+import { makeContractCall, PostConditionMode, type PostCondition } from "@stacks/transactions";
+import { broadcastSigned } from "./rpc.js";
 import type { CallDescriptor } from "./dlmm-write.js";
 
 // Allow the router's internal transfers; the wallet's spend is bounded by the input-cap
@@ -72,8 +73,10 @@ export async function executeDescriptor(d: CallDescriptor, opts: ExecuteOpts = {
     postConditions: opts.postConditions ?? [],
     postConditionMode: MODE, // Allow + input caps (see header)
   });
-  const res = await broadcastTransaction({ transaction: tx, network: "mainnet" });
-  const txid = (res as { txid?: string }).txid;
-  if (!txid) throw new Error(`broadcast failed: ${JSON.stringify(res)}`);
+  // Configured endpoints, failover, per-attempt timeout; same signed tx on every attempt (C2).
+  // A node rejection echoes a txid, so "error" decides — not the txid's presence.
+  const res = await broadcastSigned(tx);
+  if ("error" in res) throw new Error(`broadcast failed: ${res.error}`);
+  const txid = res.txid;
   return { broadcast: true, dryRun: false, txid, summary: `BROADCAST ${d.functionName}: ${txid}` };
 }

@@ -322,3 +322,63 @@ test("DLMM live attempt that fails: healthcheck pings fail, fail streak persiste
   assert.equal(rec.journal.find((e) => e.type === "dlmm-recenter")?.dlmmFailStreak, 1);
   assert.deepEqual(JSON.parse(readFileSync(process.env.DLMM_FAILSTREAK_STATE_PATH!, "utf8")), { dlmmFailStreak: 1, dlmmRecenters: 0 });
 });
+
+test("C2 cycle watchdog: an over-long cycle pings fail + is journalled; no overlapping cycle until it finishes", async () => {
+  resetHarness(baseWorld());
+  process.env.CYCLE_TIMEOUT_MS = "120000"; // 2 min (default 45 min); interval 60 s
+  let release!: () => void;
+  world.hang = new Promise<void>((r) => (release = r));
+  let poolReads = 0;
+  world.onCycle = () => void poolReads++;
+  const agent = await loadAgent();
+  const args = [...LIVE, "--interval", "60"];
+
+  // Cycle 1 hangs in its market read. At 2 min the watchdog reports it; the next interval
+  // finds it still running and skips instead of starting a second cycle beside it.
+  await runAgent(args, { cycles: 2, agent });
+  assert.deepEqual(rec.health, ["fail", "fail"]);
+  assert.equal(rec.journal.filter((e) => e.type === "cycle-timeout").length, 1);
+  assert.equal(rec.journal.filter((e) => e.type === "cycle-skipped").length, 1);
+  assert.equal(poolReads, 1, "no second cycle started while the first was in flight");
+  assert.equal(tickEntries().length, 0);
+
+  // The stuck cycle is not abandoned: once it finishes, it completes normally (its own ping) ...
+  world.hang = undefined;
+  release();
+  await runAgent(args, { cycles: 1, agent, resume: true });
+  assert.equal(rec.health[2], "ok");
+  assert.equal(tickEntries().length, 1);
+  assert.ok(rec.journal.some((e) => e.type === "cycle-late-finish"));
+  // ... and the following interval runs a fresh cycle again.
+  await runAgent(args, { cycles: 1, agent, resume: true });
+  assert.equal(poolReads, 2);
+  assert.deepEqual(rec.health.slice(3), ["ok"]);
+  assert.equal(tickEntries().length, 2);
+});
+
+test("risk-state files that need a human (unreadable / unrelated wallet / corrupt breakers) halt AND alert: ping fail, journal risk-state-unreadable", async () => {
+  const OTHER = { portfolioY: 250, t: "2026-11-01T00:00:00.000Z", pair: "sbtc-stx", wallet: "SP000000000000000000002Q6VF78" };
+  const cases: [string, () => void][] = [
+    ["xyk trades unreadable", () => writeFileSync(statePath("XYK_TRADES_STATE_PATH"), "{ not json")],
+    ["baseline unreadable", () => writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), "{ not json")],
+    ["baseline for an unrelated wallet", () => writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), JSON.stringify(OTHER))],
+    ["dlmm failstreak corrupt", () => writeFileSync(statePath("DLMM_FAILSTREAK_STATE_PATH"), "{ not json")],
+    ["flash failstreak corrupt", () => writeFileSync(statePath("FLASH_FAILSTREAK_STATE_PATH"), "{ not json")],
+  ];
+  // In band, so no case would broadcast anyway (the halting itself is covered by the C1 tests;
+  // a corrupt DLMM/flash breaker file only shuts its own path).
+  for (const [name, breakIt] of cases) {
+    resetHarness(baseWorld());
+    breakIt();
+    await runAgent(LIVE);
+    assert.deepEqual(rec.health, ["fail"], name);
+    const t = onlyTick();
+    assert.equal(t.alert, "risk-state-unreadable", name);
+    assert.ok((t.riskStateProblems as string[]).length >= 1, name);
+  }
+  // Ordinary safety halts are unchanged: still "ok", no risk-state alert.
+  resetHarness({ ...outOfBandWorld(), externalMid: MID * 1.1 });
+  await runAgent(LIVE);
+  assert.deepEqual(rec.health, ["ok"]);
+  assert.equal(onlyTick().alert, undefined);
+});

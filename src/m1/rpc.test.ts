@@ -5,7 +5,7 @@
 
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { withRpc, endpoints, hiroHeaders, redactEndpoint } from "./rpc.js";
+import { withRpc, endpoints, hiroHeaders, hiroFetch, redactEndpoint } from "./rpc.js";
 
 const PRIMARY = "https://api.mainnet.hiro.so";
 
@@ -159,4 +159,35 @@ test("withRpc: an endpoint's own error that echoes its URL is scrubbed before it
     assert.doesNotMatch(e.message, /SECRET/);
     return true;
   });
+});
+
+// C2 / DSA-08: the timeout used to only stop WAITING; the underlying fetch kept its socket open.
+// Each attempt now gets an AbortSignal that fires on timeout, passed to fn and attached by hiroFetch.
+test("withRpc: a timed-out attempt's signal is aborted (the hung request is released)", async () => {
+  let seen: AbortSignal | undefined;
+  await assert.rejects(
+    withRpc((_b: string, signal?: AbortSignal) => {
+      seen = signal;
+      return new Promise(() => {});
+    }, 20),
+    /timed out after 20ms/,
+  );
+  assert.ok(seen, "fn received an AbortSignal");
+  assert.equal(seen.aborted, true);
+});
+
+test("hiroFetch: requests made inside a withRpc attempt carry that attempt's signal", async () => {
+  const orig = globalThis.fetch;
+  let got: AbortSignal | null | undefined;
+  globalThis.fetch = (async (_u: unknown, init?: RequestInit) => {
+    got = init?.signal;
+    return new Promise(() => {});
+  }) as typeof fetch;
+  try {
+    await assert.rejects(withRpc((b) => hiroFetch(b)(`${b}/x`), 20), /timed out/);
+  } finally {
+    globalThis.fetch = orig;
+  }
+  assert.ok(got, "signal attached");
+  assert.equal(got.aborted, true);
 });

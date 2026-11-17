@@ -45,7 +45,7 @@ import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
-import { withRpc } from "./rpc.js";
+import { withRpc, hiroFetch } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
 import { createSupervisor, briefError, type Supervisor } from "./supervise.js";
@@ -87,7 +87,7 @@ async function waitForTx(txid: string) {
     await sleep(5000);
     try {
       const j = await withRpc(async (base) => {
-        const r = await fetch(`${base}/extended/v1/tx/${txid}`);
+        const r = await hiroFetch(base)(`${base}/extended/v1/tx/${txid}`); // aborted on timeout (C2)
         if (!r.ok) throw new Error(`tx fetch → ${r.status}`);
         return (await r.json()) as { tx_status?: string; tx_result?: { repr?: string } };
       });
@@ -685,7 +685,8 @@ export async function main() {
   // Lifetime XYK trade count behind --max-trades, persisted (risk-state.ts, C1 / DSA-07): a
   // restart used to start it at 0 and re-arm the whole budget. Unreadable file = budget
   // exhausted (observe-only). Operator reset: delete journal/xyk-trades.json.
-  let { trades } = loadXykTrades();
+  const xykLoad = loadXykTrades();
+  let { trades } = xykLoad;
   // Sep 21 2026: a bad min-dlp guard made every DLMM add abort, and nothing stopped the agent
   // retrying it every cycle — 15 failed broadcasts over ~7 hours before a human noticed and
   // killed it by hand. Root cause is now fixed (see dlmm-recenter-exec.ts's per-bin min-dlp),
@@ -702,12 +703,14 @@ export async function main() {
   // be exceeded just by restarting. A human clears dlmmFailStreak explicitly by deleting (or
   // editing) the state file — an ordinary restart no longer clears either counter. The
   // transition rules themselves (nextDlmmCounters, agent.ts) are unit-tested separately.
-  let { failStreak: dlmmFailStreak, recenters: dlmmRecenters } = loadDlmmCounters();
+  const dlmmLoad = loadDlmmCounters();
+  let { failStreak: dlmmFailStreak, recenters: dlmmRecenters } = dlmmLoad;
   const DLMM_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.DLMM_FAIL_STREAK_LIMIT ?? 2));
   // Same restart-survival discipline for the autonomous flash-rebalance path (OFF by default
   // via FLASH_LIVE) — a drift correction too large for the direct-swap cap uses FlashStack's
   // flash loan instead of a plain swap, gated by flashLiveGate() exactly like DLMM's gate.
-  let { failStreak: flashFailStreak, attempts: flashAttempts } = loadFlashCounters();
+  const flashLoad = loadFlashCounters();
+  let { failStreak: flashFailStreak, attempts: flashAttempts } = flashLoad;
   const FLASH_FAIL_STREAK_LIMIT = Math.max(1, Number(process.env.FLASH_FAIL_STREAK_LIMIT ?? 2));
   let i = 0;
   // Drawdown baseline for the 15% halt, persisted (risk-state.ts, C1 / DSA-07): a restart used to
@@ -732,6 +735,15 @@ export async function main() {
       console.log(`drawdown baseline: ${b.portfolioY} ${cfg.y.symbol} since ${b.t} (persisted)`);
     }
   }
+  // State files that fail closed and need a human to clear them. Unlike an ordinary safety halt
+  // (which clears itself when the condition passes), these never clear on their own, so every
+  // cycle journals "risk-state-unreadable" and pings the healthcheck "fail" until they are fixed.
+  const riskStateProblems = [
+    ...(xykLoad.corrupt ? ["XYK trade count unreadable (budget treated as exhausted)"] : []),
+    ...(baselineProblem ? [`drawdown baseline unusable: ${baselineProblem}`] : []),
+    ...(dlmmLoad.corrupt ? ["DLMM fail-streak state unreadable (treated as tripped)"] : []),
+    ...(flashLoad.corrupt ? ["flash fail-streak state unreadable (treated as tripped)"] : []),
+  ];
   if (baselineProblem) console.error(`⛔ DRAWDOWN BASELINE UNUSABLE — ${baselineProblem}. All trading halts until a human inspects and deletes ${drawdownBaselinePath()}.`);
   // Forward reference: the supervisor is created after step() below (it wraps step itself),
   // but step's own circuit-breaker check needs its live streak. Assigned once, right after
@@ -841,6 +853,7 @@ export async function main() {
         if (!flash.executed) flashFailedThisTick = true;
       }
     } finally {
+      if (riskStateProblems.length) Object.assign(tickJournal, { alert: "risk-state-unreadable", riskStateProblems });
       appendJournal(tickJournal); // one journal line per tick, whatever happened
       // Cross-pool spread observations (read-only) — the dataset that decides whether
       // atomic cross-venue arb is worth building. See crosspool.ts.
@@ -941,7 +954,7 @@ export async function main() {
       // root cause and would have surfaced here too, had this existed then. A good XYK cycle
       // still pings "ok" even when DLMM, flash, or publish fails — a signal to look, not a
       // claim the whole tick failed.
-      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed ? "fail" : "ok");
+      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed || riskStateProblems.length ? "fail" : "ok");
     }
   };
 
@@ -957,7 +970,50 @@ export async function main() {
       console.error(`  ⚠ ${consecutive} consecutive failures — circuit breaker active, no new trades until one succeeds. Check RPC/network.`);
   });
   supervisorRef = supervisor; // step()'s circuit-breaker check reads this each cycle
-  const runStep = () => supervisor.run(step);
+
+  // Cycle watchdog (C2 / DSA-08). A cycle still running after CYCLE_TIMEOUT_MS is reported as
+  // failed (journal "cycle-timeout" + healthcheck fail), but NOT aborted: it may be mid broadcast
+  // sequence (a DLMM withdraw → swaps → re-add), and abandoning that loses the state the
+  // sequence persists as it goes. Instead no new cycle starts while it runs: every interval that
+  // finds it still in flight is skipped and pings fail again, so a hung agent stays loud.
+  //
+  // Default 45 min, from the code's own confirmation budgets: one cycle can legitimately do an
+  // XYK swap (waitForTx: 24 x 5 s = 2 min) or a flash rebalance (2 waits x 40 x 6 s = 8 min), and
+  // then a DLMM recenter (withdraw + up to READD_MAX_CHUNKS = 6 swaps + re-add = 8 waits x
+  // 40 x 6 s = 32 min) — 40 min of poll sleeps before any read time. A lower bound would flag
+  // healthy slow recenters. The --interval sleep starts after a cycle ends, so cycles longer than
+  // the interval never overlapped; the skip below keeps it that way after the watchdog fires.
+  const CYCLE_TIMEOUT_MS = Math.max(1, Number(process.env.CYCLE_TIMEOUT_MS ?? 45 * 60_000));
+  let inFlight: Promise<boolean> | null = null;
+  const runStep = async (): Promise<void> => {
+    if (inFlight) {
+      console.error("  ⛔ previous cycle still running (past the watchdog) — skipping this cycle");
+      appendJournal({ t: new Date().toISOString(), type: "cycle-skipped", reason: "previous cycle still running" });
+      await pingHealthcheck("fail");
+      return;
+    }
+    const started = Date.now();
+    const run = supervisor.run(step);
+    inFlight = run;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = await Promise.race([
+      run.then(() => false),
+      new Promise<boolean>((r) => (timer = setTimeout(() => r(true), CYCLE_TIMEOUT_MS))),
+    ]);
+    clearTimeout(timer);
+    if (!timedOut) {
+      inFlight = null;
+      return;
+    }
+    console.error(`  ⛔ CYCLE WATCHDOG — cycle still running after ${CYCLE_TIMEOUT_MS / 1000}s; reported as failed, left to finish, no new cycle until it does`);
+    appendJournal({ t: new Date().toISOString(), type: "cycle-timeout", timeoutMs: CYCLE_TIMEOUT_MS });
+    await pingHealthcheck("fail");
+    void run.then(() => {
+      inFlight = null;
+      console.error(`  cycle that passed the watchdog finished after ${Math.round((Date.now() - started) / 1000)}s`);
+      appendJournal({ t: new Date().toISOString(), type: "cycle-late-finish", ms: Date.now() - started });
+    });
+  };
 
   if (f.interval) {
     // Guarded from the first cycle: a blip at startup must not stop the pilot beginning.

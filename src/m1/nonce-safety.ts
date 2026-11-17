@@ -50,8 +50,8 @@ export function nonceSafetyFromResponse(j: NoncesResponse): NonceSafety {
 }
 
 export async function checkNonceSafety(address: string): Promise<NonceSafety> {
-  const j = await withRpc(async (baseUrl) => {
-    const r = await fetch(`${baseUrl}/extended/v1/address/${address}/nonces`, { headers: hiroHeaders(baseUrl) });
+  const j = await withRpc(async (baseUrl, signal) => {
+    const r = await fetch(`${baseUrl}/extended/v1/address/${address}/nonces`, { headers: hiroHeaders(baseUrl), signal });
     if (!r.ok) throw new Error(`nonce check failed: HTTP ${r.status}`);
     return (await r.json()) as NoncesResponse;
   });
