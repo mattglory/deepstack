@@ -72,3 +72,34 @@ test("baselineMismatch: same wallet, recorded rotation chain, wrong pair, unreco
   // A cycle in the migrations list terminates.
   assert.match(baselineMismatch(B, "sbtc-stx", "SPX", [{ from: "SPA", to: "SPB" }, { from: "SPB", to: "SPA" }])!, /no recorded/);
 });
+
+test("drawdownInputs: USD when the baseline and this cycle both have a price; y units otherwise", async () => {
+  const { drawdownInputs } = await import("./risk-state.js");
+  // 15,124 STX at $0.2571 = $3,888. STX rallies 20% while the sBTC/USDCx capital holds its dollar
+  // value: the portfolio reads 12,603 STX, a 16.7% "loss" in STX terms, 0% in USD.
+  const b = { portfolioY: 15_124, portfolioUsd: 15_124 * 0.2571 };
+  const usd = drawdownInputs(b, 12_603, 0, 0.2571 * 1.2);
+  assert.equal(usd.unit, "usd");
+  assert.ok(Math.abs((usd.start - usd.now) / usd.start) < 0.001, "no loss in dollars, so no halt");
+  const legacy = drawdownInputs({ portfolioY: 15_124 }, 12_603, 0, 0.3);
+  assert.deepEqual(legacy, { start: 15_124, now: 12_603, unit: "y" }, "no USD baseline: as before");
+  assert.equal(drawdownInputs(b, 12_603, 0, 0).unit, "y", "no price this cycle: y units, never mixed");
+  // An owner withdrawal (y units) is added back before converting.
+  const w = drawdownInputs(b, 14_124, 1_000, 0.2571);
+  assert.ok(Math.abs(w.now - w.start) < 1e-6);
+});
+
+test("drawdown baseline: an optional portfolioUsd round-trips; a bad one fails closed", async () => {
+  const { loadDrawdownBaseline, saveDrawdownBaseline } = await import("./risk-state.js");
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const path = join(mkdtempSync(join(tmpdir(), "dd-usd-")), "drawdown-baseline.json");
+  const b = { portfolioY: 15_124.38, t: "2026-11-17T16:13:07Z", pair: "sbtc-stx", wallet: "SP1", portfolioUsd: 3_888.4 };
+  saveDrawdownBaseline(b, path);
+  assert.deepEqual(loadDrawdownBaseline(path), { kind: "ok", baseline: b });
+  writeFileSync(path, JSON.stringify({ ...b, portfolioUsd: -1 }));
+  assert.equal(loadDrawdownBaseline(path).kind, "corrupt");
+  writeFileSync(path, JSON.stringify({ portfolioY: 1, t: b.t, pair: "p", wallet: "w" }));
+  assert.deepEqual(loadDrawdownBaseline(path), { kind: "ok", baseline: { portfolioY: 1, t: b.t, pair: "p", wallet: "w" } }, "older files without it still load");
+});
