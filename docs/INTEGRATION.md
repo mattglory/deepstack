@@ -24,7 +24,7 @@ runs the safety gate, and prints the rebalance/LP decision it would take.
 
 ```bash
 cp .env.example .env      # then fill in the wallet + options (see below)
-npm run m1:agent -- --live --yes-mainnet --interval 1800 --max-trades 60
+npm run m1:agent -- --live --yes-mainnet --interval 1800 --max-trades 1000
 ```
 
 Broadcasting requires **both** `--live` and `--yes-mainnet`. Without them the agent is
