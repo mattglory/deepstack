@@ -5,13 +5,13 @@
 
 import {
   rec, world, resetHarness, runAgent, loadAgent, touchKill, tickEntries,
-  baseWorld, outOfBandWorld, belowMinWorld, WALLET, SWAP_CAP_Y, MID, LIVE,
+  baseWorld, outOfBandWorld, belowMinWorld, WALLET, SWAP_CAP_Y, MID, LIVE, statePath,
 } from "./agent-cli.harness.js";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Cl } from "@stacks/transactions";
 import { minusSlippage } from "./quotes.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, rmSync } from "node:fs";
 
 beforeEach(() => resetHarness());
 // The fake global fetch throws on anything but the tx-status poll; also fail loudly here in
@@ -168,7 +168,7 @@ test("C8: KILL created after the decision is caught by the re-check right before
   assert.equal(t.refused, "kill switch engaged");
 });
 
-test("trade count and --max-trades within one process (in memory: a restart resets it — C1)", async () => {
+test("trade count and --max-trades: a lifetime cap, persisted across restarts (C1)", async () => {
   resetHarness(outOfBandWorld()); // fakes never move the inventory, so every cycle wants the swap
   const args = [...LIVE, "--interval", "60", "--max-trades", "2"];
   const agent = await loadAgent();
@@ -177,19 +177,105 @@ test("trade count and --max-trades within one process (in memory: a restart rese
   assert.deepEqual(tickEntries().map((t) => t.mode), ["live", "live", "observe"]);
   assert.ok(rec.logs.includes("\n(reached --max-trades 2; observe-only now)"));
 
+  // C1 / DSA-07: a restarted process (fresh module instance, state files kept) remembers the
+  // 2 trades: the same --max-trades 2 leaves no budget ...
+  resetHarness(outOfBandWorld(), { keepState: true });
+  await runAgent([...LIVE, "--max-trades", "2"]);
+  assert.equal(rec.broadcasts.length, 0, "restart did not re-arm the lifetime budget");
+  assert.equal(onlyTick().mode, "observe");
+  assert.deepEqual(JSON.parse(readFileSync(statePath("XYK_TRADES_STATE_PATH"), "utf8")), { trades: 2 });
+  // ... and a raised ceiling allows exactly the difference (60 - N in production).
+  resetHarness(outOfBandWorld(), { keepState: true });
+  await runAgent([...LIVE, "--max-trades", "3"]);
+  assert.equal(rec.broadcasts.length, 1);
+  assert.deepEqual(JSON.parse(readFileSync(statePath("XYK_TRADES_STATE_PATH"), "utf8")), { trades: 3 });
+
   // A failed broadcast does not count as a trade.
   resetHarness(outOfBandWorld());
   world.wire = { error: "ConflictingNonceInMempool" };
   await runAgent([...LIVE, "--interval", "60", "--max-trades", "1"], { cycles: 2 });
   assert.equal(rec.broadcasts.length, 2, "both cycles still live: nothing succeeded");
   assert.deepEqual(tickEntries().map((t) => t.mode), ["live", "live"]);
+});
 
-  // KNOWN GAP (C1, documented, not changed here): `trades` lives in main()'s scope, so a new
-  // process — modelled by a fresh module instance — starts at 0 and trades again despite the
-  // same --max-trades. C1 (persist the trade count) should flip this assertion.
+test("C1: an unreadable trade-count file fails closed: observe-only, file left for a human", async () => {
   resetHarness(outOfBandWorld());
-  await runAgent([...LIVE, "--max-trades", "2"]); // restarted process, one-shot
-  assert.equal(rec.broadcasts.length, 1, "restart forgot the 2 earlier trades (C1)");
+  writeFileSync(statePath("XYK_TRADES_STATE_PATH"), "{ not json");
+  await runAgent([...LIVE, "--max-trades", "60"]);
+  noBroadcast();
+  assert.equal(onlyTick().mode, "observe");
+  assert.equal(readFileSync(statePath("XYK_TRADES_STATE_PATH"), "utf8"), "{ not json");
+});
+
+// Portfolio in baseWorld: 0.001 sBTC (100 STX) + 150 STX = 250 STX. yBase 100 STX → 200 (-20%).
+const down20 = () => ({ ...baseWorld(), yBase: 100_000_000n, nativeStxMicro: 100_000_000n });
+const baselineFile = () => JSON.parse(readFileSync(statePath("DRAWDOWN_BASELINE_PATH"), "utf8"));
+
+test("C1: the drawdown baseline survives a restart: a loss before the restart still halts", async () => {
+  await runAgent(LIVE); // first process: baseline 250
+  assert.equal(onlyTick().safe, true);
+
+  resetHarness(down20(), { keepState: true }); // restart after a 20% loss
+  await runAgent(LIVE);
+  noBroadcast();
+  const t = onlyTick();
+  assert.equal(t.safe, false, "restart did not re-baseline at the post-loss value");
+  assert.match((t.haltReasons as string[]).join(";"), /session drawdown 20\.00% > 15\.00% limit/);
+  const b = baselineFile();
+  assert.equal(b.portfolioY, 250, "baseline unchanged");
+  assert.equal(b.pair, "sbtc-stx");
+  assert.equal(b.wallet, WALLET.address);
+});
+
+test("C1: an owner withdrawal recorded after the baseline is added back: no false halt, no reset", async () => {
+  await runAgent(LIVE); // baseline 250, taken now
+  writeFileSync(statePath("CAPITAL_FLOWS_PATH"), JSON.stringify([
+    { t: new Date(Date.now() + 60_000).toISOString(), txid: "0xw1", stx: -50, note: "owner withdrawal" },
+  ]));
+  resetHarness(down20(), { keepState: true }); // 200 now + 50 withdrawn = 250: no drawdown
+  await runAgent(LIVE);
+  assert.equal(onlyTick().safe, true);
+  assert.equal(baselineFile().portfolioY, 250, "the withdrawal did not reset the baseline");
+});
+
+test("C1: a recorded key rotation carries the baseline to the new wallet; an unrecorded wallet change halts", async () => {
+  const OLD = "SP000000000000000000002Q6VF78";
+  const stored = { portfolioY: 250, t: "2026-11-01T00:00:00.000Z", pair: "sbtc-stx", wallet: OLD };
+  writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), JSON.stringify(stored));
+  writeFileSync(statePath("WALLET_MIGRATIONS_PATH"), JSON.stringify([
+    { t: "2026-11-02T00:00:00.000Z", from: OLD, to: WALLET.address, txids: [], note: "key rotation" },
+  ]));
+  resetHarness(down20(), { keepState: true });
+  await runAgent(LIVE);
+  let t = onlyTick();
+  assert.equal(t.safe, false, "the migrated wallet is measured against the carried baseline");
+  assert.match((t.haltReasons as string[]).join(";"), /session drawdown 20\.00%/);
+  assert.equal(baselineFile().portfolioY, 250);
+  assert.equal(baselineFile().wallet, WALLET.address, "re-keyed to the new wallet");
+
+  // Same file, no recorded rotation: a different agent's baseline — halt, never silently reset.
+  writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), JSON.stringify(stored));
+  rmSync(statePath("WALLET_MIGRATIONS_PATH"));
+  resetHarness(outOfBandWorld(), { keepState: true });
+  await runAgent(LIVE);
+  noBroadcast();
+  t = onlyTick();
+  assert.equal(t.safe, false);
+  assert.match((t.haltReasons as string[]).join(";"), /drawdown baseline unusable: baseline is for wallet SP000000000000000000002Q6VF78/);
+  assert.deepEqual(baselineFile(), stored, "file left untouched for a human");
+});
+
+test("C1: an unreadable drawdown baseline fails closed: halt (XYK and DLMM), file left for a human", async () => {
+  resetHarness(outOfBandWorld());
+  Object.assign(process.env, { DLMM_OBSERVE_PAIR: "sbtc-usdcx", DLMM_LIVE: "1" });
+  writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), "{ not json");
+  await runAgent(LIVE);
+  noBroadcast();
+  const t = onlyTick();
+  assert.equal(t.safe, false);
+  assert.match((t.haltReasons as string[]).join(";"), /drawdown baseline unusable/);
+  assert.equal(rec.recenter[0].live, false, "DLMM gated by the same halt");
+  assert.equal(readFileSync(statePath("DRAWDOWN_BASELINE_PATH"), "utf8"), "{ not json");
 });
 
 test("DLMM step: invoked per DLMM_OBSERVE_PAIR, live flag per DLMM_LIVE / --live / safety", async () => {

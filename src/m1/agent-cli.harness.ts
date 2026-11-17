@@ -45,6 +45,8 @@ const ENV_BASE: Record<string, string> = {
   WALLET_MIGRATIONS_PATH: join(TMP, "wallet-migrations.json"),
   DLMM_FAILSTREAK_STATE_PATH: join(TMP, "dlmm-failstreak.json"),
   FLASH_FAILSTREAK_STATE_PATH: join(TMP, "flash-failstreak.json"),
+  XYK_TRADES_STATE_PATH: join(TMP, "xyk-trades.json"),
+  DRAWDOWN_BASELINE_PATH: join(TMP, "drawdown-baseline.json"),
   EXPERIMENT_STATE_PATH: join(TMP, "experiment.json"),
   DLMM_DEPOSIT_PATH: join(TMP, "dlmm-deposit.json"),
   STACKS_API: "https://rpc.invalid",
@@ -293,7 +295,8 @@ mock.module("./metrics.js", {
     loadHistory: () => [],
     adjustLpBasis: () => {},
     currentDrawdown: () => 0,
-    loadCapitalFlows: () => [],
+    // loadCapitalFlows / loadWalletMigrations stay REAL (CAPITAL_FLOWS_PATH / WALLET_MIGRATIONS_PATH
+    // point into TMP): the drawdown gate adds recorded owner withdrawals back (C1 tests).
     setDlmmBasis: () => {},
   },
 });
@@ -349,15 +352,25 @@ export async function loadAgent(): Promise<{ main: () => Promise<void> }> {
   return import(`./agent-cli.js?harness=${++instance}`);
 }
 
-/** Reset fakes, records, env, KILL file and the cycle counter. Call in beforeEach. */
-export function resetHarness(w: World = baseWorld()): void {
+export const STATE_FILES = [
+  "DLMM_FAILSTREAK_STATE_PATH", "FLASH_FAILSTREAK_STATE_PATH", "EXPERIMENT_STATE_PATH",
+  "XYK_TRADES_STATE_PATH", "DRAWDOWN_BASELINE_PATH", "CAPITAL_FLOWS_PATH", "WALLET_MIGRATIONS_PATH",
+] as const;
+export const statePath = (k: (typeof STATE_FILES)[number]): string => ENV_BASE[k];
+
+/**
+ * Reset fakes, records, env, KILL file and the cycle counter. Call in beforeEach. keepState
+ * leaves the on-disk state files alone, i.e. what a process restart sees (pair it with a fresh
+ * loadAgent() instance).
+ */
+export function resetHarness(w: World = baseWorld(), opts: { keepState?: boolean } = {}): void {
   mock.timers.reset();
   Object.assign(rec, freshRec());
   world = w;
   cycle = 0;
   resetEnv();
   rmSync(KILL_FILE, { force: true });
-  for (const k of ["DLMM_FAILSTREAK_STATE_PATH", "FLASH_FAILSTREAK_STATE_PATH", "EXPERIMENT_STATE_PATH"]) rmSync(ENV_BASE[k], { force: true });
+  if (!opts.keepState) for (const k of STATE_FILES) rmSync(ENV_BASE[k], { force: true });
 }
 
 export interface RunResult { error?: Error; settled: boolean }

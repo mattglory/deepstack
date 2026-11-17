@@ -32,9 +32,11 @@ WorkingDirectory=/opt/deepstack
 # --interval 1800 (30 min): metrics.json keeps the last 2000 samples, so 30 min gives
 #   ~1440 over a 30-day pilot — the whole run fits. At 60s the file holds only ~1.4 days
 #   and the pilot's own evidence would be truncated away.
-# --max-trades 60: this counts trades for the LIFETIME of the process, not per day. The
-#   default of 1 would execute one trade in 30 days and observe for the rest. This is a
-#   ceiling, not a target — the band decides what actually trades.
+# --max-trades 60: a LIFETIME ceiling on successful XYK trades, not per day and not per
+#   process: the count is persisted in journal/xyk-trades.json, so a restart (Restart=always)
+#   does not re-arm it (C1). Reset it by deleting that file. The default of 1 would execute
+#   one trade and observe for the rest. This is a ceiling, not a target — the band decides
+#   what actually trades.
 ExecStart=/usr/bin/node --import tsx src/m1/agent-cli.ts --live --yes-mainnet --interval 1800 --max-trades 60
 
 Restart=always
