@@ -78,7 +78,7 @@ test("a corrupt state file closes flashLiveGate even with every other term true"
   const c = loadFlashCounters(STATE_PATH);
   const open = flashLiveGate({
     flashLiveFlag: true, live: true, circuitOk: true, safe: true,
-    flashFailStreak: c.failStreak, flashFailStreakLimit: 1_000_000, flashAttempts: c.attempts, maxTrades: 1_000_000,
+    flashFailStreak: c.failStreak, flashFailStreakLimit: 1_000_000, flashAttempts: c.attempts, maxTrades: 1_000_000, network: "mainnet",
   });
   assert.equal(open, false);
 });

@@ -13,12 +13,12 @@
 //   npm run m1:withdraw -- <stx> --to=<address>                 # preview
 //   npm run m1:withdraw -- <stx> --to=<address> --yes-mainnet   # send
 
-import { existsSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { makeSTXTokenTransfer, broadcastTransaction, fetchNonce } from "@stacks/transactions";
 import { getWallet, getStxBalance, apiBase } from "./wallet.js";
 import { addCapitalFlow, loadCapitalFlows } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
+import { killFilePresent, killPath } from "./kill.js";
 
 const FEE_USTX = 50_000n;
 const argv = process.argv.slice(2);
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   }
   console.log(`withdraw ${stx} STX\n  from  ${w.address} (agent)\n  to    ${to}\n  leaves ${(Number(bal - amount - FEE_USTX) / 1e6).toFixed(6)} STX loose`);
   if (!yes) return void console.log("  (preview — not sent; pause the agent with `touch KILL`, then add --yes-mainnet)");
-  if (!existsSync("KILL")) throw new Error("refusing: pause the agent first (touch /opt/deepstack/KILL) so the two never send at once");
+  if (!killFilePresent()) throw new Error(`refusing: pause the agent first (touch ${killPath()}) so the two never send at once`);
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const typed = (await rl.question(`Type the LAST 6 characters of the destination to send: `)).trim();

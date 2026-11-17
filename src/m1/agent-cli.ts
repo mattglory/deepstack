@@ -33,6 +33,7 @@ import { recenterOnce, resolveToken, stxPriceUsd, ftBalance, dlmmVol, pinnedHalf
 import { readUserPosition } from "./dlmm-position.js";
 import { loadDeposit, feesEarned } from "./dlmm-fees.js";
 import { DLMM_POOLS, readDlmmState, pinMismatch } from "./dlmm-read.js";
+import { isKilled } from "./kill.js";
 import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
 import { checkNonceSafety } from "./nonce-safety.js";
@@ -465,6 +466,7 @@ async function act(
       if (w.network !== "mainnet") return refuse("not mainnet");
       const nativeNeed = FEE_USTX + (lp.action === "add-liquidity" && x.native ? lp.xBase : 0n);
       if (s.nativeStxMicro < nativeNeed) return refuse("insufficient native STX for fee");
+      if (isKilled()) return refuse("kill switch engaged"); // re-checked right before the broadcast (C8)
       console.log("  → broadcasting…");
       const built =
         lp.action === "add-liquidity"
@@ -558,6 +560,7 @@ async function act(
       flashFailStreakLimit: flashCtx.failStreakLimit,
       flashAttempts: flashCtx.attempts,
       maxTrades: flashCtx.maxTrades,
+      network: w.network,
     });
     if (flashLive) {
       try {
@@ -587,6 +590,7 @@ async function act(
   const inputNative = d.action === "swap-y-for-x" ? y.native : x.native;
   const nativeNeed = FEE_USTX + (inputNative ? d.amountBase : 0n);
   if (s.nativeStxMicro < nativeNeed) return refuse("insufficient native STX for amount + fee");
+  if (isKilled()) return refuse("kill switch engaged"); // re-checked right before the broadcast (C8)
   console.log("  → broadcasting…");
   const built =
     d.action === "swap-y-for-x"
@@ -846,6 +850,7 @@ async function main() {
             dlmmFailStreakLimit: DLMM_FAIL_STREAK_LIMIT,
             dlmmRecenters,
             maxTrades: f.maxTrades,
+            network: w.network,
           });
           const { sigmaDaily, source: volSource } = dlmmVol();
           const pinned = pinnedHalfWidth();

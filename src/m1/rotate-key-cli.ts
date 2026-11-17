@@ -45,6 +45,7 @@ import {
 } from "@stacks/transactions";
 import { getWallet, apiBase, type Wallet } from "./wallet.js";
 import { hiroHeaders } from "./rpc.js";
+import { killFilePresent, killPath } from "./kill.js";
 import { loadPending } from "./dlmm-pending-state.js";
 import { addWalletMigration } from "./metrics.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
@@ -121,7 +122,7 @@ function agentRunning(): boolean {
 }
 
 function requireStopped(): void {
-  if (!existsSync("KILL")) throw new Error("refusing: pause the agent first (touch /opt/deepstack/KILL)");
+  if (!killFilePresent()) throw new Error(`refusing: pause the agent first (touch ${killPath()})`);
   if (agentRunning()) throw new Error(`refusing: stop the agent first (systemctl stop ${SERVICE}); a paused agent still records samples`);
 }
 
