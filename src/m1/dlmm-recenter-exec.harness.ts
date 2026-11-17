@@ -35,6 +35,7 @@ export const TMP = mkdtempSync(join(tmpdir(), "deepstack-dlmm-harness-"));
 const ENV_CLEARED = [
   "KILL_SWITCH", "DLMM_PIN_HALF_WIDTH", "DLMM_MAX_TARGET_USD", "DLMM_MAX_POOL_SHARE_BPS",
   "DLMM_REBALANCE_SLIPPAGE_BPS", "DLMM_REBALANCE_MAX_DIVERGENCE_BPS", "DLMM_REBALANCE_CHUNK_VALUE_Y",
+  "DLMM_WITHDRAW_MIN_OUT_TOLERANCE_BPS",
 ];
 export const APP_DIR = join(TMP, "app");
 export const PENDING_PATH = join(TMP, "journal", "dlmm-pending-readd.json");
@@ -85,7 +86,8 @@ export interface Broadcast {
   amountIn?: bigint;
   minOut?: bigint;
   bins?: number[];
-  opts: Record<string, unknown>;
+  mins?: { x: bigint; y: bigint }[]; // withdraw: per-bin min-x-amount / min-y-amount
+  opts: Record<string, unknown>; // executeDescriptor opts, incl. postConditions and deny
 }
 
 export interface Chain {
@@ -156,7 +158,8 @@ function decode(d: { functionName: string; functionArgs: CV[] }): Omit<Broadcast
   if (fn === "add-liquidity-multi" || fn === "withdraw-liquidity-multi") {
     const list = d.functionArgs[0].value as { value: Record<string, CV> }[];
     const bins = list.map((t) => Number(t.value["bin-id"].value));
-    if (fn === "withdraw-liquidity-multi") return { fn, x: 0n, y: 0n, bins };
+    if (fn === "withdraw-liquidity-multi")
+      return { fn, x: 0n, y: 0n, bins, mins: list.map((t) => ({ x: u(t.value["min-x-amount"]), y: u(t.value["min-y-amount"]) })) };
     return {
       fn, bins,
       x: list.reduce((s, t) => s + u(t.value["x-amount"]), 0n),
