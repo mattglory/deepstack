@@ -1,0 +1,498 @@
+{
+ "limit": 50,
+ "offset": 0,
+ "total": 15,
+ "results": [
+  {
+   "tx": {
+    "tx_id": "0x60a9088514fa9cc7af35890db2080fa31206ea8a6aeb00d3bcd06900c606a33c",
+    "nonce": 290,
+    "fee_rate": "50000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9336751,
+    "block_time": 1793111416,
+    "block_time_iso": "2026-10-27T14:30:16.000Z",
+    "contract_call": {
+     "contract_id": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2",
+     "function_name": "add-liquidity"
+    }
+   },
+   "stx_sent": "808823",
+   "stx_received": "0",
+   "stx_transfers": [
+    {
+     "amount": "758823",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1"
+    }
+   ],
+   "ft_transfers": [
+    {
+     "amount": "13336",
+     "asset_identifier": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1::pool-token",
+     "sender": "",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    },
+    {
+     "amount": "288",
+     "asset_identifier": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1"
+    }
+   ],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0xc21c79c8e1a1da248527fcc637b94d0bce84e826f93f3c33206e58b2969db033",
+    "nonce": 281,
+    "fee_rate": "300000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9335143,
+    "block_time": 1793099295,
+    "block_time_iso": "2026-10-27T11:08:15.000Z",
+    "contract_call": {
+     "contract_id": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-swap-router-v-1-2",
+     "function_name": "swap-x-for-y-simple-multi"
+    }
+   },
+   "stx_sent": "2212300000",
+   "stx_received": "0",
+   "stx_transfers": [
+    {
+     "amount": "2212000000",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10"
+    }
+   ],
+   "ft_transfers": [
+    {
+     "amount": "665242764",
+     "asset_identifier": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "sender": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x235e157edd31890fe0831f20db589466921787601b7c6f6a9e9f5bdbbc0041ed",
+    "nonce": 277,
+    "fee_rate": "300000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9335071,
+    "block_time": 1793098767,
+    "block_time_iso": "2026-10-27T10:59:27.000Z",
+    "contract_call": {
+     "contract_id": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-liquidity-router-v-1-2",
+     "function_name": "withdraw-liquidity-multi"
+    }
+   },
+   "stx_sent": "300000",
+   "stx_received": "0",
+   "stx_transfers": [],
+   "ft_transfers": [
+    {
+     "amount": "54996",
+     "asset_identifier": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": ""
+    },
+    {
+     "amount": "19924",
+     "asset_identifier": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "sender": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    },
+    {
+     "amount": "70305",
+     "asset_identifier": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": ""
+    },
+    {
+     "amount": "19925",
+     "asset_identifier": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "sender": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "nft_transfers": [
+    {
+     "value": {
+      "hex": "0x0c00000002056f776e657205168767907a0195102d42eb4fdf4e21341cc88882c808746f6b656e2d696401000000000000000000000000000002e1",
+      "repr": "(tuple (owner 'SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60) (token-id u737))"
+     },
+     "asset_identifier": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token-id",
+     "sender": "",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    },
+    {
+     "value": {
+      "hex": "0x0c00000002056f776e657205168767907a0195102d42eb4fdf4e21341cc88882c808746f6b656e2d696401000000000000000000000000000002e1",
+      "repr": "(tuple (owner 'SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60) (token-id u737))"
+     },
+     "asset_identifier": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token-id",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": ""
+    }
+   ]
+  },
+  {
+   "tx": {
+    "tx_id": "0xc31068da3f7c6235791cccddc7331ea597ffa9fced6e98e4c6721f58df406149",
+    "nonce": 24,
+    "fee_rate": "300",
+    "sender_address": "SP2XQPEXGW3NSSXJN752HW3X5YHPZVE3Y5H3H8VR2",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "token_transfer",
+    "block_height": 9335067,
+    "block_time": 1793098738,
+    "block_time_iso": "2026-10-27T10:58:58.000Z",
+    "token_transfer": {
+     "recipient_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "amount": "100",
+     "memo": "0x00000000000000000000000000000000000000000000000000000000000000000000"
+    }
+   },
+   "stx_sent": "0",
+   "stx_received": "100",
+   "stx_transfers": [
+    {
+     "amount": "100",
+     "sender": "SP2XQPEXGW3NSSXJN752HW3X5YHPZVE3Y5H3H8VR2",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0xe24f384127fa8de588227b2ebec752215e546d6f3104c94d8bfa46ac31cceda0",
+    "nonce": 23,
+    "fee_rate": "3000",
+    "sender_address": "SP2X1GBHA2WJXREWP231EEQXZ1GDYZEEXYR2B8VR2",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "token_transfer",
+    "block_height": 9335047,
+    "block_time": 1793098593,
+    "block_time_iso": "2026-10-27T10:56:33.000Z",
+    "token_transfer": {
+     "recipient_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "amount": "9000000000",
+     "memo": "0x00000000000000000000000000000000000000000000000000000000000000000000"
+    }
+   },
+   "stx_sent": "0",
+   "stx_received": "9000000000",
+   "stx_transfers": [
+    {
+     "amount": "9000000000",
+     "sender": "SP2X1GBHA2WJXREWP231EEQXZ1GDYZEEXYR2B8VR2",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x093e7748dcc75da20497ebc60b07e273acbbd82e5b85e68162323552e8347ce6",
+    "nonce": 274,
+    "fee_rate": "50000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9334515,
+    "block_time": 1793094316,
+    "block_time_iso": "2026-10-27T09:45:16.000Z",
+    "contract_call": {
+     "contract_id": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2",
+     "function_name": "swap-y-for-x"
+    }
+   },
+   "stx_sent": "40661333",
+   "stx_received": "0",
+   "stx_transfers": [
+    {
+     "amount": "40611",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SP31C60QVZKZ9CMMZX73TQ3F3ZZNS89YX2DCCFT8P"
+    },
+    {
+     "amount": "40570722",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1"
+    }
+   ],
+   "ft_transfers": [
+    {
+     "amount": "15324",
+     "asset_identifier": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "sender": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0xe1e976b1690955be1befa3b623e603776a0ff96f3ec847430e08ea6ae992ecf8",
+    "nonce": 263,
+    "fee_rate": "300",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "token_transfer",
+    "block_height": 9279605,
+    "block_time": 1792688182,
+    "block_time_iso": "2026-10-22T16:56:22.000Z",
+    "token_transfer": {
+     "recipient_address": "SP111MNWTSXGTD0ESMV59WX4KHQA93RTV9F82EK0K",
+     "amount": "700000000",
+     "memo": "0x33363231373635383439000000000000000000000000000000000000000000000000"
+    }
+   },
+   "stx_sent": "700000300",
+   "stx_received": "0",
+   "stx_transfers": [
+    {
+     "amount": "700000000",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SP111MNWTSXGTD0ESMV59WX4KHQA93RTV9F82EK0K"
+    }
+   ],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0xf5c85b5eb9e61b45e4e77e8ac2de8272b65de18c3d2752da4a5fd19fe7932544",
+    "nonce": 262,
+    "fee_rate": "3000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9279588,
+    "block_time": 1792687923,
+    "block_time_iso": "2026-10-22T16:52:03.000Z",
+    "contract_call": {
+     "contract_id": "SP3B8F1ERXWHQ7FSZB6RSJA1S12DBQZZNYYHTPBFF.agg-d-v-1-sh-0",
+     "function_name": "swap-d"
+    }
+   },
+   "stx_sent": "3000",
+   "stx_received": "723121683",
+   "stx_transfers": [
+    {
+     "amount": "723121683",
+     "sender": "SP3B8F1ERXWHQ7FSZB6RSJA1S12DBQZZNYYHTPBFF.agg-d-v-1-sh-0",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "ft_transfers": [
+    {
+     "amount": "230000000",
+     "asset_identifier": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SP3B8F1ERXWHQ7FSZB6RSJA1S12DBQZZNYYHTPBFF.agg-d-v-1-sh-0"
+    }
+   ],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x9a1b1c0549e36e602d0a5c910b45cdd0562c0ed653f00be7535a57977039656b",
+    "nonce": 258,
+    "fee_rate": "50000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9161743,
+    "block_time": 1791607327,
+    "block_time_iso": "2026-10-10T04:42:07.000Z",
+    "contract_call": {
+     "contract_id": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-vault",
+     "function_name": "claim-withdrawal"
+    }
+   },
+   "stx_sent": "50000",
+   "stx_received": "90000000",
+   "stx_transfers": [
+    {
+     "amount": "90000000",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-vault",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x51645c4d0fccc0310e444fbaa1a6c5e570b968498740f4aa015ef7225bb37459",
+    "nonce": 257,
+    "fee_rate": "50000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "abort_by_response",
+    "tx_type": "contract_call",
+    "block_height": 9148664,
+    "block_time": 1791488855,
+    "block_time_iso": "2026-10-08T19:47:35.000Z",
+    "contract_call": {
+     "contract_id": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-vault",
+     "function_name": "claim-withdrawal"
+    }
+   },
+   "stx_sent": "50000",
+   "stx_received": "0",
+   "stx_transfers": [],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x55b4e1581e4750b5b9cbc629e1e892efa902db694d67ccc8ee525e8ea5d46c03",
+    "nonce": 252,
+    "fee_rate": "50000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9144544,
+    "block_time": 1791436468,
+    "block_time_iso": "2026-10-08T05:14:28.000Z",
+    "contract_call": {
+     "contract_id": "SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5.flashstack-stx-core",
+     "function_name": "flash-loan"
+    }
+   },
+   "stx_sent": "57063790",
+   "stx_received": "0",
+   "stx_transfers": [
+    {
+     "amount": "57013790",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "recipient": "SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5.flashstack-stx-core"
+    }
+   ],
+   "ft_transfers": [
+    {
+     "amount": "24897",
+     "asset_identifier": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "sender": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-rebalance-receiver",
+     "recipient": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60"
+    }
+   ],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x10dfcfe1b1f766549c1c0882e8e6fecfdf20bb5dffdd781c6b6c07a565e2ad1d",
+    "nonce": 251,
+    "fee_rate": "50000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "contract_call",
+    "block_height": 9144542,
+    "block_time": 1791436443,
+    "block_time_iso": "2026-10-08T05:14:03.000Z",
+    "contract_call": {
+     "contract_id": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-rebalance-receiver",
+     "function_name": "arm"
+    }
+   },
+   "stx_sent": "50000",
+   "stx_received": "0",
+   "stx_transfers": [],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0xf39eba1b1fbbd08319aa47553a0653bfc524eb2039e935c6d5a6b69961b27f7c",
+    "nonce": 228,
+    "fee_rate": "500000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "success",
+    "tx_type": "smart_contract",
+    "block_height": 9124207,
+    "block_time": 1791165134,
+    "block_time_iso": "2026-10-05T01:52:14.000Z",
+    "smart_contract": {
+     "contract_id": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-vault"
+    }
+   },
+   "stx_sent": "500000",
+   "stx_received": "0",
+   "stx_transfers": [],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x9725adb70b2b25d932706dfb80a43c74f1558ba2ed5c0e7e562d463a3f46bf43",
+    "nonce": 215,
+    "fee_rate": "4000",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "abort_by_post_condition",
+    "tx_type": "contract_call",
+    "block_height": 9089417,
+    "block_time": 1790693747,
+    "block_time_iso": "2026-09-29T14:55:47.000Z",
+    "contract_call": {
+     "contract_id": "SP3Y2ZSH8P7D50B0VBTSX11S7XSG24M1VB9YFQA4K.token-aeusdc",
+     "function_name": "transfer"
+    }
+   },
+   "stx_sent": "4000",
+   "stx_received": "0",
+   "stx_transfers": [],
+   "ft_transfers": [],
+   "nft_transfers": []
+  },
+  {
+   "tx": {
+    "tx_id": "0x5640b17b3e204aa0e830f31aa415ab068285def549c4953e2a7af1fe6b675be7",
+    "nonce": 214,
+    "fee_rate": "979",
+    "sender_address": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+    "sponsored": false,
+    "tx_status": "abort_by_post_condition",
+    "tx_type": "contract_call",
+    "block_height": 9089413,
+    "block_time": 1790693700,
+    "block_time_iso": "2026-09-29T14:55:00.000Z",
+    "contract_call": {
+     "contract_id": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token",
+     "function_name": "transfer"
+    }
+   },
+   "stx_sent": "979",
+   "stx_received": "0",
+   "stx_transfers": [],
+   "ft_transfers": [],
+   "nft_transfers": []
+  }
+ ]
+}
