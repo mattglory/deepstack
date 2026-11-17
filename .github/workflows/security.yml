@@ -22,12 +22,14 @@ jobs:
         with:
           node-version: "22"
       # Can fail, deliberately: a check that cannot go red is not evidence of anything.
+      # High/critical advisories fail, except reviewed entries in .github/audit-allowlist.json (each
+      # with a reason and an expiry date; scripts/audit-check.mjs).
       - name: Audit agent dependencies
-        run: npm audit --audit-level=high
+        run: node scripts/audit-check.mjs .
       # if: always() so a red root audit never hides the contract-test dependencies' audit.
       - name: Audit contract-test dependencies
         if: always()
-        run: cd clarinet && npm audit --audit-level=high
+        run: node scripts/audit-check.mjs clarinet
 
   codeql:
     name: CodeQL
