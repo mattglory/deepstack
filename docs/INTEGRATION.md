@@ -41,7 +41,7 @@ observe-only no matter what else is set. `--interval` is the cycle period in sec
 | `TARGET_LP_FRACTION` | LP allocation as a share of portfolio (0 = MM-only) |
 | `OPENROUTER_API_KEY` | activates the AI tuning layer; without it, safe deterministic defaults |
 | `STACKS_API_FALLBACKS` | comma-separated backup RPC endpoints (failover, reads and broadcasts) |
-| `CYCLE_TIMEOUT_MS` | cycle watchdog: a cycle running longer pings "fail" and blocks new cycles until it ends (default 2700000 = 45 min) |
+| `CYCLE_TIMEOUT_MS` | cycle watchdog: a cycle running longer pings "fail" and blocks new cycles until it ends (default 2700000 = 45 min; whole ms from 60000 to 2147483647, anything else refuses to start) |
 | `HEALTHCHECK_URL` | dead-man's-switch ping (e.g. healthchecks.io) |
 | `MAX_POOL_SHARE_BPS` | exit-liquidity cap — refuse LP adds above this share of the pool (default 200) |
 

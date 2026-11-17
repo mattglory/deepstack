@@ -234,6 +234,20 @@ test("C1: the drawdown baseline survives a restart: a loss before the restart st
   assert.equal(b.wallet, WALLET.address);
 });
 
+test("R3-1: every new drawdown baseline is journalled, including a re-baseline after the file is deleted", async () => {
+  await runAgent(LIVE); // fresh install: baseline 250
+  assert.equal(rec.journal.filter((e) => e.type === "drawdown-baseline-set").length, 1);
+  resetHarness(down20(), { keepState: true });
+  await runAgent(LIVE); // restart, baseline kept: no new record
+  assert.equal(rec.journal.filter((e) => e.type === "drawdown-baseline-set").length, 0);
+  rmSync(statePath("DRAWDOWN_BASELINE_PATH")); // the documented operator reset
+  resetHarness(down20(), { keepState: true });
+  await runAgent(LIVE);
+  const set = rec.journal.filter((e) => e.type === "drawdown-baseline-set");
+  assert.equal(set.length, 1, "the reset left a record");
+  assert.equal(set[0].portfolioY, 200);
+});
+
 test("C1: an owner withdrawal recorded after the baseline is added back: no false halt, no reset", async () => {
   await runAgent(LIVE); // baseline 250, taken now
   writeFileSync(statePath("CAPITAL_FLOWS_PATH"), JSON.stringify([
@@ -361,6 +375,17 @@ test("C2 cycle watchdog: an over-long cycle pings fail + is journalled; no overl
   assert.equal(poolReads, 2);
   assert.deepEqual(rec.health.slice(3), ["ok"]);
   assert.equal(tickEntries().length, 2);
+});
+
+test("R3-2: a malformed or out-of-range CYCLE_TIMEOUT_MS refuses to start instead of firing every ~1 ms", async () => {
+  for (const bad of ["45m", "1", "0", "-5", "3000000000", "1.5e6x"]) {
+    resetHarness(baseWorld());
+    process.env.CYCLE_TIMEOUT_MS = bad;
+    const r = await runAgent(LIVE);
+    assert.match(String(r.error?.message), /CYCLE_TIMEOUT_MS must be/, bad);
+    noBroadcast();
+  }
+  delete process.env.CYCLE_TIMEOUT_MS;
 });
 
 test("risk-state files that need a human (unreadable / unrelated wallet / corrupt breakers) halt AND alert: ping fail, journal risk-state-unreadable", async () => {
