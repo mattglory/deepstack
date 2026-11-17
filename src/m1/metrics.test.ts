@@ -344,3 +344,11 @@ test("dlmmBasis fallback: a recenter split across cycles keeps the agent's adjus
   recordSample("sbtc-usdcx", "SPX", 1800, dlmmSample("2026-11-05T23:49:00Z", 2950, 223_000, 0.33));
   assert.deepEqual(readDlmmBasis(), next);
 });
+
+test("mergeDaily: the day's last sample per UTC day, merged and sorted; later wins", async () => {
+  const { mergeDaily } = await import("./metrics.js");
+  const s = (t: string, portfolioY: number) => ({ t, mid: 1, ext: null, xBase: "0", yBase: "0", lpValueY: 0, portfolioY, safe: true });
+  const daily = [s("2026-07-10T23:00:00Z", 1)];
+  const out = mergeDaily(daily, [s("2026-07-11T01:00:00Z", 2), s("2026-07-11T23:30:00Z", 3), s("2026-07-10T23:30:00Z", 4)]);
+  assert.deepEqual(out.map((x) => [x.t.slice(0, 10), x.portfolioY]), [["2026-07-10", 4], ["2026-07-11", 3]]);
+});

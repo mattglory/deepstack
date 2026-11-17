@@ -67,6 +67,8 @@ export interface MetricsSample {
   dlmmActiveBin?: number; // DLMM pool's active bin this tick (absent when the read failed) — the vol source for range width
   dlmmBinStep?: number; // that pool's bin step in bps, so a bin series is never mixed across pools
   dlmmFeesUsdcx?: number; // fees the DLMM position has earned since its deposit, from chain data (dlmm-fees.ts)
+  dlmmPendingX?: number; // a pending DLMM re-add's withdrawn x (human units), loose in the wallet until re-added
+  dlmmPendingY?: number; // and its y (USDCx)
   portfolioY: number; // total portfolio value in y
   safe: boolean; // safety gate outcome this cycle
   // Pool reserves at sample time (human units, optional — added 2026-07-19). k = x·y
@@ -142,6 +144,9 @@ export interface MetricsFile {
   walletMigrations?: WalletMigration[];
   // Latest on-chain fee figure for the current DLMM position (dlmm-fees.ts), with its deposit time.
   dlmmFees?: { usdcx: number; since: string; t: string };
+  // One sample per UTC day for days that have left the rolling `samples` window, so the
+  // dashboard's capital history is never limited to the last MAX_SAMPLES cycles.
+  dailyHistory?: MetricsSample[];
   updated: string;
   deployedCommit?: string; // short git hash running when `updated` was written
 }
@@ -309,6 +314,20 @@ export function isRecordedMigration(migrations: WalletMigration[], from: string,
   return migrations.some((x) => x.from === from && x.to === to);
 }
 
+/**
+ * Keep the day's last sample for each UTC day in `dropped`, merged into `daily` (one entry per
+ * day, sorted). Pure. Used when samples leave the rolling window, so long-run history survives.
+ */
+export function mergeDaily(daily: MetricsSample[], dropped: MetricsSample[]): MetricsSample[] {
+  const byDay = new Map(daily.map((s) => [s.t.slice(0, 10), s] as const));
+  for (const s of dropped) {
+    const day = s.t.slice(0, 10);
+    const prev = byDay.get(day);
+    if (!prev || Date.parse(s.t) >= Date.parse(prev.t)) byDay.set(day, s);
+  }
+  return [...byDay.keys()].sort().map((d) => byDay.get(d)!);
+}
+
 export function recordSample(
   pair: string,
   wallet: string,
@@ -367,7 +386,10 @@ export function recordSample(
       m.dlmmBasis = { xQty: s.dlmmValueY! / 2 / s.mid, yQty: (s.dlmmValueY! / 2) * s.stxUsd!, t: s.t };
     }
     m.samples.push(s);
-    if (m.samples.length > MAX_SAMPLES) m.samples = m.samples.slice(-MAX_SAMPLES);
+    if (m.samples.length > MAX_SAMPLES) {
+      m.dailyHistory = mergeDaily(m.dailyHistory ?? [], m.samples.slice(0, m.samples.length - MAX_SAMPLES));
+      m.samples = m.samples.slice(-MAX_SAMPLES);
+    }
     // Carry the owner-flow list (its own file) into metrics.json for the dashboard.
     const flows = loadCapitalFlows();
     if (flows.length) m.capitalFlows = flows;

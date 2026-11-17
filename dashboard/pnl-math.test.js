@@ -197,3 +197,21 @@ test("capitalAllocation: counts both positions and free balances, in STX, summin
   // Empty parts are left out; no positions and no balances → nothing to draw.
   assert.equal(capitalAllocation({ yBase: "0", xBase: "0", mid: 1 }).parts.length, 0);
 });
+
+test("capitalAllocation: a pending DLMM re-add is its own slice, taken out of free sBTC/USDCx (2026-11-15)", async () => {
+  const { capitalAllocation } = await import("./pnl-math.js");
+  // 0.0223 sBTC + 804.6 USDCx loose; 0.0412 sBTC + 595.85 USDCx are the re-add's (capped at what is there).
+  const a = capitalAllocation({ yBase: "0", xBase: "2230000", mid: 240_000, stxUsd: 0.26, freeUsdcxValueY: 804.6 / 0.26, dlmmPendingX: 0.0412, dlmmPendingY: 595.85 });
+  const by = Object.fromEntries(a.parts.map((p) => [p.key, p.valueY]));
+  assert.equal(by.sbtc, undefined, "all loose sBTC is the re-add's");
+  assert.ok(Math.abs(by["dlmm-pending"] - (0.0223 * 240_000 + 595.85 / 0.26)) < 1e-6);
+  assert.ok(Math.abs(by.usdcx - (804.6 - 595.85) / 0.26) < 1e-6);
+});
+
+test("dailyCapitalSeries: one point per day, live data wins over history, USD from each day's price", async () => {
+  const { dailyCapitalSeries } = await import("./pnl-math.js");
+  const h = [{ t: "2026-07-10T23:00:00Z", mid: 1, xBase: "0", yBase: "100000000", lpValueY: 0, stxUsd: 0.5 }];
+  const live = [{ t: "2026-07-10T23:59:00Z", mid: 1, xBase: "0", yBase: "200000000", lpValueY: 0, stxUsd: 0.5 }, { t: "2026-07-11T10:00:00Z", mid: 1, xBase: "0", yBase: "0", lpValueY: 0 }];
+  const r = dailyCapitalSeries(h, [], live);
+  assert.deepEqual(r.map((p) => [p.day, p.totalUsd]), [["2026-07-10", 100]], "a day without a USD price is dropped");
+});
