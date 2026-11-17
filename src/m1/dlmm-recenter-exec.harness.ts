@@ -96,6 +96,7 @@ export interface Chain {
   usdcx: bigint;
   stx: bigint; // native, micro
   btcUsd: number | null; // DefiLlama; null = the price fetch fails
+  priceAgeSecs: number; // age of the DefiLlama price (its timestamp field)
   nonce: { safe: boolean; reason?: string };
   plan: Step[]; // outcomes for the next broadcasts, in order
   txs: Map<string, Tx>;
@@ -111,7 +112,7 @@ export let chain: Chain = freshChain();
 function freshChain(): Chain {
   return {
     activeBin: 0, binPrice: BIN_PRICE, position: [], sbtc: 0n, usdcx: 0n, stx: 500_000_000n,
-    btcUsd: BTC_USD, nonce: { safe: true }, plan: [], txs: new Map(), broadcasts: [], basis: [],
+    btcUsd: BTC_USD, priceAgeSecs: 30, nonce: { safe: true }, plan: [], txs: new Map(), broadcasts: [], basis: [],
     depositsRecorded: [], depositsCleared: 0, fetches: [],
   };
 }
@@ -318,7 +319,7 @@ globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
   if (m) return json({ fungible_tokens: [{ name: m[1] === "sbtc-token" ? "sbtc-token" : "usdcx-token" }] });
   if (url === "https://coins.llama.fi/prices/current/coingecko:bitcoin") {
     if (chain.btcUsd === null) throw new Error("harness: price source down");
-    return json({ coins: { "coingecko:bitcoin": { price: chain.btcUsd } } });
+    return json({ coins: { "coingecko:bitcoin": { price: chain.btcUsd, timestamp: Math.floor(Date.now() / 1000) - chain.priceAgeSecs } } });
   }
   throw new Error(`harness: unexpected network call ${url}`);
 }) as typeof fetch;

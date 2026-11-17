@@ -64,7 +64,7 @@ function mockChain(killOn: string) {
     if (url.endsWith("/get-bin-balances")) return ok(Cl.ok(Cl.tuple({ "x-balance": Cl.uint(1e12), "y-balance": Cl.uint(1e12), "bin-shares": Cl.uint(1e12) })));
     if (url.endsWith("/get-bin-price")) return ok(Cl.ok(Cl.uint(30_000_000))); // 0.30 USDCx per STX
     if (url.includes("/nonces")) return json({ detected_missing_nonces: [], detected_mempool_nonces: [] });
-    if (url.includes("coins.llama.fi")) return json({ coins: { "coingecko:blockstack": { price: 0.3 } } });
+    if (url.includes("coins.llama.fi")) return json({ coins: { "coingecko:blockstack": { price: 0.3, timestamp: Math.floor(Date.now() / 1000) } } });
     // flash
     if (url.endsWith("/get-fee-basis-points")) return ok(Cl.ok(Cl.uint(5)));
     if (url.endsWith("/get-max-single-loan")) return ok(Cl.ok(Cl.uint(1e12)));
