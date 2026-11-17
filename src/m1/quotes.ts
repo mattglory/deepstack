@@ -100,3 +100,48 @@ export const minusSlippage = (amount: bigint, bps: number): bigint =>
   (amount * BigInt(10_000 - bps)) / 10_000n;
 export const plusSlippage = (amount: bigint, bps: number): bigint =>
   (amount * BigInt(10_000 + bps)) / 10_000n;
+
+// Reference floor for an XYK swap's min-out (C5 / DSA-11). The quote above comes from the same
+// RPC/pool it guards, so a deflated quote (lying RPC, or a pool pushed just before the read) used
+// to lower the min-out with it. The floor is the output implied by the external reference
+// (safety.ts getExternalMid: two sources, fresh, agreeing) less a tolerance, and the min-out
+// sent is the larger of the two: it can only get stricter.
+//
+// Tolerance = XYK_REF_MIN_OUT_BAND_BPS (default 500, the safety gate's pool-vs-reference band,
+// defaultSafetyParams().maxDivergenceBps) + the trade's own slippage. A trade only reaches this
+// point after the safety gate accepted a pool mid within that band of the reference, so its fill
+// is at worst ~ref x (1 - band) x (1 - fee) x (1 - impact): with the 30 bps pool fee and capped
+// trade sizes that stays above ref x (1 - band - slippage), and a normal trade's min-out is
+// still the quote-based one. A slippage-only tolerance (100 bps) would abort ordinary trades
+// whenever the pool sat ~0.7% on the wrong side of the reference.
+export function refBandBps(): number {
+  const raw = process.env.XYK_REF_MIN_OUT_BAND_BPS;
+  if (raw === undefined || raw.trim() === "") return 500;
+  const n = Number(raw);
+  if (!(n >= 0 && n < 10_000)) throw new Error(`XYK_REF_MIN_OUT_BAND_BPS must be 0-9999 (got '${raw}')`);
+  return n;
+}
+
+/**
+ * max(quoteMin, reference-implied output less band + slippage), in the output token's base
+ * units. refMidXinY is y per x in human units (ExternalMid.midXinY). Pure apart from the env.
+ */
+export function floorMinOutByReference(
+  quoteMin: bigint,
+  direction: "x-for-y" | "y-for-x",
+  amountIn: bigint,
+  refMidXinY: number,
+  xDecimals: number,
+  yDecimals: number,
+  slippageBps: number,
+): bigint {
+  if (!(refMidXinY > 0)) throw new Error("reference floor: no usable reference mid");
+  const keep = 1 - (refBandBps() + slippageBps) / 10_000;
+  if (!(keep > 0)) return quoteMin;
+  const refOut =
+    direction === "x-for-y"
+      ? (Number(amountIn) / 10 ** xDecimals) * refMidXinY * 10 ** yDecimals
+      : (Number(amountIn) / 10 ** yDecimals / refMidXinY) * 10 ** xDecimals;
+  const refMin = BigInt(Math.floor(refOut * keep));
+  return refMin > quoteMin ? refMin : quoteMin;
+}

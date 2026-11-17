@@ -88,7 +88,9 @@ verdicts; the assessment line is printed and journaled every cycle.
   re-baseline after a loss. Owner withdrawals recorded after it (capital-flow-cli) are
   added back; a recorded key rotation carries it to the new wallet. If the file is
   unreadable, or belongs to another pair or an unrelated wallet, every cycle halts until
-  a human inspects it. Operator reset: delete the file; the next read re-baselines.
+  a human inspects it. Operator reset: delete the file; the next read re-baselines. Every new
+  baseline, a reset included, writes a `drawdown-baseline-set` journal line and a loud log line,
+  so a reset is never silent.
 
 ## 7. Defense in depth (surrounding rails)
 

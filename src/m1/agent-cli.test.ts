@@ -9,7 +9,8 @@ import {
 } from "./agent-cli.harness.js";
 import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { Cl } from "@stacks/transactions";
+import { Cl, PostConditionMode, type PostCondition } from "@stacks/transactions";
+import { show, walletLines, XYK_POOL, SBTC } from "./post-conditions.testkit.js";
 import { minusSlippage } from "./quotes.js";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 
@@ -120,6 +121,12 @@ test("out of band, live gates open: exactly one capped swap with the expected mi
   assert.deepEqual(c.functionArgs[3], Cl.uint(SWAP_CAP_Y));
   assert.deepEqual(c.functionArgs[4], Cl.uint(minusSlippage(world.swapYForXQuote, 100)));
   assert.deepEqual(c.functionArgs[4], Cl.uint(48_510n));
+  // C3 / DSA-09: Deny, the STX input capped, every other wallet asset ≤ 0, the pool's sBTC payout ≥ min-dx.
+  assert.equal(c.postConditionMode, PostConditionMode.Deny);
+  assert.deepEqual(show(c.postConditions as PostCondition[]), [
+    ...walletLines(WALLET.address, [["STX", SWAP_CAP_Y]]),
+    `${XYK_POOL} gte 48510 ${SBTC}`,
+  ]);
 
   assert.equal(rec.broadcasts.length, 1);
   assert.deepEqual(rec.fetches, ["https://rpc.invalid/extended/v1/tx/0xfeedbeef"], "confirmation polled");
@@ -227,6 +234,20 @@ test("C1: the drawdown baseline survives a restart: a loss before the restart st
   assert.equal(b.wallet, WALLET.address);
 });
 
+test("R3-1: every new drawdown baseline is journalled, including a re-baseline after the file is deleted", async () => {
+  await runAgent(LIVE); // fresh install: baseline 250
+  assert.equal(rec.journal.filter((e) => e.type === "drawdown-baseline-set").length, 1);
+  resetHarness(down20(), { keepState: true });
+  await runAgent(LIVE); // restart, baseline kept: no new record
+  assert.equal(rec.journal.filter((e) => e.type === "drawdown-baseline-set").length, 0);
+  rmSync(statePath("DRAWDOWN_BASELINE_PATH")); // the documented operator reset
+  resetHarness(down20(), { keepState: true });
+  await runAgent(LIVE);
+  const set = rec.journal.filter((e) => e.type === "drawdown-baseline-set");
+  assert.equal(set.length, 1, "the reset left a record");
+  assert.equal(set[0].portfolioY, 200);
+});
+
 test("C1: an owner withdrawal recorded after the baseline is added back: no false halt, no reset", async () => {
   await runAgent(LIVE); // baseline 250, taken now
   writeFileSync(statePath("CAPITAL_FLOWS_PATH"), JSON.stringify([
@@ -321,4 +342,75 @@ test("DLMM live attempt that fails: healthcheck pings fail, fail streak persiste
   assert.deepEqual(rec.health, ["fail"]);
   assert.equal(rec.journal.find((e) => e.type === "dlmm-recenter")?.dlmmFailStreak, 1);
   assert.deepEqual(JSON.parse(readFileSync(process.env.DLMM_FAILSTREAK_STATE_PATH!, "utf8")), { dlmmFailStreak: 1, dlmmRecenters: 0 });
+});
+
+test("C2 cycle watchdog: an over-long cycle pings fail + is journalled; no overlapping cycle until it finishes", async () => {
+  resetHarness(baseWorld());
+  process.env.CYCLE_TIMEOUT_MS = "120000"; // 2 min (default 45 min); interval 60 s
+  let release!: () => void;
+  world.hang = new Promise<void>((r) => (release = r));
+  let poolReads = 0;
+  world.onCycle = () => void poolReads++;
+  const agent = await loadAgent();
+  const args = [...LIVE, "--interval", "60"];
+
+  // Cycle 1 hangs in its market read. At 2 min the watchdog reports it; the next interval
+  // finds it still running and skips instead of starting a second cycle beside it.
+  await runAgent(args, { cycles: 2, agent });
+  assert.deepEqual(rec.health, ["fail", "fail"]);
+  assert.equal(rec.journal.filter((e) => e.type === "cycle-timeout").length, 1);
+  assert.equal(rec.journal.filter((e) => e.type === "cycle-skipped").length, 1);
+  assert.equal(poolReads, 1, "no second cycle started while the first was in flight");
+  assert.equal(tickEntries().length, 0);
+
+  // The stuck cycle is not abandoned: once it finishes, it completes normally (its own ping) ...
+  world.hang = undefined;
+  release();
+  await runAgent(args, { cycles: 1, agent, resume: true });
+  assert.equal(rec.health[2], "ok");
+  assert.equal(tickEntries().length, 1);
+  assert.ok(rec.journal.some((e) => e.type === "cycle-late-finish"));
+  // ... and the following interval runs a fresh cycle again.
+  await runAgent(args, { cycles: 1, agent, resume: true });
+  assert.equal(poolReads, 2);
+  assert.deepEqual(rec.health.slice(3), ["ok"]);
+  assert.equal(tickEntries().length, 2);
+});
+
+test("R3-2: a malformed or out-of-range CYCLE_TIMEOUT_MS refuses to start instead of firing every ~1 ms", async () => {
+  for (const bad of ["45m", "1", "0", "-5", "3000000000", "1.5e6x"]) {
+    resetHarness(baseWorld());
+    process.env.CYCLE_TIMEOUT_MS = bad;
+    const r = await runAgent(LIVE);
+    assert.match(String(r.error?.message), /CYCLE_TIMEOUT_MS must be/, bad);
+    noBroadcast();
+  }
+  delete process.env.CYCLE_TIMEOUT_MS;
+});
+
+test("risk-state files that need a human (unreadable / unrelated wallet / corrupt breakers) halt AND alert: ping fail, journal risk-state-unreadable", async () => {
+  const OTHER = { portfolioY: 250, t: "2026-11-01T00:00:00.000Z", pair: "sbtc-stx", wallet: "SP000000000000000000002Q6VF78" };
+  const cases: [string, () => void][] = [
+    ["xyk trades unreadable", () => writeFileSync(statePath("XYK_TRADES_STATE_PATH"), "{ not json")],
+    ["baseline unreadable", () => writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), "{ not json")],
+    ["baseline for an unrelated wallet", () => writeFileSync(statePath("DRAWDOWN_BASELINE_PATH"), JSON.stringify(OTHER))],
+    ["dlmm failstreak corrupt", () => writeFileSync(statePath("DLMM_FAILSTREAK_STATE_PATH"), "{ not json")],
+    ["flash failstreak corrupt", () => writeFileSync(statePath("FLASH_FAILSTREAK_STATE_PATH"), "{ not json")],
+  ];
+  // In band, so no case would broadcast anyway (the halting itself is covered by the C1 tests;
+  // a corrupt DLMM/flash breaker file only shuts its own path).
+  for (const [name, breakIt] of cases) {
+    resetHarness(baseWorld());
+    breakIt();
+    await runAgent(LIVE);
+    assert.deepEqual(rec.health, ["fail"], name);
+    const t = onlyTick();
+    assert.equal(t.alert, "risk-state-unreadable", name);
+    assert.ok((t.riskStateProblems as string[]).length >= 1, name);
+  }
+  // Ordinary safety halts are unchanged: still "ok", no risk-state alert.
+  resetHarness({ ...outOfBandWorld(), externalMid: MID * 1.1 });
+  await runAgent(LIVE);
+  assert.deepEqual(rec.health, ["ok"]);
+  assert.equal(onlyTick().alert, undefined);
 });

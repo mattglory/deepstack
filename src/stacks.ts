@@ -7,6 +7,7 @@
 //     via fetchCallReadOnlyFunction from @stacks/transactions (v7).
 
 import { config } from "./config.js";
+import { withRpc, hiroFetch } from "./m1/rpc.js";
 
 export interface ContractFn {
   name: string;
@@ -58,13 +59,19 @@ export async function callNoArgReadOnly(
   const { fetchCallReadOnlyFunction, cvToJSON } = await import(
     "@stacks/transactions"
   );
-  const cv = await fetchCallReadOnlyFunction({
-    contractAddress: address,
-    contractName: name,
-    functionName,
-    functionArgs: [],
-    network: "mainnet",
-    senderAddress: config.senderAddress,
-  });
+  // Through rpc.ts (C2 / DSA-08): configured endpoints, failover, per-attempt timeout + abort,
+  // and the Hiro API key. This is the agent's hot-path pool read (getPoolState, every cycle); it
+  // used to go to the SDK's default endpoint with no timeout.
+  const cv = await withRpc((baseUrl) =>
+    fetchCallReadOnlyFunction({
+      contractAddress: address,
+      contractName: name,
+      functionName,
+      functionArgs: [],
+      network: "mainnet",
+      senderAddress: config.senderAddress,
+      client: { baseUrl, fetch: hiroFetch(baseUrl) },
+    }),
+  );
   return cvToJSON(cv);
 }

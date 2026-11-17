@@ -1,0 +1,431 @@
+{
+ "source": "api.mainnet.hiro.so /extended/v1/tx/{txid} + /extended/v1/tx/events (all pages), fetched 2026-11-03",
+ "wallet": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+ "note": "Every asset OUTFLOW (transfer or burn, any sender) in successful agent transactions, one per call type. Mints are omitted: they have no sender, so no post-condition applies to them.",
+ "txs": [
+  {
+   "txid": "0x8f16fa78012a14b088f83951fdc446912afb2669c0dcd013e6176bb0c16902d7",
+   "status": "success",
+   "time": "2026-08-28T10:21:55.000Z",
+   "contract": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2",
+   "function": "withdraw-liquidity",
+   "pool": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+   "postConditionMode": "allow",
+   "eventCount": 9,
+   "outflows": [
+    {
+     "principal": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "64479"
+    },
+    {
+     "principal": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 1,
+     "amount": "191207804"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1::pool-token",
+     "event": "burn",
+     "count": 1,
+     "amount": "3228333"
+    }
+   ]
+  },
+  {
+   "txid": "0x60a9088514fa9cc7af35890db2080fa31206ea8a6aeb00d3bcd06900c606a33c",
+   "status": "success",
+   "time": "2026-10-27T14:25:18.000Z",
+   "contract": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2",
+   "function": "add-liquidity",
+   "pool": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+   "postConditionMode": "allow",
+   "eventCount": 7,
+   "outflows": [
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "288"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 1,
+     "amount": "758823"
+    }
+   ]
+  },
+  {
+   "txid": "0xc685ec3e7f09d4e6994f208a398268e965d6991a743570a4d130c5657c8125a1",
+   "status": "success",
+   "time": "2026-10-27T12:46:09.000Z",
+   "contract": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2",
+   "function": "swap-x-for-y",
+   "pool": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+   "postConditionMode": "allow",
+   "eventCount": 7,
+   "outflows": [
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 2,
+     "amount": "16040"
+    },
+    {
+     "principal": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 1,
+     "amount": "41980833"
+    }
+   ]
+  },
+  {
+   "txid": "0x01bd77b5e7a0d312d9b4bfc0503ff89f6a7bc3d7ea799f637e8d861f04e5d9a9",
+   "status": "success",
+   "time": "2026-10-27T11:07:16.000Z",
+   "contract": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-liquidity-router-v-1-2",
+   "function": "add-liquidity-multi",
+   "pool": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+   "postConditionMode": "allow",
+   "eventCount": 809,
+   "outflows": [
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "event": "transfer",
+     "count": 51,
+     "amount": "2090000000"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "nft",
+     "asset": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token-id",
+     "event": "burn",
+     "count": 101,
+     "amount": "0"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 51,
+     "amount": "2613845"
+    }
+   ]
+  },
+  {
+   "txid": "0x01e9b7f5612246a6d6897f25e73a74e90fa5a2b41359b1da99a98c0ec3757c37",
+   "status": "success",
+   "time": "2026-10-27T11:07:16.000Z",
+   "contract": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-swap-router-v-1-2",
+   "function": "swap-y-for-x-simple-multi",
+   "pool": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+   "postConditionMode": "allow",
+   "eventCount": 5,
+   "outflows": [
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "677000000"
+    },
+    {
+     "principal": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "843302"
+    }
+   ]
+  },
+  {
+   "txid": "0xc21c79c8e1a1da248527fcc637b94d0bce84e826f93f3c33206e58b2969db033",
+   "status": "success",
+   "time": "2026-10-27T11:07:16.000Z",
+   "contract": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-swap-router-v-1-2",
+   "function": "swap-x-for-y-simple-multi",
+   "pool": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10",
+   "postConditionMode": "allow",
+   "eventCount": 6,
+   "outflows": [
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 1,
+     "amount": "2212000000"
+    },
+    {
+     "principal": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-stx-usdcx-v-1-bps-10",
+     "kind": "ft",
+     "asset": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "665242764"
+    }
+   ]
+  },
+  {
+   "txid": "0x235e157edd31890fe0831f20db589466921787601b7c6f6a9e9f5bdbbc0041ed",
+   "status": "success",
+   "time": "2026-10-27T10:53:10.000Z",
+   "contract": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-liquidity-router-v-1-2",
+   "function": "withdraw-liquidity-multi",
+   "pool": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+   "postConditionMode": "allow",
+   "eventCount": 911,
+   "outflows": [
+    {
+     "principal": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+     "kind": "ft",
+     "asset": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "event": "transfer",
+     "count": 51,
+     "amount": "825634822"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token",
+     "event": "burn",
+     "count": 101,
+     "amount": "523783879"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "nft",
+     "asset": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token-id",
+     "event": "burn",
+     "count": 101,
+     "amount": "0"
+    },
+    {
+     "principal": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 51,
+     "amount": "996906"
+    }
+   ]
+  },
+  {
+   "txid": "0x093e7748dcc75da20497ebc60b07e273acbbd82e5b85e68162323552e8347ce6",
+   "status": "success",
+   "time": "2026-10-27T09:37:13.000Z",
+   "contract": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2",
+   "function": "swap-y-for-x",
+   "pool": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+   "postConditionMode": "allow",
+   "eventCount": 8,
+   "outflows": [
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 2,
+     "amount": "40611333"
+    },
+    {
+     "principal": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "15324"
+    }
+   ]
+  },
+  {
+   "txid": "0x70ff19ccf654b9e1ea0741fcdb5f35ca22a969130b7d0be997e757c545a39a6f",
+   "status": "success",
+   "time": "2026-10-27T09:04:44.000Z",
+   "contract": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-liquidity-router-v-1-2",
+   "function": "add-liquidity-multi",
+   "pool": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+   "postConditionMode": "allow",
+   "eventCount": 809,
+   "outflows": [
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "event": "transfer",
+     "count": 51,
+     "amount": "810000000"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "nft",
+     "asset": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token-id",
+     "event": "burn",
+     "count": 101,
+     "amount": "0"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 51,
+     "amount": "1016212"
+    }
+   ]
+  },
+  {
+   "txid": "0x81b659c9cc1b9121b91de37cf12c45e17fcddce0e349c4a4983cd6e387731070",
+   "status": "success",
+   "time": "2026-10-27T08:47:21.000Z",
+   "contract": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-liquidity-router-v-1-2",
+   "function": "withdraw-liquidity-multi",
+   "pool": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+   "postConditionMode": "allow",
+   "eventCount": 911,
+   "outflows": [
+    {
+     "principal": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+     "kind": "ft",
+     "asset": "SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx::usdcx-token",
+     "event": "transfer",
+     "count": 58,
+     "amount": "97166759"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token",
+     "event": "burn",
+     "count": 101,
+     "amount": "59651191"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "nft",
+     "asset": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10::pool-token-id",
+     "event": "burn",
+     "count": 101,
+     "amount": "0"
+    },
+    {
+     "principal": "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD.dlmm-pool-sbtc-usdcx-v-1-bps-10",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 44,
+     "amount": "319608"
+    }
+   ]
+  },
+  {
+   "txid": "0x55b4e1581e4750b5b9cbc629e1e892efa902db694d67ccc8ee525e8ea5d46c03",
+   "status": "success",
+   "time": "2026-10-08T05:20:47.000Z",
+   "contract": "SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5.flashstack-stx-core",
+   "function": "flash-loan",
+   "pool": null,
+   "postConditionMode": "allow",
+   "eventCount": 12,
+   "outflows": [
+    {
+     "principal": "SP20XD46NGAX05ZQZDKFYCCX49A3852BQABNP0VG5.flashstack-stx-core",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 1,
+     "amount": "56985298"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-rebalance-receiver",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 2,
+     "amount": "56985298"
+    },
+    {
+     "principal": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "24897"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60.deepstack-rebalance-receiver",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "24897"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 1,
+     "amount": "57013790"
+    }
+   ]
+  },
+  {
+   "txid": "0x1561040046d7df26c856760624fb4449e8f969ea900c4db8f47e0d6e98ef150c",
+   "status": "success",
+   "time": "2026-09-25T15:40:31.000Z",
+   "contract": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-core-v-1-2",
+   "function": "withdraw-liquidity",
+   "pool": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+   "postConditionMode": "allow",
+   "eventCount": 9,
+   "outflows": [
+    {
+     "principal": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "kind": "ft",
+     "asset": "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token",
+     "event": "transfer",
+     "count": 1,
+     "amount": "101259"
+    },
+    {
+     "principal": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1",
+     "kind": "stx",
+     "asset": "STX",
+     "event": "transfer",
+     "count": 1,
+     "amount": "263587259"
+    },
+    {
+     "principal": "SP23PF43T06AH0BA2XD7XYKH16GECH242S238WK60",
+     "kind": "ft",
+     "asset": "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.xyk-pool-sbtc-stx-v-1-1::pool-token",
+     "event": "burn",
+     "count": 1,
+     "amount": "4720635"
+    }
+   ]
+  }
+ ]
+}

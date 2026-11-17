@@ -11,6 +11,7 @@
 // active bin hold X, bins BELOW hold Y, the active bin holds both.
 
 import { Cl, Pc, type ClarityValue, type PostCondition } from "@stacks/transactions";
+import { STX, type AssetKey } from "./post-conditions.js";
 
 const DEPLOYER = "SM1FKXGNZJWSTWDWXQZJNF7B5TV5ZB235JTCXYXKD";
 const ROUTER = "dlmm-liquidity-router-v-1-2";
@@ -46,6 +47,11 @@ export function buildInputCaps(sender: string, caps: InputCap[]): PostCondition[
         ? Pc.principal(sender).willSendLte(c.max).ustx()
         : Pc.principal(sender).willSendLte(c.max).ft(c.token as `${string}.${string}`, c.asset),
     );
+}
+
+/** The post-condition asset key (post-conditions.ts) of a DLMM token: the STX facade is native STX. */
+export function dlmmTokenKey(principal: string, asset: string): AssetKey {
+  return isNativeStxToken(principal) ? STX : `${principal}::${asset}`;
 }
 
 export interface PoolRefs {
@@ -110,6 +116,28 @@ export interface BinWithdraw {
   amount: bigint; // LP shares to withdraw
   minX: bigint;
   minY: bigint;
+}
+
+/**
+ * Per-bin withdraw minimums from a freshly read position: each side the bin holds must come back
+ * at no less than (1 - toleranceBps) of what was read, and never below 1 base unit (the old
+ * nominal floor, which also keeps the core's min-x + min-y > 0 rule). A side the bin does not
+ * hold gets 0. The core computes each side as shares * balance / bin-shares, the same prorating
+ * the position read uses, so an unchanged bin returns exactly what was read. Pure.
+ */
+export function withdrawMinimums(
+  bins: { signedBin: number; userShares: bigint; userX: bigint; userY: bigint }[],
+  toleranceBps: number,
+): BinWithdraw[] {
+  if (!Number.isInteger(toleranceBps) || toleranceBps < 0 || toleranceBps >= 10_000)
+    throw new Error(`withdraw min-out tolerance must be an integer in [0, 10000) bps, got ${toleranceBps}`);
+  const keep = BigInt(10_000 - toleranceBps);
+  const min = (v: bigint) => {
+    if (v <= 0n) return 0n;
+    const m = (v * keep) / 10_000n;
+    return m > 1n ? m : 1n;
+  };
+  return bins.map((b) => ({ signedBin: b.signedBin, amount: b.userShares, minX: min(b.userX), minY: min(b.userY) }));
 }
 
 export interface WriteOpts {

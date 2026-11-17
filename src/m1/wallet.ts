@@ -48,8 +48,8 @@ export function apiBase(network: Network): string {
 // Mainnet reads go through the RPC failover (rpc.ts) — one provider must not take the
 // pilot down. Testnet keeps the single public endpoint; it carries no uptime SLA.
 async function hiroJson<T>(network: Network, path: string): Promise<T> {
-  const get = async (base: string) => {
-    const res = await fetch(base + path, { headers: hiroHeaders(base) });
+  const get = async (base: string, signal?: AbortSignal) => {
+    const res = await fetch(base + path, { headers: hiroHeaders(base), signal });
     if (!res.ok) throw new Error(`fetch failed: ${res.status} (${path})`);
     return (await res.json()) as T;
   };
