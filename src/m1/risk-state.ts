@@ -75,6 +75,27 @@ export interface DrawdownBaseline {
   t: string; // when it was taken; owner withdrawals recorded after this are added back
   pair: string; // the pair whose y units portfolioY is in
   wallet: string; // the agent address it was taken for (followed through recorded key rotations)
+  // The same baseline in USD (portfolioY x the STX price then). When present, the halt compares
+  // dollars, not STX: most of the capital is sBTC and USDCx, so an STX rally alone used to read as
+  // a "loss" in STX terms and, with a persisted baseline, halt everything until a human reset it.
+  portfolioUsd?: number;
+}
+
+/**
+ * The two numbers the 15% halt compares (safety.ts), in USD when the baseline has a USD value and
+ * this cycle has an STX price, otherwise in the pair's y units as before. Owner withdrawals
+ * (withdrawnY, y units) are added back either way. Pure.
+ */
+export function drawdownInputs(
+  b: { portfolioY: number; portfolioUsd?: number },
+  portfolioY: number,
+  withdrawnY: number,
+  usdPerStx: number,
+): { start: number; now: number; unit: "usd" | "y" } {
+  if (b.portfolioUsd !== undefined && b.portfolioUsd > 0 && usdPerStx > 0) {
+    return { start: b.portfolioUsd, now: (portfolioY + withdrawnY) * usdPerStx, unit: "usd" };
+  }
+  return { start: b.portfolioY, now: portfolioY + withdrawnY, unit: "y" };
 }
 
 export type BaselineLoad =
@@ -92,8 +113,12 @@ export function loadDrawdownBaseline(path: string = drawdownBaselinePath()): Bas
       typeof j.t === "string" && Number.isFinite(Date.parse(j.t)) &&
       typeof j.pair === "string" && j.pair !== "" &&
       typeof j.wallet === "string" && j.wallet !== "";
-    if (!ok) throw new Error("missing or invalid fields");
-    return { kind: "ok", baseline: { portfolioY: j.portfolioY, t: j.t, pair: j.pair, wallet: j.wallet } };
+    const usdOk = j.portfolioUsd === undefined || (typeof j.portfolioUsd === "number" && Number.isFinite(j.portfolioUsd) && j.portfolioUsd > 0);
+    if (!ok || !usdOk) throw new Error("missing or invalid fields");
+    return {
+      kind: "ok",
+      baseline: { portfolioY: j.portfolioY, t: j.t, pair: j.pair, wallet: j.wallet, ...(j.portfolioUsd !== undefined ? { portfolioUsd: j.portfolioUsd } : {}) },
+    };
   } catch (e) {
     return { kind: "corrupt", why: `${path}: ${(e as Error).message}` };
   }

@@ -39,7 +39,7 @@ import { tuneParams, type MarketState, type TunedParams } from "./ai/tune.js";
 import { getExternalMid, assessSafety, defaultSafetyParams, type SafetyResult } from "./safety.js";
 import { checkNonceSafety } from "./nonce-safety.js";
 import { recordSample, loadHistory, adjustLpBasis, currentDrawdown, loadCapitalFlows, withdrawnStx, loadWalletMigrations } from "./metrics.js";
-import { loadXykTrades, saveXykTrades, loadDrawdownBaseline, saveDrawdownBaseline, baselineMismatch, drawdownBaselinePath } from "./risk-state.js";
+import { loadXykTrades, saveXykTrades, loadDrawdownBaseline, saveDrawdownBaseline, baselineMismatch, drawdownBaselinePath, drawdownInputs } from "./risk-state.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
 import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
@@ -666,6 +666,19 @@ function applyAllocation(
   };
 }
 
+// The STX price recorded in the telemetry sample nearest to `t` (0 if none): used once, to give a
+// baseline saved before it carried a USD value the price of its own time.
+function stxUsdNear(t: string): number {
+  const at = Date.parse(t);
+  let best = 0, bestGap = Infinity;
+  for (const s of loadHistory()) {
+    if (!((s.stxUsd ?? 0) > 0)) continue;
+    const gap = Math.abs(Date.parse(s.t) - at);
+    if (gap < bestGap) { bestGap = gap; best = s.stxUsd as number; }
+  }
+  return bestGap <= 6 * 3600_000 ? best : 0; // within 6 hours, or not at all
+}
+
 export async function main() {
   const f = flags();
   const live = f.live && f.yesMainnet;
@@ -717,6 +730,7 @@ export async function main() {
   // until a human inspects it. Operator reset: delete journal/drawdown-baseline.json.
   let sessionStart = 0;
   let sessionStartT = ""; // when sessionStart was read: withdrawals after it are added back
+  let sessionStartUsd: number | undefined; // the baseline in USD, when known (drawdownInputs)
   let baselineProblem: string | null = null;
   const storedBaseline = loadDrawdownBaseline();
   if (storedBaseline.kind === "corrupt") {
@@ -726,6 +740,7 @@ export async function main() {
     baselineProblem = baselineMismatch(b, cfg.key, w.address, loadWalletMigrations());
     if (baselineProblem === null) {
       sessionStart = b.portfolioY;
+      sessionStartUsd = b.portfolioUsd;
       sessionStartT = b.t;
       if (b.wallet !== w.address) saveDrawdownBaseline({ ...b, wallet: w.address }); // followed a recorded rotation
       console.log(`drawdown baseline: ${b.portfolioY} ${cfg.y.symbol} since ${b.t} (persisted)`);
@@ -756,7 +771,18 @@ export async function main() {
     if (sessionStart === 0 && baselineProblem === null && snap.portfolioY > 0) {
       sessionStart = snap.portfolioY;
       sessionStartT = new Date().toISOString();
-      saveDrawdownBaseline({ portfolioY: sessionStart, t: sessionStartT, pair: cfg.key, wallet: w.address });
+      sessionStartUsd = snap.usdPerStx > 0 ? snap.portfolioY * snap.usdPerStx : undefined;
+      saveDrawdownBaseline({ portfolioY: sessionStart, t: sessionStartT, pair: cfg.key, wallet: w.address, ...(sessionStartUsd ? { portfolioUsd: sessionStartUsd } : {}) });
+    } else if (sessionStart > 0 && sessionStartUsd === undefined && baselineProblem === null) {
+      // A baseline saved before it carried a USD value: give it one from the STX price recorded
+      // nearest its own time, so the starting point is kept (not re-taken after any loss).
+      const usd = stxUsdNear(sessionStartT);
+      if (usd > 0) {
+        sessionStartUsd = sessionStart * usd;
+        const stored = loadDrawdownBaseline();
+        if (stored.kind === "ok") saveDrawdownBaseline({ ...stored.baseline, portfolioUsd: sessionStartUsd });
+        console.log(`drawdown baseline: ${sessionStartUsd.toFixed(2)} USD (from ${sessionStart.toFixed(2)} ${cfg.y.symbol} at that time's STX price)`);
+      }
     }
     if (i % f.tuneEvery === 0) {
       const tuned = await tuneParams(snap.market, defaultParams());
@@ -815,8 +841,12 @@ export async function main() {
         externalMid: snap.externalMid,
         poolActive: snap.poolActive,
         // An owner withdrawal since the session started is not a loss (capital-flow-cli.ts).
-        portfolioStx: snap.portfolioY + withdrawnStx(loadCapitalFlows(), sessionStartT, null),
-        sessionStartStx: sessionStart,
+        // Compared in USD when the baseline has a USD value (drawdownInputs): in STX terms an STX
+        // rally alone read as a loss on capital that is mostly sBTC and USDCx.
+        ...(() => {
+          const d = drawdownInputs({ portfolioY: sessionStart, portfolioUsd: sessionStartUsd }, snap.portfolioY, withdrawnStx(loadCapitalFlows(), sessionStartT, null), snap.usdPerStx);
+          return { portfolioStx: d.now, sessionStartStx: d.start };
+        })(),
       },
       defaultSafetyParams(),
     );
