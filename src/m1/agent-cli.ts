@@ -24,7 +24,9 @@ import {
 } from "./actions.js";
 import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
-import { xykHoldReasonForPendingReadd, loadPending } from "./dlmm-pending-state.js";
+import { xykHoldReasonForPendingReadd, loadPending, pendingStatePath } from "./dlmm-pending-state.js";
+import { allocate, pendingReaddClaims, STX as STX_KEY } from "./reservation.js";
+import { existsSync as fileExists } from "node:fs";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
 import { defaultExperimentConfig, loadExperimentState, saveExperimentState, experimentDecision, recordRebalance } from "./experiment.js";
@@ -152,6 +154,7 @@ interface Snapshot {
 // dlmmValueY/freeUsdcxValueY/stxUsd every successful tick) before ever falling back to 0.
 let lastDlmmValueY = 0;
 let lastFreeUsdcxValueY = 0;
+let lastFreeUsdcxBase: bigint | null = null; // raw free USDCx, for the reservation shadow log
 let lastUsdPerStx = 0;
 let lazyInitDone = false;
 
@@ -202,6 +205,7 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     lastDlmmValueY = xValueY + yValueY;
 
     const freeYBase = await ftBalance(w.address, `${yTok.principal}::${yTok.asset}`);
+    lastFreeUsdcxBase = freeYBase;
     lastFreeUsdcxValueY = Number(freeYBase) / 10 ** yTok.decimals / usdPerStx;
 
     // Fees actually earned, from the recorded deposit and this read of the bins (dlmm-fees.ts).
@@ -227,6 +231,45 @@ function pendingReaddAmounts(): { dlmmPendingX?: number; dlmmPendingY?: number }
   const dec = p ? PENDING_DECIMALS[p.pair] : undefined; // the pinned decimals once #56's pins land
   if (!p || !dec || p.pair !== process.env.DLMM_OBSERVE_PAIR) return {};
   return { dlmmPendingX: Number(p.xBase) / 10 ** dec[0], dlmmPendingY: Number(p.yBase) / 10 ** dec[1] };
+}
+
+// Reservation, stage 1 (docs/WALLET_RESERVATION_DESIGN.md): SHADOW ONLY. Logs what each venue
+// WOULD be allowed to spend under per-venue claims, next to what the XYK step sizes from today.
+// Changes nothing; never throws into the cycle.
+function reservationShadow(snap: Snapshot): void {
+  try {
+    const cfg = activePool();
+    const key = (t: Token) => (t.native ? STX_KEY : `${t.address}.${t.name}::${t.asset}`);
+    const wallet: Record<string, bigint> = { [STX_KEY]: snap.nativeStxMicro, [key(cfg.x)]: snap.inv.xBase };
+    const primary = DLMM_POOLS.find((p) => p.key === process.env.DLMM_OBSERVE_PAIR);
+    if (primary && lastFreeUsdcxBase !== null) wallet[`${primary.pin.yToken}::${primary.pin.yAsset}`] = lastFreeUsdcxBase;
+    const path = pendingStatePath();
+    const pending = loadPending(path);
+    const unreadable = !pending && fileExists(path) ? [path] : [];
+    const pin = pending ? DLMM_POOLS.find((p) => p.key === pending.pair)?.pin : undefined;
+    const claims = pendingReaddClaims(pending, pin, path);
+    const a = allocate(wallet, claims, { [STX_KEY]: stxFeeReserveUstx() }, unreadable);
+    const used = tradableInventory(snap.inv, !!cfg.y.native, stxFeeReserveUstx(), !!cfg.x.native);
+    const xykWould = { x: a.available.xyk[key(cfg.x)] ?? 0n, y: a.available.xyk[key(cfg.y)] ?? 0n };
+    const differs = xykWould.x !== used.xBase || xykWould.y !== used.yBase;
+    if (differs || a.problems.length) {
+      console.log(
+        `  [reserve-shadow] XYK would see ${xykWould.x} ${cfg.x.symbol} + ${xykWould.y} ${cfg.y.symbol} (sizes from ${used.xBase} + ${used.yBase} today)` +
+          (claims.length ? ` | claims: ${claims.map((c) => `${c.venue} ${c.amount} ${c.asset.split("::").pop()}`).join(", ")}` : "") +
+          (a.problems.length ? ` | ⚠ ${a.problems.join("; ")}` : ""),
+      );
+    }
+    appendJournal({
+      t: new Date().toISOString(), type: "reservation-shadow",
+      wallet: Object.fromEntries(Object.entries(wallet).map(([k, v]) => [k, v.toString()])),
+      claims: claims.map((c) => ({ ...c, amount: c.amount.toString() })),
+      xykWould: { x: xykWould.x.toString(), y: xykWould.y.toString() },
+      xykUses: { x: used.xBase.toString(), y: used.yBase.toString() },
+      differs, problems: a.problems,
+    });
+  } catch (err) {
+    console.warn(`  [reserve-shadow] skipped: ${briefError((err as Error).message)}`);
+  }
 }
 
 async function readMarket(w: Wallet): Promise<Snapshot> {
@@ -766,6 +809,7 @@ export async function main() {
     // Same role as dlmmFailedThisTick, for the autonomous flash-rebalance path below.
     let flashFailedThisTick = false;
     const snap = await readMarket(w);
+    reservationShadow(snap);
     if (sessionStart === 0 && baselineProblem === null && snap.portfolioY > 0) {
       sessionStart = snap.portfolioY;
       sessionStartT = new Date().toISOString();

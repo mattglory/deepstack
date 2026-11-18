@@ -414,3 +414,13 @@ test("risk-state files that need a human (unreadable / unrelated wallet / corrup
   assert.deepEqual(rec.health, ["ok"]);
   assert.equal(onlyTick().alert, undefined);
 });
+
+test("reservation shadow (stage 1): journals what the XYK would see, and changes nothing", async () => {
+  resetHarness(baseWorld());
+  await runAgent(LIVE);
+  const e = rec.journal.find((j) => j.type === "reservation-shadow");
+  assert.ok(e, "a reservation-shadow record each cycle");
+  assert.deepEqual(e.claims, [], "no pending re-add: no claims");
+  assert.equal(e.differs, false, "with no claims the XYK would see exactly what it uses today");
+  assert.deepEqual(e.problems, []);
+});
