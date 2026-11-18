@@ -24,6 +24,10 @@
 # logged (docs/CHANGE_MANAGEMENT.md section 4).
 
 set -euo pipefail
+# One byte-wise collation for every sort/comm/ls below. Under a UTF-8 locale `sort` and `comm`
+# can disagree on order (found 2026-11-18 on the VPS: "comm: file 1 is not in sorted order"),
+# and with pipefail that aborted activate() half-way, after the stale-entry removal had run.
+export LC_ALL=C
 
 REPO="${DEEPSTACK_REPO:-https://github.com/mattglory/deepstack.git}"
 GH_API_REPO="${DEEPSTACK_GH_REPO:-mattglory/deepstack}"
