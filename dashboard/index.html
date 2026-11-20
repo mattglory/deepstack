@@ -148,7 +148,7 @@
     </div>
 
     <script type="module">
-      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets, trackRecordEnd, capitalAllocation, dailyCapitalSeries } from "./pnl-math.js";
+      import { hodlNow, ilAdjustedReturn, isPlausibleAgainstHodl, organicApr, adjustedPortfolio, withdrawnUpTo, agentWallets, trackRecordEnd, capitalAllocation, dailyCapitalSeries, heartbeatUptime, heartbeatDays, walletLegs } from "./pnl-math.js";
       const CFG = {
         // Fallback until telemetry loads; telemetry's wallet + walletMigrations take over after.
         wallet: "SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4",
@@ -168,6 +168,9 @@
           "add-liquidity", "withdraw-liquidity",
           "add-liquidity-multi", "withdraw-liquidity-multi",
           "flash-loan",
+          // The DLMM swap router (recenter-time swaps on the sBTC/USDCx and STX/USDCx pools). Missing
+          // until 2026-11-20, so those swaps, their fees and their aborts never showed anywhere.
+          "swap-x-for-y-simple-multi", "swap-y-for-x-simple-multi",
         ],
         // Gist raw URL the pilot agent mirrors metrics.json to (see src/m1/publish.ts).
         // Same-origin metrics.json only updates when the dashboard is redeployed; during
@@ -209,6 +212,16 @@
         .filter((x) => x.asset_identifier === assetId && (dir === "in" ? isAgent(x.recipient) : isAgent(x.sender)))
         .reduce((sum, x) => sum + Number(x.amount), 0);
       const uUSDCX = (n) => Number(n) / 1e6;
+      // Volume and the swap-implied mid are XYK sBTC/STX measures. DLMM router swaps are counted in
+      // the tx, fee and success totals, but their legs are sBTC/USDCx or STX/USDCx, not this.
+      const isXykSwap = (fn) => fn === "swap-y-for-x" || fn === "swap-x-for-y";
+      const LEG_ASSETS = { [CFG.sbtcAsset]: { sym: "sBTC", dp: 8 }, [CFG.usdcxAsset]: { sym: "USDCx", dp: 6 } };
+      const LEG_DP = { sBTC: 8, USDCx: 2, STX: 3 };
+      const legStr = (book) => Object.entries(book).map(([k, v]) => `${fmt(v, LEG_DP[k] ?? 4)} ${k}`).join(" + ") || "—";
+      const dlmmSwapDetail = (r) => {
+        const { sent, received } = walletLegs(r, isAgent, LEG_ASSETS);
+        return r.tx.tx_status === "success" ? `${legStr(sent)} → ${legStr(received)}` : "no transfer (aborted)";
+      };
 
       function card(k, v, sub) { return `<div class="card big"><div class="k">${k}</div><div class="v">${v}</div>${sub ? `<div class="sub2">${sub}</div>` : ""}</div>`; }
       function small(k, v) { return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
@@ -221,7 +234,7 @@
         for (const r of rows) {
           const t = r.tx, fn = t.contract_call.function_name, s = t.tx_status === "success";
           fees += Number(t.fee_rate || 0); s ? ok++ : ab++;
-          if (fn.startsWith("swap") && s) {
+          if (isXykSwap(fn) && s) {
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(t.fee_rate) : Number(r.stx_received);
             volume += Math.max(0, leg); swaps++;
           }
@@ -261,7 +274,7 @@
           fees += Number(r.tx.fee_rate || 0);
           s ? ok++ : ab++; last = Math.max(last, r.tx.burn_block_time || 0);
           const sb = sbtcLeg(r);
-          if (fn.startsWith("swap") && s) { swaps++; traded += sb;
+          if (isXykSwap(fn) && s) { swaps++; traded += sb;
             const leg = fn === "swap-y-for-x" ? Number(r.stx_sent) - Number(r.tx.fee_rate) : Number(r.stx_received);
             volume += Math.max(0, leg); if (sb && leg) mid = uSTX(leg) / baseBTC(sb); }
         }
@@ -290,7 +303,7 @@
         // hero
         $("hero").innerHTML =
           card("Portfolio", vmid ? `${fmt(portfolio, 1)} <small>STX</small>` : "—", vmid ? `${agentStxUsd > 0 ? `≈ $${fmt(portfolio * agentStxUsd, 0)} · ` : ""}≈ ${fmt(portfolio / vmid, 6)} sBTC${lpVal ? " · incl. LP" : ""}` : "") +
-          card("Volume facilitated", `${fmt(uSTX(hero.volume), 2)} <small>STX</small>`, `${hero.swaps} swaps${sincePilot}`) +
+          card("Volume facilitated", `${fmt(uSTX(hero.volume), 2)} <small>STX</small>`, `${hero.swaps} XYK swaps${sincePilot}`) +
           card("Network fees paid", `${fmt(uSTX(hero.fees), 3)} <small>STX</small>`, `${hero.count} txs${sincePilot}`) +
           card("Success rate", `${successRate}%`, `${hero.ok} ok · ${hero.ab} aborted`);
 
@@ -317,11 +330,14 @@
         // economics — honest. Fees net of IL = venue value vs HOLDING the deposited legs at
         // today's mid (the definition of impermanent loss; a scalar STX basis would smuggle
         // sBTC price moves into "income"). APR annualises that only once the observation
-        // window is ≥3 days — annualised noise is how LP marketing lies. Shared formula
+        // window is ≥APR_MIN_DAYS days — annualised noise is how LP marketing lies. Shared formula
         // (organicApr, pnl-math.js) — this used to be two hand-duplicated inline copies.
+        // 14 days, not organicApr's default 3: a 4-day DLMM window annualised to +48% on 2026-11-20,
+        // a number no one should quote. Below this the card reads "measuring".
+        const APR_MIN_DAYS = 14;
         let lpNet = null, lpApr = null, lpDays = 0;
         if (lp > 0 && agentLpBasis && agentMid > 0) {
-          const r = organicApr({ currentValueY: agentLpValueY, basisXQty: agentLpBasis.xQty, basisYQty: agentLpBasis.yQty, basisT: agentLpBasis.t, mid: agentMid });
+          const r = organicApr({ currentValueY: agentLpValueY, basisXQty: agentLpBasis.xQty, basisYQty: agentLpBasis.yQty, basisT: agentLpBasis.t, mid: agentMid, minDays: APR_MIN_DAYS });
           lpNet = r.netY; lpApr = r.apr; lpDays = r.days;
         }
         // Same idea for the DLMM position — its y-leg is USDCx, not native STX, so the
@@ -330,7 +346,7 @@
         // with how dlmmValueY was computed in the first place.
         let dlmmNet = null, dlmmApr = null, dlmmDays = 0;
         if (agentDlmmValueY > 0 && agentDlmmBasis && agentMid > 0 && agentStxUsd > 0) {
-          const r = organicApr({ currentValueY: agentDlmmValueY, basisXQty: agentDlmmBasis.xQty, basisYQty: agentDlmmBasis.yQty, basisT: agentDlmmBasis.t, mid: agentMid, yLegUsdRate: agentStxUsd });
+          const r = organicApr({ currentValueY: agentDlmmValueY, basisXQty: agentDlmmBasis.xQty, basisYQty: agentDlmmBasis.yQty, basisT: agentDlmmBasis.t, mid: agentMid, yLegUsdRate: agentStxUsd, minDays: APR_MIN_DAYS });
           dlmmNet = r.netY; dlmmApr = r.apr; dlmmDays = r.days;
         }
         // Net = LP fees earned − gas paid. hero.fees is the same pilot-scoped total the
@@ -342,7 +358,7 @@
           `<span style="color:${v >= 0 ? "var(--ok)" : "var(--bad)"}">${v >= 0 ? "+" : ""}${fmt(v, d)} STX</span>`;
         const aprHtml = (net, apr, days) =>
           net === null ? `—<div class="sub2">no basis yet</div>`
-          : apr === null ? `<span style="color:var(--muted)">measuring</span><div class="sub2">${days.toFixed(1)}d of ≥3d window</div>`
+          : apr === null ? `<span style="color:var(--muted)">measuring</span><div class="sub2">${days.toFixed(1)}d of ≥${APR_MIN_DAYS}d window</div>`
           : `<span style="color:${apr >= 0 ? "var(--ok)" : "var(--bad)"}">${apr >= 0 ? "+" : ""}${fmt(apr, 1)}%</span><div class="sub2">net of IL · ${days.toFixed(0)}d observed</div>`;
         // Fees alone, measured from the bins on chain (src/m1/dlmm-fees.ts), not an estimate.
         const dlmmFeesHtml = (f) => {
@@ -377,7 +393,8 @@
                 : fn === "withdraw-liquidity" ? `withdrew ${fmt(baseBTC(sbtcDir(r, "in")), 8)} sBTC + ${fmt(uSTX(r.stx_received), 2)} STX`
                 : fn === "add-liquidity-multi" ? `deposited ${fmt(baseBTC(assetSumDir(r, CFG.sbtcAsset, "out")), 8)} sBTC + ${fmt(uUSDCX(assetSumDir(r, CFG.usdcxAsset, "out")), 2)} USDCx`
                 : fn === "withdraw-liquidity-multi" ? `withdrew ${fmt(baseBTC(assetSumDir(r, CFG.sbtcAsset, "in")), 8)} sBTC + ${fmt(uUSDCX(assetSumDir(r, CFG.usdcxAsset, "in")), 2)} USDCx`
-                : fn === "flash-loan" ? flashLoanDetail(t) : fn;
+                : fn === "flash-loan" ? flashLoanDetail(t)
+                : fn.endsWith("-simple-multi") ? dlmmSwapDetail(r) : fn;
               return `<tr><td class="tnum">${tstr(t.burn_block_time)}</td><td>${fn}</td><td class="tnum">${detail}</td>
                 <td class="tnum">${fmt(uSTX(t.fee_rate), 3)}</td>
                 <td><span class="tag ${s ? "ok" : "bad"}">${s ? "success" : t.tx_status.replace(/_/g, " ")}</span></td>
@@ -546,14 +563,17 @@
         renderSafety(m, ss);
         const winStart = pilot ? m.pilotStartedAt : m.startedAt;
         const t0 = new Date(winStart).getTime(), t1 = new Date(last.t).getTime();
-        const elapsedH = Math.max(0, (t1 - t0) / 3.6e6);
 
-        // Uptime: actual heartbeats vs expected at the declared cadence (honest: n/a for ad-hoc runs).
+        // Uptime: actual heartbeats vs expected at the declared cadence (honest: n/a for ad-hoc runs),
+        // over the span the retained beats cover, plus day-level coverage of the whole window from
+        // the full history (heartbeatUptime/heartbeatDays, pnl-math.js). Dividing the retained beats
+        // by every slot since the pilot start read 50.1% on 2026-11-20 for an agent that never stopped.
         let uptime = "n/a", upSub = "ad-hoc runs (no cadence)";
-        if (m.intervalSec > 0 && t1 > t0) {
-          const expected = Math.max(1, Math.floor((t1 - t0) / (m.intervalSec * 1000)) + 1);
-          uptime = `${Math.min(100, (ss.length / expected) * 100).toFixed(1)}%`;
-          upSub = `${ss.length} beats / ${expected} expected · ${elapsedH.toFixed(1)}h ${pilot ? "pilot" : "window"}`;
+        const up = heartbeatUptime(ss, m.intervalSec, winStart);
+        if (up) {
+          const cov = heartbeatDays(winStart, last.t, [historyDays?.days, m.dailyHistory, ss]);
+          uptime = `${up.pct.toFixed(1)}%`;
+          upSub = `${up.beats} beats / ${up.expected} expected · last ${up.days.toFixed(1)}d<br>heartbeat on ${cov.covered} of ${cov.total} days since ${pilot ? "pilot start" : "first run"}`;
         }
 
         // IL-adjusted return: current portfolio vs HODLing the FULL baseline position (free
