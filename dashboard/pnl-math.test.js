@@ -215,3 +215,55 @@ test("dailyCapitalSeries: one point per day, live data wins over history, USD fr
   const r = dailyCapitalSeries(h, [], live);
   assert.deepEqual(r.map((p) => [p.day, p.totalUsd]), [["2026-07-10", 100]], "a day without a USD price is dropped");
 });
+
+import { heartbeatUptime, heartbeatDays, walletLegs } from "./pnl-math.js";
+
+// heartbeatUptime: measured over the retained beats' own span, not the whole pilot window.
+const beatsEvery = (startIso, n, sec) => Array.from({ length: n }, (_, i) => ({ t: new Date(Date.parse(startIso) + i * sec * 1000).toISOString() }));
+
+test("heartbeatUptime: full cadence over the retained span → 100%, even when the window started long before", () => {
+  const ss = beatsEvery("2026-10-07T00:00:00Z", 2000, 1800);
+  const up = heartbeatUptime(ss, 1800, "2026-08-28T20:59:43Z");
+  assert.equal(up.beats, 2000);
+  assert.equal(up.expected, 2000);
+  assert.equal(up.pct, 100);
+});
+
+test("heartbeatUptime: missing beats inside the span lower it", () => {
+  const ss = beatsEvery("2026-11-01T00:00:00Z", 100, 1800).filter((_, i) => i % 2 === 0 || i === 99);
+  const up = heartbeatUptime(ss, 1800, "2026-11-01T00:00:00Z");
+  assert.equal(up.expected, 100);
+  assert.equal(up.beats, 51);
+});
+
+test("heartbeatUptime: no cadence or a single beat → null (n/a, never a made-up number)", () => {
+  assert.equal(heartbeatUptime(beatsEvery("2026-11-01T00:00:00Z", 5, 1800), 0, "2026-11-01T00:00:00Z"), null);
+  assert.equal(heartbeatUptime(beatsEvery("2026-11-01T00:00:00Z", 1, 1800), 1800, "2026-11-01T00:00:00Z"), null);
+});
+
+test("heartbeatDays: counts days with a beat across every source, and sees a dead day", () => {
+  const history = [{ t: "2026-08-28T23:00:00Z" }, { t: "2026-08-29T23:00:00Z" }];
+  const daily = [{ t: "2026-08-31T23:00:00Z" }];
+  const samples = [{ t: "2026-09-01T10:00:00Z" }, { t: "2026-09-01T11:00:00Z" }];
+  assert.deepEqual(heartbeatDays("2026-08-28T20:59:43Z", "2026-09-01T11:00:00Z", [history, daily, samples, undefined]), { covered: 4, total: 5 });
+});
+
+test("walletLegs: sums a multi-bin DLMM swap per asset and reads STX from stx_transfers, not stx_sent", () => {
+  const me = "SPME", pool = "SMPOOL", sb = "x.sbtc::sbtc", us = "x.usdcx::usdcx";
+  const r = {
+    stx_sent: "1100300000", // includes the 0.3 STX fee
+    ft_transfers: [
+      { asset_identifier: us, amount: "228238218", sender: pool, recipient: me },
+      { asset_identifier: us, amount: "51847118", sender: pool, recipient: me },
+      { asset_identifier: sb, amount: "100", sender: pool, recipient: "SPOTHER" },
+    ],
+    stx_transfers: [
+      { amount: "859050959", sender: me, recipient: pool },
+      { amount: "194949041", sender: me, recipient: pool },
+    ],
+  };
+  const legs = walletLegs(r, (a) => a === me, { [sb]: { sym: "sBTC", dp: 8 }, [us]: { sym: "USDCx", dp: 6 } });
+  assert.deepEqual(legs.sent, { STX: 1054 });
+  assert.equal(Math.round(legs.received.USDCx * 1e6), 280085336);
+  assert.equal(legs.received.sBTC, undefined);
+});

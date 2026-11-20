@@ -29,3 +29,17 @@ export function agentWallets(
   m: unknown,
   fallback: string,
 ): { current: string; all: string[]; past: { address: string; until: string }[] };
+
+export function heartbeatUptime(
+  samples: { t: string }[],
+  intervalSec: number,
+  winStartIso: string,
+): { pct: number; beats: number; expected: number; days: number } | null;
+
+export function heartbeatDays(winStartIso: string, endIso: string, sources: ({ t?: string }[] | undefined | null)[]): { covered: number; total: number };
+
+export function walletLegs(
+  r: unknown,
+  isAgent: (addr: string) => boolean,
+  assets: Record<string, { sym: string; dp: number }>,
+): { sent: Record<string, number>; received: Record<string, number> };
