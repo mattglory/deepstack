@@ -56,6 +56,11 @@ const ENV_BASE: Record<string, string> = {
   DRAWDOWN_BASELINE_PATH: join(TMP, "drawdown-baseline.json"),
   EXPERIMENT_STATE_PATH: join(TMP, "experiment.json"),
   DLMM_DEPOSIT_PATH: join(TMP, "dlmm-deposit.json"),
+  // The trend observe step reads public price APIs once a day; the cycle tests cover trading, and
+  // trend.test.ts / trend-io.test.ts cover the mode. Off here, with its files in TMP regardless.
+  TREND_MODE: "off",
+  TREND_CLOSES_PATH: join(TMP, "trend-closes.json"),
+  TREND_STATE_PATH: join(TMP, "trend-state.json"),
   STACKS_API: "https://rpc.invalid",
   STACKS_API_FALLBACKS: "",
 };
