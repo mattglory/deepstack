@@ -2,8 +2,9 @@
 //
 // Sources (design 4.1, 4.3, 4.4):
 //   - daily BTC/USD closes: DefiLlama chart/coingecko:bitcoin period 1d, the series the backtest
-//     used. Its daily point is a snapshot at a fixed time of day (about 08:17 UTC), not a midnight
-//     close; each is cross-checked against the Coinbase BTC-USD hourly candle containing it.
+//     used. Its daily points fall at the time of day of the query's start, so the start is set to
+//     00:00 UTC: each point is then the midnight close, as in the backtest, labelled by the day it
+//     closes (closeDayOf). Each is cross-checked against the Coinbase BTC-USD hourly candle containing it.
 //   - BTC/USD now: DefiLlama current price (at most 15 minutes old).
 //   - USDCx/USD: DefiLlama's on-chain price for the Stacks USDCx token (at most 1 hour old).
 //   - the sBTC/USDCx HODLMM pool: active-bin price, fee and the bins below it (pinned tokens).
@@ -15,8 +16,9 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DLMM_POOLS, pinMismatch, readBinLiquidityStates, readDlmmState } from "./dlmm-read.js";
+import { readUserPosition } from "./dlmm-position.js";
 import {
-  closeAgrees, decideTrend, decisionDue, exitCapacity, freshMemory, isTrendMemory, mergeCloses, nextMemory,
+  closeAgrees, closeDayOf, decideTrend, decisionDue, exitCapacity, freshMemory, isTrendMemory, mergeCloses, nextMemory,
   type Close, type TrendDecision, type TrendMemory, type TrendParams, type TrendSources, type SellBin, defaultTrendParams,
 } from "./trend.js";
 
@@ -93,15 +95,16 @@ async function getJson(url: string): Promise<any> {
 
 /** DefiLlama's daily BTC/USD points for the last `days` completed days (unverified until cross-checked). */
 export async function fetchLlamaCloses(days: number, now = new Date()): Promise<Close[]> {
-  const start = Math.floor(now.getTime() / 1000) - days * 86_400;
+  // Start at 00:00 UTC so every point is a midnight close (a start at 08:16 gives 08:16 snapshots).
+  const start = (Math.floor(now.getTime() / 86_400_000) - days) * 86_400;
   const j = await getJson(`https://coins.llama.fi/chart/coingecko:bitcoin?start=${start}&span=${days + 1}&period=1d`);
   const pts: { timestamp: number; price: number }[] = j?.coins?.["coingecko:bitcoin"]?.prices ?? [];
   const today = now.toISOString().slice(0, 10);
   const byDay = new Map<string, Close>();
   for (const x of pts) {
     if (!(x.price > 0) || !(x.timestamp > 0)) continue;
-    const day = new Date(x.timestamp * 1000).toISOString().slice(0, 10);
-    if (day >= today) continue; // today's point is still being revised; only completed days are stored
+    const day = closeDayOf(x.timestamp);
+    if (day >= today || x.timestamp * 1000 > now.getTime()) continue; // only completed days are stored
     byDay.set(day, { day, t: x.timestamp, price: x.price, verified: false });
   }
   return [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day));
@@ -144,8 +147,10 @@ async function llamaCurrent(key: string, maxAgeSecs: number, nowS: number): Prom
 interface PoolRead { usdPerSbtc: number; feeBps: number; bins: SellBin[]; refYperX: number }
 
 /** The sBTC/USDCx pool's active price and the bins a sell would walk down, read until the
- *  first bin below the exit floor (or MAX_SELL_BINS). Pinned tokens and core, or it throws. */
-async function readSellSide(btcSpotUsd: number | null, p: TrendParams): Promise<PoolRead> {
+ *  first bin below the exit floor (or MAX_SELL_BINS). Pinned tokens and core, or it throws.
+ *  `owner`'s own liquidity is left out: a live switch withdraws the agent's DLMM position first
+ *  (design 4.5), so it can't sell into it. */
+async function readSellSide(btcSpotUsd: number | null, p: TrendParams, owner: string | null): Promise<PoolRead> {
   const pool = DLMM_POOLS.find((x) => x.key === "sbtc-usdcx")!;
   const st = await readDlmmState(pool);
   if (!st) throw new Error("sbtc-usdcx pool unreadable");
@@ -154,6 +159,8 @@ async function readSellSide(btcSpotUsd: number | null, p: TrendParams): Promise<
   const feeBps = st.swapFeeBps;
   if (!(feeBps !== undefined && feeBps >= 0 && feeBps < 10_000)) throw new Error("pool fee unreadable");
   const scale = 10 ** (pool.pin.xDecimals - pool.pin.yDecimals); // base-unit price -> USDCx per sBTC
+  const own = new Map<number, bigint>();
+  if (owner) for (const b of (await readUserPosition(pool, owner)).bins) own.set(b.signedBin, b.userY);
   const ref = btcSpotUsd ?? null;
   const bins: SellBin[] = [];
   let usdPerSbtc = NaN;
@@ -161,7 +168,8 @@ async function readSellSide(btcSpotUsd: number | null, p: TrendParams): Promise<
     const id = st.activeBinId - k;
     const s = (await readBinLiquidityStates(pool, st.coreAddress, st.initialPrice, st.binStep, [id])).get(id)!;
     if (k === 0) usdPerSbtc = (Number(s.binPrice) / 1e8) * scale;
-    bins.push({ binId: id, yBalance: s.yBalance, binPrice: s.binPrice });
+    const ownY = own.get(id) ?? 0n;
+    bins.push({ binId: id, yBalance: s.yBalance > ownY ? s.yBalance - ownY : 0n, binPrice: s.binPrice });
     if (ref === null) break; // no reference: price only, no capacity walk
     const pNet = (Number(s.binPrice) / 1e8) * scale * (1 - feeBps / 10_000);
     if (s.yBalance > 0n && pNet < ref * (1 - p.exitMinOutBps / 10_000)) break;
@@ -178,7 +186,7 @@ export interface ObserveResult { ran: boolean; record?: Record<string, unknown>;
  * would-be switch against the measured capacity. `persist: false` reads and decides without writing
  * any file (the CLI's status view).
  */
-export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | null; persist?: boolean; force?: boolean }): Promise<ObserveResult> {
+export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | null; owner?: string | null; persist?: boolean; force?: boolean }): Promise<ObserveResult> {
   const now = opts.now ?? new Date();
   const persist = opts.persist ?? true;
   const p = trendParams();
@@ -205,7 +213,7 @@ export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | 
   const btcSpotUsd = await llamaCurrent("coingecko:bitcoin", 900, nowS);
   const usdcxUsd = await llamaCurrent("stacks:SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx", 3600, nowS);
   let pool: PoolRead | null = null, poolError: string | null = null;
-  try { pool = await readSellSide(btcSpotUsd, p); } catch (e) { poolError = (e as Error).message; }
+  try { pool = await readSellSide(btcSpotUsd, p, opts.owner ?? null); } catch (e) { poolError = (e as Error).message; }
 
   const src: TrendSources = { btcSpotUsd, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, usdcxUsd };
   const d = decideTrend(kept, due.mem, src, p, now);
@@ -217,7 +225,7 @@ export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | 
     const sbtc = c.xIn / 1e8, usd = c.yOut / 1e6;
     const switchUsd = opts.capitalUsd && opts.capitalUsd > 0 ? opts.capitalUsd * p.riskShare : null;
     capacity = {
-      minOutBps: p.exitMinOutBps, feeBps: pool.feeBps, sbtc, usd: Math.round(usd), binsUsed: c.binsUsed, stoppedBy: c.stoppedBy,
+      minOutBps: p.exitMinOutBps, feeBps: pool.feeBps, excludesOwn: !!opts.owner, sbtc, usd: Math.round(usd), binsUsed: c.binsUsed, stoppedBy: c.stoppedBy,
       ...(switchUsd ? { wouldSellUsd: Math.round(switchUsd), coverage: Number((usd / switchUsd).toFixed(2)) } : {}),
     };
   }

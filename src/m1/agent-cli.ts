@@ -999,7 +999,7 @@ export async function main() {
         try {
           if (trendMode !== "observe") console.warn(`  [trend] TREND_MODE=${trendMode} is not built; running observe only`);
           const capitalUsd = lastDlmmValueY > 0 && lastUsdPerStx > 0 ? lastDlmmValueY * lastUsdPerStx : null;
-          const tr = await trendObserveStep({ capitalUsd });
+          const tr = await trendObserveStep({ capitalUsd, owner: w.address });
           if (tr.ran && tr.record) {
             appendJournal({ t: new Date().toISOString(), ...tr.record });
             const r = tr.record as any;

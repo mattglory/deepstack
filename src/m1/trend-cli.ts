@@ -3,6 +3,7 @@
 //
 //   npm run m1:trend
 //   npm run m1:trend -- --capital-usd=2600   # size the would-be switch against exit capacity
+//   npm run m1:trend -- --owner=SP...         # leave that wallet's own liquidity out of the capacity
 
 import { loadDotenv } from "./wallet.js";
 import { trendObserveStep, trendParams } from "./trend-io.js";
@@ -10,8 +11,9 @@ import { trendObserveStep, trendParams } from "./trend-io.js";
 loadDotenv();
 const arg = process.argv.find((a) => a.startsWith("--capital-usd="));
 const capitalUsd = arg ? Number(arg.split("=")[1]) : null;
+const owner = process.argv.find((a) => a.startsWith("--owner="))?.split("=")[1] ?? null;
 const p = trendParams();
-const r = await trendObserveStep({ capitalUsd, persist: false, force: true });
+const r = await trendObserveStep({ capitalUsd, owner, persist: false, force: true });
 const rec = (r.record ?? {}) as any;
 console.log(`Trend rule (observe only): SMA${p.smaDays}, buffer ${p.buffer * 100}%, risk share ${p.riskShare * 100}%`);
 console.log(`  state ${rec.from} → ${rec.action}: ${rec.reason}`);

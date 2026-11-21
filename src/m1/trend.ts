@@ -116,6 +116,16 @@ export function mergeCloses(stored: Close[], fetched: Close[], tolerance = 0.001
   return { closes: [...byDay.values()].sort((a, b) => a.day.localeCompare(b.day)), corrections };
 }
 
+/**
+ * The day a DefiLlama midnight point closes. Points sit at 00:00 UTC +-10 s, so a point at 23:59:52
+ * on day E is the same snapshot as 00:00:02 on E+1: both close day E. Keying by the timestamp's own
+ * UTC date made them collide and left gaps (56 in Sep 2025 to Nov 2026), which would have blocked
+ * decisions for a "gap in the window".
+ */
+export function closeDayOf(ts: number): string {
+  return new Date((ts - 43_200) * 1000).toISOString().slice(0, 10);
+}
+
 /** Consecutive UTC days, no gaps. */
 function contiguous(closes: Close[]): boolean {
   for (let i = 1; i < closes.length; i++) {
@@ -155,7 +165,7 @@ const bpsOff = (a: number, b: number) => Math.round((Math.abs(a - b) / b) * 10_0
  *  - to risk-on: needs a verified close AND the pool check (an sBTC peg break is not a cheap entry).
  */
 export function decideTrend(closes: Close[], mem: TrendMemory, src: TrendSources, p: TrendParams, now: Date): TrendDecision {
-  // Only completed days: DefiLlama keeps revising the current day's point until the day ends.
+  // Only completed days: yesterday's close is the point at today's 00:00 UTC.
   const today = now.toISOString().slice(0, 10);
   const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
   const usable = closes.filter((c) => c.day < today);

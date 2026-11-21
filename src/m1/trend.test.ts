@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  closeAgrees, decideTrend, decisionDue, defaultTrendParams, exitCapacity, freshMemory, isTrendMemory, mergeCloses, nextMemory,
+  closeAgrees, closeDayOf, decideTrend, decisionDue, defaultTrendParams, exitCapacity, freshMemory, isTrendMemory, mergeCloses, nextMemory,
   type Close, type TrendMemory, type TrendSources,
 } from "./trend.js";
 
@@ -132,6 +132,14 @@ test("decisionDue: random minute drawn once a day, kept across restarts, one dec
   const done = { ...later.mem, lastDecisionDay: "2026-11-21" };
   assert.equal(decisionDue(new Date("2026-11-21T23:00:00Z"), done, 0).due, false);
   assert.equal(decisionDue(new Date("2026-11-22T05:00:00Z"), done, 0, () => 0).due, true); // late start still decides
+});
+
+test("closeDayOf: midnight points either side of 00:00 close the previous day, and never collide", () => {
+  const at = (iso: string) => Date.parse(iso) / 1000;
+  assert.equal(closeDayOf(at("2025-09-15T23:59:52Z")), "2025-09-15");
+  assert.equal(closeDayOf(at("2025-09-17T00:00:01Z")), "2025-09-16");
+  assert.equal(closeDayOf(at("2025-09-18T00:00:00Z")), "2025-09-17");
+  assert.equal(closeDayOf(at("2025-09-18T23:59:50Z")), "2025-09-18");
 });
 
 test("closeAgrees: inside the hour's range, or within the bound of it; missing candle fails", () => {
