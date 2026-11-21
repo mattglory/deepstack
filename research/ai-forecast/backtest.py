@@ -20,10 +20,15 @@ def fetch():
     while s < time.time():
         j = json.load(urllib.request.urlopen(f"https://coins.llama.fi/chart/coingecko:bitcoin?start={s}&span=400&period=1d", timeout=30))
         for x in j["coins"]["coingecko:bitcoin"]["prices"]:
-            pts[D.datetime.utcfromtimestamp(x["timestamp"]).date().isoformat()] = x["price"]
+            # Points sit at about 00:00 UTC, +-10 s: a point at 23:59:52 on day E is the same
+            # midnight snapshot as 00:00:02 on day E+1. Label each by the day it closes (ts - 12h).
+            pts[D.datetime.utcfromtimestamp(x["timestamp"] - 43200).date().isoformat()] = x["price"]
         s += 400 * 86400
     today = D.datetime.utcnow().date().isoformat()
-    json.dump(sorted((d, p) for d, p in pts.items() if d < today), open(CLOSES, "w"))
+    c = sorted((d, p) for d, p in pts.items() if d < today)
+    gaps = [c[i][0] for i in range(1, len(c)) if (D.date.fromisoformat(c[i][0]) - D.date.fromisoformat(c[i - 1][0])).days != 1]
+    assert not gaps, f"gaps in the daily series before {gaps[:5]}"
+    json.dump(c, open(CLOSES, "w"))
 
 def load():
     c = json.load(open(CLOSES)); return [d for d, _ in c], [p for _, p in c]
