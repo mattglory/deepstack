@@ -67,7 +67,9 @@ const attemptSignal = new AsyncLocalStorage<AbortSignal>();
  */
 export function hiroFetch(baseUrl: string): typeof fetch {
   const extra = hiroHeaders(baseUrl);
-  return ((url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+  return ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const tip = chainTip.getStore();
+    const url = tip && (typeof input === "string" || input instanceof URL) ? withTipParam(String(input), tip) : input;
     const attempt = attemptSignal.getStore();
     const signal = attempt && init?.signal ? AbortSignal.any([attempt, init.signal]) : (attempt ?? init?.signal);
     const withKey = Object.keys(extra).length === 0 ? init : { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), ...extra } };
@@ -78,6 +80,44 @@ export function hiroFetch(baseUrl: string): typeof fetch {
 // Every endpoint must be https (C8 / DSA-25): reads over plain http can be altered in transit,
 // and the agent sizes and prices trades from them. A misconfigured endpoint throws, so every
 // read fails and nothing is broadcast, rather than silently trusting it.
+// One chain tip per snapshot (review R105-1). On 2026-11-21 one cycle read the DLMM position and
+// free USDCx from before the agent's own add and free sBTC from after it, because each read could
+// land on a different node or indexer height, so the portfolio looked 29% down. Inside atChainTip(),
+// every node read that hiroFetch makes (contract read-only calls, account and map reads) carries
+// `tip=<index_block_hash>`, so they all describe the same block. A node that doesn't have that
+// block yet answers with an error, so the read fails instead of mixing heights.
+const chainTip = new AsyncLocalStorage<string>();
+const PINNABLE = /\/v2\/(contracts\/call-read|accounts|map_entry|data_var)\//;
+
+/** The index block hash the current reads are pinned to, if any (no 0x prefix). */
+export function currentChainTip(): string | undefined {
+  return chainTip.getStore();
+}
+
+/** `url` with `tip=` added when it is a node read that accepts one. Other URLs are unchanged. */
+export function withTipParam(url: string, tip: string): string {
+  if (!PINNABLE.test(url) || /[?&]tip=/.test(url)) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}tip=${tip}`;
+}
+
+/** The latest block the indexer has: its index block hash (no 0x) and height. */
+export async function latestBlock(): Promise<{ hash: string; height: number }> {
+  return withRpc(async (baseUrl, signal) => {
+    const r = await fetch(`${baseUrl}/extended/v2/blocks?limit=1`, { headers: hiroHeaders(baseUrl), signal });
+    if (!r.ok) throw new Error(`latest block: HTTP ${r.status}`);
+    const b = ((await r.json()) as { results?: { index_block_hash?: string; height?: number }[] }).results?.[0];
+    const hash = String(b?.index_block_hash ?? "").replace(/^0x/i, "").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hash) || !Number.isInteger(b?.height)) throw new Error("latest block: unexpected response");
+    return { hash, height: b!.height as number };
+  });
+}
+
+/** Run `fn` with every node read pinned to one block, the latest the indexer has. */
+export async function atChainTip<T>(fn: (tip: { hash: string; height: number }) => Promise<T>): Promise<T> {
+  const tip = await latestBlock();
+  return chainTip.run(tip.hash, () => fn(tip));
+}
+
 export function endpoints(): string[] {
   const fallbacks = (process.env.STACKS_API_FALLBACKS ?? "")
     .split(",")

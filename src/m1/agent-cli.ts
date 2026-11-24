@@ -48,7 +48,7 @@ import { cacheAfterDeposit, checkEmptyPosition } from "./dlmm-value-guard.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
-import { withRpc, hiroFetch } from "./rpc.js";
+import { withRpc, hiroFetch, atChainTip, currentChainTip } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
 import { createSupervisor, briefError, type Supervisor } from "./supervise.js";
@@ -125,6 +125,7 @@ interface Snapshot {
   poolFeeBps: number;
   market: MarketState;
   xykShare?: { x: bigint; y: bigint } | null; // the XYK's reservation share this cycle (reservationCycle)
+  chainTipHeight?: number; // the block every chain read in this snapshot is pinned to (R105-1)
 }
 
 // Value of the DLMM position (if any) PLUS any free (non-DLMM-locked) balance of the pair's
@@ -186,7 +187,12 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     const poolDef = DLMM_POOLS.find((p) => p.key === pairKey);
     if (!poolDef) return { dlmmValueY: 0, freeUsdcxValueY: 0, usdPerStx: 0 };
     const st = await readDlmmState(poolDef);
-    if (!st) return last;
+    if (!st) {
+      // readDlmmState returns null on any error, including a node without the pinned block
+      // (rpc.ts atChainTip): say so, so a lagging node is visible on this path too (review R111-2).
+      console.warn(`  [dlmm-value] pool read returned nothing${currentChainTip() ? " at the pinned block" : ""}, reusing last known values (dlmm ${last.dlmmValueY.toFixed(2)}, free-y ${last.freeUsdcxValueY.toFixed(2)})`);
+      return last;
+    }
     // Recorded for the bin-based vol series (dlmm-recenter.ts binSeriesVolDaily). Taken from a
     // successful pool read only; on any failure below the reused `last` carries no bin, so a
     // stale value can never enter the series.
@@ -441,6 +447,7 @@ async function act(
     mode: canTrade ? "live" : "observe",
     mid: +s.midXinY.toFixed(4),
     ext: s.externalMid ? +s.externalMid.toFixed(4) : null,
+    ...(s.chainTipHeight !== undefined ? { tip: s.chainTipHeight } : {}),
     portfolioY: +s.portfolioY.toFixed(4),
     lpValueY: +s.lpValueY.toFixed(4),
     safe: safety.safe,
@@ -850,7 +857,9 @@ export async function main() {
     // Same role as dlmmFailedThisTick, for the autonomous flash-rebalance path below.
     let flashFailedThisTick = false;
     let reservationAlertThisTick = false; // an unreadable claim file, or an over-claim not explained by our own last transaction
-    const snap = await readMarket(w);
+    // Every chain read in the snapshot at one block (rpc.ts atChainTip, review R105-1): on
+    // 2026-11-21 reads from two heights valued the DLMM position as empty and the halt fired.
+    const snap: Snapshot = await atChainTip(async (tip) => ({ ...(await readMarket(w)), chainTipHeight: tip.height }));
     const reservation = reservationCycle(snap);
     snap.xykShare = reservation.share;
     if (reservation.alert) reservationAlertThisTick = true;

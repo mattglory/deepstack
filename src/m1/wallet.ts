@@ -9,7 +9,8 @@ import { readFileSync, existsSync } from "node:fs";
 import { getAddressFromPrivateKey } from "@stacks/transactions";
 import { generateWallet, generateNewAccount } from "@stacks/wallet-sdk";
 import { activePool, contractId, tokenId, type Token } from "./contracts.js";
-import { withRpc, hiroHeaders } from "./rpc.js";
+import { withRpc, hiroHeaders, currentChainTip } from "./rpc.js";
+import { nodeStxBalance, nodeFtBalance } from "./tip-balances.js";
 
 // Minimal zero-dependency .env loader (only sets vars not already in env).
 export function loadDotenv(path = ".env"): void {
@@ -97,6 +98,11 @@ export async function getStxBalance(
   address: string,
   network: Network,
 ): Promise<StxBalance> {
+  // Inside rpc.ts atChainTip(): read from the node at the pinned block (review R105-1).
+  if (network === "mainnet" && currentChainTip()) {
+    const micro = await nodeStxBalance(address);
+    return { stx: Number(micro) / 1e6, microStx: micro };
+  }
   const j = await hiroJson<{ stx?: { balance?: string } }>(
     network,
     `/extended/v1/address/${address}/balances`,
@@ -106,6 +112,7 @@ export async function getStxBalance(
 }
 
 async function ftBalance(address: string, network: Network, assetId: string): Promise<bigint> {
+  if (network === "mainnet" && currentChainTip()) return nodeFtBalance(address, assetId); // R105-1
   const j = await hiroJson<{ fungible_tokens?: Record<string, { balance?: string }> }>(
     network,
     `/extended/v1/address/${address}/balances`,

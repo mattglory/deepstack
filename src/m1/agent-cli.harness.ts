@@ -200,6 +200,11 @@ if (!REAL_RPC) {
       endpoints: () => ["https://rpc.invalid"],
       redactEndpoint: (s: string) => s,
       broadcastSigned: async (tx: unknown) => fakeBroadcast({ transaction: tx }),
+      // One pinned block per snapshot (R105-1). The fake network has a single height, so the pin is
+      // a constant; currentChainTip stays undefined so the mocked wallet reads are used as before.
+      atChainTip: async <T>(fn: (tip: { hash: string; height: number }) => Promise<T>) => fn({ hash: "0".repeat(64), height: 1 }),
+      currentChainTip: () => undefined,
+      withTipParam: (url: string) => url,
     },
   });
 }
