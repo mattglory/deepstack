@@ -29,3 +29,7 @@ research_notes/
 ms-*.hex
 ms-*.hex.sig*.json
 .env.testnet*
+
+# Wallet watcher state (src/watcher) — local observation history, plus moved-aside corrupt copies
+watcher-state.json
+watcher-state.json.*
