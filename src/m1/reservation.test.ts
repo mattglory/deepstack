@@ -34,7 +34,25 @@ test("over-claim beyond the dust tolerance is a problem; within it, not", () => 
   assert.deepEqual(allocate({ [SBTC]: 1_000_000n }, claims, {}).problems, []);
   assert.deepEqual(allocate({ [SBTC]: 999_999n }, claims, {}).problems, [], "1 unit short: indexer lag");
   assert.match(allocate({ [SBTC]: 900_000n }, claims, {}).problems[0], /over-claim on .*sbtc-token: claims 1000000 > usable 900000/);
-  assert.equal(allocate({ [SBTC]: 900_000n }, claims, {}).available.dlmm[SBTC], 900_000n, "never more than is there");
+  const over = allocate({ [SBTC]: 900_000n, [STX]: 100_000_000n }, claims, {});
+  assert.equal(over.available.dlmm[SBTC], 0n, "an over-claim stops every venue, the claimant too");
+  assert.equal(over.available.xyk[SBTC], 0n);
+  assert.equal(over.available.trend[SBTC], 0n);
+  assert.equal(over.available.xyk[STX], 100_000_000n, "other assets are unaffected");
+});
+
+test("two claimants over-claiming together: neither may spend the token (R101-1)", () => {
+  // Each claim alone fits the balance; together they don't. Before, each got min(claim, usable).
+  const claims = [
+    { venue: "dlmm" as const, asset: SBTC, amount: 800_000n, source: "journal/dlmm-pending-readd.json" },
+    { venue: "trend" as const, asset: SBTC, amount: 800_000n, source: "journal/trend-state.json" },
+  ];
+  const a = allocate({ [SBTC]: 1_000_000n, [USDCX]: 5_000_000n }, claims, {});
+  assert.equal(a.available.dlmm[SBTC], 0n);
+  assert.equal(a.available.trend[SBTC], 0n);
+  assert.equal(a.available.xyk[SBTC], 0n);
+  assert.equal(a.available.xyk[USDCX], 5_000_000n);
+  assert.match(a.problems[0], /over-claim .*no venue may spend it/);
 });
 
 test("an unreadable claim source fails closed: the residual owner (XYK) gets nothing", () => {
