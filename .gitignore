@@ -29,3 +29,7 @@ research_notes/
 ms-*.hex
 ms-*.hex.sig*.json
 .env.testnet*
+
+# research downloads
+research/trend-rule/*_1d.json
+research/trend-rule/btc4h.json
