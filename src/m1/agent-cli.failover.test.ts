@@ -25,6 +25,7 @@ async function startOnPrimary(fallbacks: string): Promise<void> {
 
 const SBTC = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token";
 const WSTX = "SM1793C4R5PZ4NS4VQ4WMP7SKKYVH8JZEWSZ9HCCR.token-stx-v-1-2";
+const TIP = "24f9cc674ef73daf1587990101b2d076a33a7dc3a0a13dbc13f6f5d6c271dcb6";
 const readOk = (cv: Parameters<typeof Cl.serialize>[0]) =>
   new Response(JSON.stringify({ okay: true, result: `0x${Cl.serialize(cv)}` }), { status: 200 });
 
@@ -45,6 +46,8 @@ function healthy(url: string, init?: RequestInit): Promise<Response> {
   if (url.includes("/sbtc-token/get-decimals")) return Promise.resolve(readOk(Cl.ok(Cl.uint(8))));
   if (url.includes("/token-stx-v-1-2/get-decimals")) return Promise.resolve(readOk(Cl.ok(Cl.uint(6))));
   if (url.includes("/extended/v1/tx/")) return Promise.resolve(new Response(JSON.stringify({ tx_status: "success" }), { status: 200 }));
+  // The block every snapshot read is pinned to (rpc.ts atChainTip, R105-1).
+  if (url.includes("/extended/v2/blocks?limit=1")) return Promise.resolve(new Response(JSON.stringify({ results: [{ height: 9_562_434, index_block_hash: `0x${TIP}` }] }), { status: 200 }));
   if (url.endsWith("/v2/transactions")) {
     const hex = JSON.parse(String(init?.body)).tx as string;
     return Promise.resolve(new Response(JSON.stringify(`0x${txidOf(hex)}`), { status: 200 }));
@@ -89,6 +92,9 @@ test("hot-path pool read: a hung primary is timed out, ABORTED, and the fallback
   const [t] = tickEntries();
   assert.equal(t.mid, 100_000, "mid read from the fallback");
   assert.ok(rec.fetches.some((u) => u.startsWith(`${FALLBACK}/v2/contracts/call-read/`)), "pool read went to the fallback");
+  const poolReads = rec.fetches.filter((u) => u.includes("/v2/contracts/call-read/"));
+  assert.ok(poolReads.length > 0 && poolReads.every((u) => u.endsWith(`?tip=${TIP}`)), "every snapshot read is pinned to the one block (R105-1)");
+  assert.equal(t.tip, 9_562_434, "the pinned height is journalled with the tick");
   assert.ok(hung.started >= 1, "the primary was tried first");
   assert.equal(hung.aborted, hung.started, "every hung request was aborted, not left open");
 });
