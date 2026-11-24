@@ -45,6 +45,7 @@ import { loadXykTrades, saveXykTrades, loadDrawdownBaseline, saveDrawdownBaselin
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
 import { decideHaven, defaultHavenParams } from "./haven.js";
 import { trendObserveStep } from "./trend-io.js";
+import { cacheAfterDeposit, checkEmptyPosition } from "./dlmm-value-guard.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
@@ -158,6 +159,7 @@ let lastFreeUsdcxValueY = 0;
 let lastFreeUsdcxBase: bigint | null = null; // raw free USDCx, for the reservation shadow log
 let lastUsdPerStx = 0;
 let lazyInitDone = false;
+let emptyPositionStreak = 0; // consecutive empty position reads against a deposit record (dlmm-value-guard.ts)
 
 function lazyInitFromDisk(): void {
   if (lazyInitDone) return;
@@ -197,6 +199,15 @@ async function dlmmPositionValueY(w: Wallet, xToken: Token, midXinY: number): Pr
     const mismatch = pinMismatch(poolDef, st, xTok, yTok); // C4: never value with RPC-substituted tokens/decimals
     if (mismatch) {
       console.warn(`  [dlmm-value] ⛔ pool does not match its pinned definition (${mismatch}) — skipping DLMM valuation this tick`);
+      return last;
+    }
+    // An empty position while our own deposit record says we hold one: a read from before the add
+    // (2026-11-21), handled like a failed read (dlmm-value-guard.ts).
+    const empty = checkEmptyPosition(pos.bins.length, loadDeposit(), pairKey, w.address, emptyPositionStreak);
+    emptyPositionStreak = empty.streak;
+    if (empty.warn) console.warn(`  [dlmm-value] ${empty.warn}`);
+    if (empty.stale) {
+      appendJournal({ t: new Date().toISOString(), type: "dlmm-value-stale", reason: empty.warn, reused: last });
       return last;
     }
     const usdPerStx = await stxPriceUsd();
@@ -967,6 +978,13 @@ export async function main() {
           // A pending re-add that couldn't finish: alert (health check) without counting a failed add.
           if (res.alert) dlmmFailedThisTick = true;
           if (attempted) saveDlmmCounters({ failStreak: dlmmFailStreak, recenters: dlmmRecenters });
+          // After our own confirmed add, point the valuation's reuse cache at the new position, so a
+          // stale or failed read next cycle can't reuse the pending period's 0 (dlmm-value-guard.ts).
+          if (res.executed && (res.action === "recenter" || res.action === "open")) {
+            const [xd, yd] = PENDING_DECIMALS[dlmmPair] ?? [NaN, NaN];
+            const c = cacheAfterDeposit(loadDeposit(), xd, yd, snap.midXinY, lastUsdPerStx, lastFreeUsdcxValueY);
+            if (c) ({ dlmmValueY: lastDlmmValueY, freeUsdcxValueY: lastFreeUsdcxValueY } = c);
+          }
           appendJournal({ t: new Date().toISOString(), type: dlmmLive ? "dlmm-recenter" : "dlmm-observe", pair: dlmmPair, sigmaDaily, volSource, dlmmFailStreak, ...res });
           console.log(`  [dlmm ${dlmmPair}] active ${res.activeBin} | pos ${res.posLo !== null ? `[${res.posLo}..${res.posHi}]` : "none"} | ±${res.halfWidth}${pinned !== null ? " (pinned)" : ""}${sigmaDaily ? ` (vol ${(sigmaDaily * 100).toFixed(2)}%/day, ${volSource})` : " (fallback)"} → ${res.action}${res.executed ? " ✓executed" : dlmmLive ? "" : " (observe)"}`);
         } catch (e) {

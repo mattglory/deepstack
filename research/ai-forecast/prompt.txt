@@ -1,0 +1,16 @@
+You are forecasting the direction of the BTC/USD price. You get only the numbers below: daily
+closes, oldest first, ending with the latest completed close (day 0). Dates are deliberately
+withheld. Do not guess which period this is; judge only from the numbers.
+
+Daily closes (USD), day -89 to day 0:
+{closes}
+
+Latest close: {last}
+60-day average: {sma60} (latest close is {dist}% from it)
+30-day realised volatility (daily): {vol}%
+
+Give the probability that the close 1 day after day 0 is above the latest close, and the
+probability that the close 7 days after day 0 is above it. Use 0.5 when you see no edge; that is
+a valid and often correct answer.
+
+Respond with ONLY JSON: {"p_up_1d": 0.5, "p_up_7d": 0.5}
