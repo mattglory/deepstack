@@ -30,12 +30,13 @@ export interface TrendParams {
   poolAgreeBps: number; // pool-implied sBTC price vs BTC/USD (design: 3%)
   usdcxPegBps: number; // USDCx vs $1 (design: 1%)
   exitMinOutBps: number; // min-out below the reference for the exit-capacity measure (design: 1%)
+  maxUnverifiedForRiskOn: number; // earlier closes in the window that may lack the exchange check for a risk-on
 }
 
 export function defaultTrendParams(): TrendParams {
   return {
     smaDays: 60, buffer: 0.02, riskShare: 0.3, maxSwitches30d: 6, decisionHourUtc: 0,
-    closeAgreeBps: 100, poolAgreeBps: 300, usdcxPegBps: 100, exitMinOutBps: 100,
+    closeAgreeBps: 100, poolAgreeBps: 300, usdcxPegBps: 100, exitMinOutBps: 100, maxUnverifiedForRiskOn: 3,
   };
 }
 
@@ -187,7 +188,10 @@ export function decideTrend(closes: Close[], mem: TrendMemory, src: TrendSources
   const win = usable.slice(-p.smaDays);
   if (win.length < p.smaDays) return noDecision(`only ${win.length} closes, need ${p.smaDays}`);
   if (!contiguous(win)) return noDecision(`gap in the last ${p.smaDays} daily closes`);
-  if (win.slice(0, -1).some((c) => !c.verified)) return noDecision("an earlier close in the window is not verified");
+  // An earlier close that never passed the exchange check stays in the window for 60 days, so it
+  // must not block decisions that long (review on #104). Asymmetric, like the rest: risk-off and
+  // hold ignore it (a wrong risk-off costs upside); risk-on tolerates a few, then waits.
+  const unverifiedEarlier = win.slice(0, -1).filter((c) => !c.verified).length;
 
   const sma = win.reduce((s, c) => s + c.price, 0) / win.length;
   const offLine = sma * (1 - p.buffer), onLine = sma * (1 + p.buffer);
@@ -200,6 +204,7 @@ export function decideTrend(closes: Close[], mem: TrendMemory, src: TrendSources
   }
   if (mem.state === "risk-off" && close.price > onLine) {
     if (!close.verified) return { ...noDecision("close above the risk-on line but not verified by the exchange (risk-on needs both sources)"), sma, offLine, onLine };
+    if (unverifiedEarlier > p.maxUnverifiedForRiskOn) return { ...noDecision(`close above the risk-on line but ${unverifiedEarlier} earlier closes in the window are unverified (risk-on allows ${p.maxUnverifiedForRiskOn})`), sma, offLine, onLine };
     if (!poolCheck.ok) return { ...noDecision(`close above the risk-on line but the sBTC pool check failed (${poolCheck.text})`), sma, offLine, onLine };
     return limit({ ...withLines, action: "to-risk-on", state: "risk-on", reason: `close ${Math.round(close.price)} > SMA${p.smaDays} ${Math.round(sma)} x ${1 + p.buffer}`, checks, alert: null }, mem, p, now);
   }
