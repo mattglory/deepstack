@@ -47,7 +47,7 @@ import { decideHaven, defaultHavenParams } from "./haven.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
-import { withRpc, hiroFetch } from "./rpc.js";
+import { withRpc, hiroFetch, atChainTip } from "./rpc.js";
 import { findArb } from "./arb.js";
 import { paperPnl, btcFundingRate8h } from "./hedged-paper.js";
 import { createSupervisor, briefError, type Supervisor } from "./supervise.js";
@@ -123,6 +123,7 @@ interface Snapshot {
   yReserve: number;
   poolFeeBps: number;
   market: MarketState;
+  chainTipHeight?: number; // the block every chain read in this snapshot is pinned to (R105-1)
 }
 
 // Value of the DLMM position (if any) PLUS any free (non-DLMM-locked) balance of the pair's
@@ -418,6 +419,7 @@ async function act(
     mode: canTrade ? "live" : "observe",
     mid: +s.midXinY.toFixed(4),
     ext: s.externalMid ? +s.externalMid.toFixed(4) : null,
+    ...(s.chainTipHeight !== undefined ? { tip: s.chainTipHeight } : {}),
     portfolioY: +s.portfolioY.toFixed(4),
     lpValueY: +s.lpValueY.toFixed(4),
     safe: safety.safe,
@@ -808,7 +810,9 @@ export async function main() {
     let dlmmFailedThisTick = false;
     // Same role as dlmmFailedThisTick, for the autonomous flash-rebalance path below.
     let flashFailedThisTick = false;
-    const snap = await readMarket(w);
+    // Every chain read in the snapshot at one block (rpc.ts atChainTip, review R105-1): on
+    // 2026-11-21 reads from two heights valued the DLMM position as empty and the halt fired.
+    const snap = await atChainTip(async (tip) => ({ ...(await readMarket(w)), chainTipHeight: tip.height }));
     reservationShadow(snap);
     if (sessionStart === 0 && baselineProblem === null && snap.portfolioY > 0) {
       sessionStart = snap.portfolioY;

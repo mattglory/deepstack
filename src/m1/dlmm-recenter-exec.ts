@@ -19,7 +19,8 @@
 import { isKilled } from "./kill.js";
 import { assertFresh } from "./safety.js";
 import { fetchNonce, fetchCallReadOnlyFunction, cvToJSON } from "@stacks/transactions";
-import { withRpc, hiroFetch } from "./rpc.js";
+import { withRpc, hiroFetch, currentChainTip } from "./rpc.js";
+import { nodeFtBalance } from "./tip-balances.js";
 import { getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, readLocalDepth, pinMismatch, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { exceedsPoolShare } from "./agent.js";
@@ -129,6 +130,7 @@ export async function resolveToken(principal: string): Promise<TokenMeta> {
 }
 
 export async function ftBalance(addr: string, assetId: string): Promise<bigint> {
+  if (currentChainTip()) return nodeFtBalance(addr, assetId); // pinned snapshot (rpc.ts atChainTip, R105-1)
   const j = await withRpc((baseUrl) => hiroFetch(baseUrl)(`${baseUrl}/extended/v1/address/${addr}/balances`).then((r) => r.json()));
   const ft = j.fungible_tokens ?? {};
   return ft[assetId] ? BigInt(ft[assetId].balance) : 0n;
