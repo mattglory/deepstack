@@ -173,3 +173,52 @@ export function agentWallets(m, fallback) {
   }
   return { current, all, past };
 }
+
+// Heartbeat uptime over the span the retained samples actually cover. The telemetry keeps only
+// the most recent beats (older ones are folded into one-per-day dailyHistory), so measuring the
+// retained beats against the whole window since the pilot start read ~50% on 2026-11-20 when the
+// agent had in fact been running throughout. samples must be oldest first.
+export function heartbeatUptime(samples, intervalSec, winStartIso) {
+  if (!(intervalSec > 0) || !samples?.length) return null;
+  const from = Math.max(Date.parse(winStartIso), Date.parse(samples[0].t));
+  const to = Date.parse(samples[samples.length - 1].t);
+  if (!(to > from)) return null;
+  const beats = samples.filter((s) => Date.parse(s.t) >= from && Date.parse(s.t) <= to).length;
+  const expected = Math.max(1, Math.floor((to - from) / (intervalSec * 1000)) + 1);
+  return { pct: Math.min(100, (beats / expected) * 100), beats, expected, days: (to - from) / 864e5 };
+}
+
+// Whole-window coverage: UTC days from winStart to end (inclusive) with at least one heartbeat on
+// record in any source (history.json, dailyHistory, live samples). Catches a dead day anywhere in
+// the full history, which the retained-beats uptime above can't see.
+export function heartbeatDays(winStartIso, endIso, sources) {
+  const start = winStartIso.slice(0, 10), end = endIso.slice(0, 10);
+  const seen = new Set();
+  for (const src of sources) {
+    for (const s of src ?? []) {
+      const d = s?.t?.slice(0, 10);
+      if (d && d >= start && d <= end) seen.add(d);
+    }
+  }
+  const total = Math.round((Date.parse(end) - Date.parse(start)) / 864e5) + 1;
+  return { covered: seen.size, total };
+}
+
+// What the agent sent and received in one transaction, per asset, in whole units. Used for DLMM
+// router swaps ("-simple-multi"), which hop across several bins and sometimes pools, so a single
+// sBTC/STX leg can't describe them. STX comes from stx_transfers (stx_sent also includes the fee).
+export function walletLegs(r, isAgent, assets) {
+  const sent = {}, received = {};
+  const add = (book, sym, n) => { book[sym] = (book[sym] ?? 0) + n; };
+  for (const x of r?.ft_transfers ?? []) {
+    const a = assets[x.asset_identifier];
+    if (!a) continue;
+    if (isAgent(x.sender)) add(sent, a.sym, Number(x.amount) / 10 ** a.dp);
+    if (isAgent(x.recipient)) add(received, a.sym, Number(x.amount) / 10 ** a.dp);
+  }
+  for (const x of r?.stx_transfers ?? []) {
+    if (isAgent(x.sender)) add(sent, "STX", Number(x.amount) / 1e6);
+    if (isAgent(x.recipient)) add(received, "STX", Number(x.amount) / 1e6);
+  }
+  return { sent, received };
+}
