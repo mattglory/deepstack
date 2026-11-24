@@ -158,6 +158,10 @@ four of five rebalance swaps aborted (`u2003`, minimum received).
 ### 4.6 Limits
 - At most 6 switches per 30 days; exceeding it halts the mode and alerts (bad data or an extreme market).
 - Existing gates still apply: safety verdict, drawdown (#64, in USD with #97), circuit breaker, KILL.
+  **One exception (review on #97): the drawdown halt never blocks a switch to risk-off.** A halt
+  exists to stop the agent adding risk while losing; selling sBTC for USDCx reduces risk, and a
+  falling market is exactly when the halt and the risk-off signal fire together. Risk-on stays
+  blocked while halted. KILL, the safety verdict and the peg checks still apply to both directions.
 - Sizes come only from this mode's reserved balance (section 3.1).
 
 ### 4.7 Settings
