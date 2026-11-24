@@ -7,6 +7,8 @@ import { nodeFtBalance, nodeStxBalance } from "./tip-balances.js";
 
 const TIP = "24f9cc674ef73daf1587990101b2d076a33a7dc3a0a13dbc13f6f5d6c271dcb6";
 const ADDR = "SP33TPST13VDWXV25YS08PDYJ383597BJJYHP4YV4";
+const STACKER = "SP000000000000000000002Q6VF78";
+const NO_LOCKED = "SP3FBR2AGK5H9QBDH3EEN6DF8EK8JY7RX8QJ5SVTE";
 const SBTC = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token";
 
 const realFetch = globalThis.fetch;
@@ -22,6 +24,8 @@ function fakeNode(block: unknown = { results: [{ height: 9_562_434, index_block_
     urls.push(url);
     if (url.includes("/extended/v2/blocks?limit=1")) return new Response(JSON.stringify(block), { status: 200 });
     if (url.includes(`/v2/accounts/${ADDR}`)) return new Response(JSON.stringify({ balance: "0x000000000000000000000000092d7431", locked: "0x0", nonce: 96 }), { status: 200 });
+    if (url.includes(`/v2/accounts/${STACKER}`)) return new Response(JSON.stringify({ balance: "0x3e8", locked: "0x7d0", nonce: 1 }), { status: 200 });
+    if (url.includes(`/v2/accounts/${NO_LOCKED}`)) return new Response(JSON.stringify({ balance: "0x3e8", nonce: 1 }), { status: 200 });
     if (url.includes("/sbtc-token/get-balance")) return new Response(JSON.stringify({ okay: true, result: `0x${Cl.serialize(Cl.ok(Cl.uint(176_701)))}` }), { status: 200 });
     if (url.includes("/no-balance-token/get-balance")) return new Response(JSON.stringify({ okay: true, result: `0x${Cl.serialize(Cl.error(Cl.uint(1)))}` }), { status: 200 });
     throw new Error(`fake node: unexpected ${url}`);
@@ -73,4 +77,10 @@ test("node balances: STX from /v2/accounts, SIP-010 from get-balance, both pinne
   assert.ok(urls.filter((u) => u.includes("/v2/") && !u.includes("/extended/")).every((u) => u.endsWith(`tip=${TIP}`)), "every balance read pinned");
   await assert.rejects(nodeFtBalance(ADDR, "SP1.no-balance-token::t"), /unexpected result/);
   await assert.rejects(nodeFtBalance(ADDR, "not-a-contract"), /not a token asset id/);
+});
+
+test("R111-1: node STX is balance + locked (the indexer's total), so locked STX never reads as a loss", async () => {
+  fakeNode();
+  assert.equal(await nodeStxBalance(STACKER), 3_000n, "1,000 unlocked + 2,000 locked");
+  await assert.rejects(nodeStxBalance(NO_LOCKED), /unexpected balance/, "a response without `locked` is refused, not read as unlocked only");
 });

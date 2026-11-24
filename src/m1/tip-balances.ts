@@ -9,14 +9,19 @@
 import { fetchCallReadOnlyFunction, cvToJSON, principalCV } from "@stacks/transactions";
 import { withRpc, hiroFetch } from "./rpc.js";
 
-/** Unlocked micro-STX from /v2/accounts (the agent wallet never stacks, so this is its spendable balance). */
+/**
+ * Total micro-STX (unlocked + locked) from /v2/accounts: the same figure the indexer's
+ * `stx.balance` gives, which is what every caller used before pinning. Unlocked alone would read
+ * any locked STX as a loss: a false drawdown of exactly the kind pinning removes (review R111-1).
+ */
 export async function nodeStxBalance(address: string): Promise<bigint> {
   return withRpc(async (baseUrl) => {
     const r = await hiroFetch(baseUrl)(`${baseUrl}/v2/accounts/${address}?proof=0`);
     if (!r.ok) throw new Error(`account read: HTTP ${r.status}`);
-    const j = (await r.json()) as { balance?: string };
-    if (typeof j.balance !== "string" || !/^0x[0-9a-f]+$/i.test(j.balance)) throw new Error("account read: unexpected balance");
-    return BigInt(j.balance);
+    const j = (await r.json()) as { balance?: string; locked?: string };
+    const hex = (v: unknown) => typeof v === "string" && /^0x[0-9a-f]+$/i.test(v);
+    if (!hex(j.balance) || !hex(j.locked)) throw new Error("account read: unexpected balance");
+    return BigInt(j.balance as string) + BigInt(j.locked as string);
   });
 }
 
