@@ -59,6 +59,10 @@ export function allocate(
     const slack = ((usable * BigInt(tol.bps)) / 10_000n > tol.units ? (usable * BigInt(tol.bps)) / 10_000n : tol.units);
     if (totalClaims > usable + slack) {
       problems.push(`over-claim on ${asset}: claims ${totalClaims} > usable ${usable} (balance ${bal} - gas ${gas})`);
+      // Design rule 2: nothing trades this token this cycle. Capping each claimant at `usable`
+      // instead would let two claimants each spend the whole balance (review R101-1).
+      for (const v of VENUES) available[v][asset] = 0n;
+      continue;
     }
     for (const v of VENUES) {
       if (v === "xyk") available.xyk[asset] = usable > totalClaims ? usable - totalClaims : 0n;

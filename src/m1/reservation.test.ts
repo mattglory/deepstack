@@ -34,7 +34,8 @@ test("over-claim beyond the dust tolerance is a problem; within it, not", () => 
   assert.deepEqual(allocate({ [SBTC]: 1_000_000n }, claims, {}).problems, []);
   assert.deepEqual(allocate({ [SBTC]: 999_999n }, claims, {}).problems, [], "1 unit short: indexer lag");
   assert.match(allocate({ [SBTC]: 900_000n }, claims, {}).problems[0], /over-claim on .*sbtc-token: claims 1000000 > usable 900000/);
-  assert.equal(allocate({ [SBTC]: 900_000n }, claims, {}).available.dlmm[SBTC], 900_000n, "never more than is there");
+  assert.equal(allocate({ [SBTC]: 900_000n }, claims, {}).available.dlmm[SBTC], 0n, "over-claim: nothing trades the token (design rule 2)");
+  assert.equal(allocate({ [SBTC]: 999_999n }, claims, {}).available.dlmm[SBTC], 999_999n, "within dust: never more than is there");
 });
 
 test("an unreadable claim source fails closed: the residual owner (XYK) gets nothing", () => {
@@ -47,4 +48,19 @@ test("pendingReaddClaims: STX facade maps to native STX; zero legs and missing p
   assert.deepEqual(pendingReaddClaims({ pair: "stx-usdcx", xBase: 5n, yBase: 0n }, STX_PIN, "f").map((c) => c.asset), [STX]);
   assert.deepEqual(pendingReaddClaims(null, PIN, "f"), []);
   assert.deepEqual(pendingReaddClaims({ pair: "p", xBase: 1n, yBase: 1n }, undefined, "f"), []);
+});
+
+test("R101-1: an over-claim stops every venue on that token, not only the XYK (design rule 2)", () => {
+  // Two claimants on the same sBTC: together they claim more than the wallet holds. Before the fix
+  // each got min(its claim, usable), so both could spend the whole balance.
+  const claims = [
+    { venue: "dlmm" as const, asset: SBTC, amount: 800_000n, source: "journal/dlmm-pending-readd.json" },
+    { venue: "trend" as const, asset: SBTC, amount: 800_000n, source: "journal/trend-state.json" },
+  ];
+  const a = allocate({ [SBTC]: 1_000_000n, [USDCX]: 5_000n }, claims, {});
+  assert.match(a.problems[0], /over-claim/);
+  assert.equal(a.available.xyk[SBTC], 0n);
+  assert.equal(a.available.dlmm[SBTC], 0n);
+  assert.equal(a.available.trend[SBTC], 0n);
+  assert.equal(a.available.xyk[USDCX], 5_000n, "other tokens are unaffected");
 });
