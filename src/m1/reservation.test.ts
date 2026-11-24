@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allocate, pendingReaddClaims, STX } from "./reservation.js";
+import { allocate, pendingReaddClaims, reservationAlert, xykInventory, STX } from "./reservation.js";
 
 import { DLMM_POOLS } from "./dlmm-read.js";
 
@@ -32,7 +32,8 @@ test("2026-11-14/15 replay: with the pending re-add claimed, the XYK sees none o
 test("over-claim beyond the dust tolerance is a problem; within it, not", () => {
   const claims = [{ venue: "dlmm" as const, asset: SBTC, amount: 1_000_000n, source: "x" }];
   assert.deepEqual(allocate({ [SBTC]: 1_000_000n }, claims, {}).problems, []);
-  assert.deepEqual(allocate({ [SBTC]: 999_999n }, claims, {}).problems, [], "1 unit short: indexer lag");
+  assert.deepEqual(allocate({ [SBTC]: 999_999n }, claims, {}).problems, [], "1 unit short: rounding");
+  assert.equal(allocate({ [SBTC]: 998_000n }, claims, {}).problems.length, 1, "0.2% short is beyond the 10 bps rounding tolerance");
   assert.match(allocate({ [SBTC]: 900_000n }, claims, {}).problems[0], /over-claim on .*sbtc-token: claims 1000000 > usable 900000/);
   const over = allocate({ [SBTC]: 900_000n, [STX]: 100_000_000n }, claims, {});
   assert.equal(over.available.dlmm[SBTC], 0n, "an over-claim stops every venue, the claimant too");
@@ -65,4 +66,18 @@ test("pendingReaddClaims: STX facade maps to native STX; zero legs and missing p
   assert.deepEqual(pendingReaddClaims({ pair: "stx-usdcx", xBase: 5n, yBase: 0n }, STX_PIN, "f").map((c) => c.asset), [STX]);
   assert.deepEqual(pendingReaddClaims(null, PIN, "f"), []);
   assert.deepEqual(pendingReaddClaims({ pair: "p", xBase: 1n, yBase: 1n }, undefined, "f"), []);
+});
+
+test("xykInventory: the smaller of the tradable inventory and the share; no share means nothing", () => {
+  assert.deepEqual(xykInventory({ xBase: 100n, yBase: 50n }, { x: 40n, y: 80n }), { xBase: 40n, yBase: 50n });
+  assert.deepEqual(xykInventory({ xBase: 100n, yBase: 50n }, null), { xBase: 0n, yBase: 0n }, "fail closed");
+});
+
+test("reservationAlert: one quiet cycle after our own transaction, then alert; unreadable always alerts", () => {
+  const over = ["over-claim on X: claims 2 > usable 1 (balance 1 - gas 0); no venue may spend it"];
+  assert.deepEqual(reservationAlert(over, 0, true), { alert: false, streak: 1 }, "first cycle after our own tx: graced");
+  assert.deepEqual(reservationAlert(over, 1, true), { alert: true, streak: 2 }, "still there next cycle: alert");
+  assert.deepEqual(reservationAlert(over, 0, false), { alert: true, streak: 1 }, "no tx of ours to explain it: alert at once");
+  assert.deepEqual(reservationAlert([], 3, true), { alert: false, streak: 0 }, "cleared: streak resets");
+  assert.equal(reservationAlert(["claim source unreadable: f (x)"], 0, true).alert, true);
 });
