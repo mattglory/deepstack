@@ -6,7 +6,9 @@
 //     00:00 UTC: each point is then the midnight close, as in the backtest, labelled by the day it
 //     closes (closeDayOf). Each is cross-checked against the Coinbase BTC-USD hourly candle containing it.
 //   - BTC/USD now: DefiLlama current price (at most 15 minutes old).
-//   - USDCx/USD: DefiLlama's on-chain price for the Stacks USDCx token (at most 1 hour old).
+//   - USDCx/USD (readUsdcx, R104-3/4): first the STX/USDCx pool's price against STX/USD, which is
+//     independent of the sBTC/USDCx pool the sBTC check reads; then DefiLlama's on-chain USDCx price;
+//     then the sBTC/USDCx pool against BTC/USD. The source used is recorded, and a fallback alerts.
 //   - the sBTC/USDCx HODLMM pool: active-bin price, fee and the bins below it (pinned tokens).
 // Files (atomic writes; an unreadable file means no decision and an alert, never a silent reset):
 //   journal/trend-closes.json  append-only close history
@@ -24,6 +26,14 @@ import {
 
 const TIMEOUT_MS = 10_000;
 const MAX_SELL_BINS = 40;
+const MAX_VERIFY_PER_RUN = 10; // exchange checks per run, newest first; a cold start catches up over a few cycles
+
+/** The step's total time inside the trading cycle (R104-2). Over it: no decision this cycle, retried next. */
+class OverBudget extends Error {}
+function budget(ms: number): (stage: string) => void {
+  const end = Date.now() + ms;
+  return (stage) => { if (Date.now() > end) throw new OverBudget(`over the ${Math.round(ms / 1000)}s time budget at ${stage}`); };
+}
 
 export function trendClosesPath(): string { return process.env.TREND_CLOSES_PATH ?? "journal/trend-closes.json"; }
 export function trendStatePath(): string { return process.env.TREND_STATE_PATH ?? "journal/trend-state.json"; }
@@ -119,19 +129,48 @@ export async function fetchExchangeHour(t: number): Promise<{ low: number; high:
   return c ? { low: c[1], high: c[2] } : null;
 }
 
-/** Cross-check each close that isn't verified yet (new ones, and earlier ones whose check failed). */
-async function verify(closes: Close[], agreeBps: number): Promise<Close[]> {
-  const out: Close[] = [];
-  for (const c of closes) {
-    if (c.verified) { out.push(c); continue; }
+/**
+ * Cross-check closes that aren't verified yet (new ones, and earlier ones whose check failed), newest
+ * first, at most MAX_VERIFY_PER_RUN. Returns the closes and the days that failed for the first time
+ * this run (each alerted that day, R104-1).
+ */
+async function verify(closes: Close[], agreeBps: number, now: Date, check: (stage: string) => void): Promise<{ closes: Close[]; newlyFailed: string[] }> {
+  const out = [...closes];
+  const newlyFailed: string[] = [];
+  const todo = out.map((c, i) => i).filter((i) => !out[i].verified).reverse().slice(0, MAX_VERIFY_PER_RUN);
+  for (const i of todo) {
+    check("close verification");
+    const c = out[i];
+    let r: { ok: boolean; check: string };
     try {
-      const r = closeAgrees(c.price, await fetchExchangeHour(c.t), agreeBps);
-      out.push({ ...c, verified: r.ok, check: r.check });
+      r = closeAgrees(c.price, await fetchExchangeHour(c.t), agreeBps);
     } catch (e) {
-      out.push({ ...c, verified: false, check: `exchange unreadable: ${(e as Error).message}` });
+      r = { ok: false, check: `exchange unreadable: ${(e as Error).message}` };
+    }
+    if (r.ok) out[i] = { day: c.day, t: c.t, price: c.price, verified: true, check: r.check };
+    else {
+      if (!c.failedSince) newlyFailed.push(`${c.day} (${r.check})`);
+      out[i] = { ...c, verified: false, check: r.check, failedSince: c.failedSince ?? now.toISOString() };
     }
   }
-  return out;
+  return { closes: out, newlyFailed };
+}
+
+/**
+ * A human marks a close checked after looking at it (R104-1): it counts as verified from then on.
+ * The price is never changed. Returns the updated history, or why it couldn't.
+ */
+export function markChecked(closes: Close[], day: string, by: string, now = new Date()): { ok: true; closes: Close[] } | { ok: false; reason: string } {
+  const i = closes.findIndex((c) => c.day === day);
+  if (i < 0) return { ok: false, reason: `no stored close for ${day}` };
+  if (closes[i].verified) return { ok: false, reason: `${day} is already verified (${closes[i].check ?? ""})` };
+  const out = [...closes];
+  out[i] = { day: closes[i].day, t: closes[i].t, price: closes[i].price, verified: true, check: `marked checked by ${by} at ${now.toISOString()} (was: ${closes[i].check ?? "unverified"})` };
+  return { ok: true, closes: out };
+}
+
+export function saveCloses(closes: Close[], path = trendClosesPath()): void {
+  atomicWrite(path, { v: 1, closes });
 }
 
 async function llamaCurrent(key: string, maxAgeSecs: number, nowS: number): Promise<number | null> {
@@ -150,7 +189,7 @@ interface PoolRead { usdPerSbtc: number; feeBps: number; bins: SellBin[]; refYpe
  *  first bin below the exit floor (or MAX_SELL_BINS). Pinned tokens and core, or it throws.
  *  `owner`'s own liquidity is left out: a live switch withdraws the agent's DLMM position first
  *  (design 4.5), so it can't sell into it. */
-async function readSellSide(btcSpotUsd: number | null, p: TrendParams, owner: string | null): Promise<PoolRead> {
+async function readSellSide(btcSpotUsd: number | null, p: TrendParams, owner: string | null, check: (stage: string) => void): Promise<PoolRead> {
   const pool = DLMM_POOLS.find((x) => x.key === "sbtc-usdcx")!;
   const st = await readDlmmState(pool);
   if (!st) throw new Error("sbtc-usdcx pool unreadable");
@@ -165,6 +204,7 @@ async function readSellSide(btcSpotUsd: number | null, p: TrendParams, owner: st
   const bins: SellBin[] = [];
   let usdPerSbtc = NaN;
   for (let k = 0; k < MAX_SELL_BINS; k++) {
+    check("exit-capacity bin reads");
     const id = st.activeBinId - k;
     const s = (await readBinLiquidityStates(pool, st.coreAddress, st.initialPrice, st.binStep, [id])).get(id)!;
     if (k === 0) usdPerSbtc = (Number(s.binPrice) / 1e8) * scale;
@@ -177,6 +217,32 @@ async function readSellSide(btcSpotUsd: number | null, p: TrendParams, owner: st
   return { usdPerSbtc, feeBps, bins, refYperX: ref === null ? NaN : ref / scale };
 }
 
+/** USDCx per STX from the STX/USDCx pool's active bin (pinned tokens and core), or null. */
+async function stxPoolUsdcxPerStx(): Promise<number | null> {
+  try {
+    const pool = DLMM_POOLS.find((x) => x.key === "stx-usdcx-v1")!;
+    const st = await readDlmmState(pool);
+    if (!st || pinMismatch(pool, st)) return null;
+    const s = (await readBinLiquidityStates(pool, st.coreAddress, st.initialPrice, st.binStep, [st.activeBinId])).get(st.activeBinId);
+    return s ? (Number(s.binPrice) / 1e8) * 10 ** (pool.pin.xDecimals - pool.pin.yDecimals) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * USDCx/USD for the peg check (R104-3/4). The first source is independent of the sBTC/USDCx pool, so
+ * a USDCx depeg can't hide inside the sBTC check: the STX/USDCx pool against STX/USD. Fallbacks, each
+ * alerted: DefiLlama's on-chain USDCx price, then the sBTC/USDCx pool against BTC/USD. Pure given its
+ * inputs; all of them are logged.
+ */
+export function pickUsdcx(inp: { stxUsd: number | null; usdcxPerStx: number | null; llamaUsdcx: number | null; poolUsdPerSbtc: number | null; btcUsd: number | null }): { usd: number | null; source: string; fallback: boolean } {
+  if (inp.stxUsd && inp.usdcxPerStx) return { usd: inp.stxUsd / inp.usdcxPerStx, source: "STX/USDCx pool vs STX/USD", fallback: false };
+  if (inp.llamaUsdcx) return { usd: inp.llamaUsdcx, source: "DefiLlama on-chain price", fallback: true };
+  if (inp.poolUsdPerSbtc && inp.btcUsd) return { usd: inp.btcUsd / inp.poolUsdPerSbtc, source: "sBTC/USDCx pool vs BTC/USD", fallback: true };
+  return { usd: null, source: "none readable", fallback: true };
+}
+
 export interface ObserveResult { ran: boolean; record?: Record<string, unknown>; decision?: TrendDecision; alert?: string | null }
 
 /**
@@ -186,8 +252,9 @@ export interface ObserveResult { ran: boolean; record?: Record<string, unknown>;
  * would-be switch against the measured capacity. `persist: false` reads and decides without writing
  * any file (the CLI's status view).
  */
-export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | null; owner?: string | null; persist?: boolean; force?: boolean }): Promise<ObserveResult> {
+export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | null; owner?: string | null; persist?: boolean; force?: boolean; budgetMs?: number }): Promise<ObserveResult> {
   const now = opts.now ?? new Date();
+  const check = budget(opts.budgetMs ?? envNum("TREND_STEP_BUDGET_MS", 60_000));
   const persist = opts.persist ?? true;
   const p = trendParams();
   const memLoad = loadTrendMemory(trendStatePath(), now);
@@ -202,20 +269,44 @@ export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | 
     return { ran: false };
   }
 
+  try {
+    return await observeDue(opts, now, p, due.mem, closesLoad.value, persist, check);
+  } catch (e) {
+    if (!(e instanceof OverBudget)) throw e;
+    // Nothing was written; the memory still says undecided today, so the next cycle tries again.
+    return { ran: true, alert: null, record: { type: "trend-observe", action: "no-decision", reason: `${e.message}; retrying next cycle` } };
+  }
+}
+
+async function observeDue(
+  opts: { capitalUsd: number | null; owner?: string | null }, now: Date, p: TrendParams, dueMem: TrendMemory,
+  stored: Close[], persist: boolean, check: (stage: string) => void,
+): Promise<ObserveResult> {
+  const due = { mem: dueMem };
+  check("start");
   // Closes: fetch enough for the window plus a margin, append-only merge, cross-check the new ones.
-  const stored = closesLoad.value;
   const fetched = await fetchLlamaCloses(stored.length >= p.smaDays ? 7 : p.smaDays + 10, now).catch(() => [] as Close[]);
   const merged = mergeCloses(stored, fetched);
-  const closes = await verify(merged.closes.slice(-(p.smaDays + 10)), p.closeAgreeBps);
-  const kept = [...merged.closes.slice(0, -(p.smaDays + 10)), ...closes];
+  check("close fetch");
+  const v = await verify(merged.closes.slice(-(p.smaDays + 10)), p.closeAgreeBps, now, check);
+  const kept = [...merged.closes.slice(0, -(p.smaDays + 10)), ...v.closes];
 
   const nowS = Math.floor(now.getTime() / 1000);
   const btcSpotUsd = await llamaCurrent("coingecko:bitcoin", 900, nowS);
-  const usdcxUsd = await llamaCurrent("stacks:SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx", 3600, nowS);
+  const llamaUsdcx = await llamaCurrent("stacks:SP120SBRBQJ00MCWS7TM5R8WJNTTKD5K0HFRC2CNE.usdcx", 3600, nowS);
+  const stxUsd = await llamaCurrent("coingecko:blockstack", 900, nowS);
+  check("price reads");
+  const usdcxPerStx = await stxPoolUsdcxPerStx();
+  check("STX/USDCx pool read");
   let pool: PoolRead | null = null, poolError: string | null = null;
-  try { pool = await readSellSide(btcSpotUsd, p, opts.owner ?? null); } catch (e) { poolError = (e as Error).message; }
+  try { pool = await readSellSide(btcSpotUsd, p, opts.owner ?? null, check); } catch (e) {
+    if (e instanceof OverBudget) throw e;
+    poolError = (e as Error).message;
+  }
+  const usdcx = pickUsdcx({ stxUsd, usdcxPerStx, llamaUsdcx, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, btcUsd: btcSpotUsd });
+  const usdcxUsd = usdcx.usd;
 
-  const src: TrendSources = { btcSpotUsd, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, usdcxUsd };
+  const src: TrendSources = { btcSpotUsd, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, usdcxUsd, usdcxSource: usdcx.source };
   const d = decideTrend(kept, due.mem, src, p, now);
   const mem = nextMemory(due.mem, d, now);
 
@@ -230,17 +321,23 @@ export async function trendObserveStep(opts: { now?: Date; capitalUsd: number | 
     };
   }
 
-  const alerts = [d.alert, merged.corrections.length ? `source changed ${merged.corrections.length} stored close(s); not applied` : null].filter(Boolean) as string[];
+  const alerts = [
+    d.alert,
+    merged.corrections.length ? `source changed ${merged.corrections.length} stored close(s); not applied` : null,
+    v.newlyFailed.length ? `close(s) failed the exchange check: ${v.newlyFailed.join("; ")}. Check and, if right, mark: npm run m1:trend -- mark-checked <day>` : null,
+    usdcx.fallback ? `USDCx price from fallback (${usdcx.source})` : null,
+  ].filter(Boolean) as string[];
   const record = {
     type: "trend-observe", mode: "observe",
     action: d.action, from: due.mem.state, state: d.state, reason: d.reason,
     close: d.close, sma: d.sma && Math.round(d.sma), offLine: d.offLine && Math.round(d.offLine), onLine: d.onLine && Math.round(d.onLine),
-    checks: d.checks, btcSpotUsd, usdcxUsd, poolUsdPerSbtc: pool?.usdPerSbtc ?? null,
+    checks: d.checks, btcSpotUsd, usdcxUsd, usdcxSources: { used: usdcx.source, stxPool: stxUsd && usdcxPerStx ? stxUsd / usdcxPerStx : null, defillama: llamaUsdcx }, poolUsdPerSbtc: pool?.usdPerSbtc ?? null,
     exitCapacity: capacity, closesStored: kept.length, closesVerified: kept.filter((c) => c.verified).length,
     ...(merged.corrections.length ? { corrections: merged.corrections } : {}),
     noDecisionStreak: mem.noDecisionStreak, halted: mem.halted,
     ...(alerts.length ? { alert: alerts.join("; ") } : {}),
   };
+  check("persist");
   if (persist) {
     atomicWrite(trendClosesPath(), { v: 1, closes: kept });
     atomicWrite(trendStatePath(), mem);

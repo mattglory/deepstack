@@ -33,7 +33,7 @@ test("decideTrend: a missing day in the window → no decision", () => {
   assert.match(decideTrend(cs, mem(), GOOD, P, NOW).reason, /gap/);
 });
 
-test("decideTrend: unverified earlier closes never block risk-off or hold; risk-on tolerates up to 3", () => {
+test("decideTrend: unverified earlier closes never block risk-off or hold; risk-on tolerates 5% of the window (3 of 60)", () => {
   const unver = (cs: Close[], n: number) => cs.map((c, i) => (i >= 5 && i < 5 + n ? { ...c, verified: false } : c));
   assert.equal(decideTrend(unver(closes(60, 100_000, 90_000), 20), mem(), GOOD, P, NOW).action, "to-risk-off");
   assert.equal(decideTrend(unver(closes(60, 100_000), 20), mem(), GOOD, P, NOW).action, "hold");

@@ -4,11 +4,25 @@
 //   npm run m1:trend
 //   npm run m1:trend -- --capital-usd=2600   # size the would-be switch against exit capacity
 //   npm run m1:trend -- --owner=SP...         # leave that wallet's own liquidity out of the capacity
+//   npm run m1:trend -- mark-checked 2026-11-20   # a human has checked an unverified close: count it
+//                                                 # as verified (the price is never changed). Writes
+//                                                 # journal/trend-closes.json; run as the agent's user.
 
 import { loadDotenv } from "./wallet.js";
-import { trendObserveStep, trendParams } from "./trend-io.js";
+import { userInfo } from "node:os";
+import { loadCloses, markChecked, saveCloses, trendObserveStep, trendParams } from "./trend-io.js";
 
 loadDotenv();
+if (process.argv[2] === "mark-checked") {
+  const day = process.argv[3] ?? "";
+  const l = loadCloses();
+  if (!l.ok) throw new Error(`closes unreadable: ${l.reason}`);
+  const r = markChecked(l.value, day, userInfo().username);
+  if (!r.ok) throw new Error(r.reason);
+  saveCloses(r.closes);
+  console.log(`marked ${day} as checked; it now counts as verified`);
+  process.exit(0);
+}
 const arg = process.argv.find((a) => a.startsWith("--capital-usd="));
 const capitalUsd = arg ? Number(arg.split("=")[1]) : null;
 const owner = process.argv.find((a) => a.startsWith("--owner="))?.split("=")[1] ?? null;

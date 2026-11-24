@@ -18,6 +18,7 @@ export interface Close {
   price: number; // USD
   verified: boolean; // agreed with the exchange's hourly candle within the bound
   check?: string; // what the cross-check found, for the journal
+  failedSince?: string; // ISO time the cross-check first failed (alerted that day), while unverified
 }
 
 export interface TrendParams {
@@ -30,13 +31,13 @@ export interface TrendParams {
   poolAgreeBps: number; // pool-implied sBTC price vs BTC/USD (design: 3%)
   usdcxPegBps: number; // USDCx vs $1 (design: 1%)
   exitMinOutBps: number; // min-out below the reference for the exit-capacity measure (design: 1%)
-  maxUnverifiedForRiskOn: number; // earlier closes in the window that may lack the exchange check for a risk-on
+  unverifiedRiskOnFrac: number; // share of the window that may lack the exchange check for a risk-on (rounded down)
 }
 
 export function defaultTrendParams(): TrendParams {
   return {
     smaDays: 60, buffer: 0.02, riskShare: 0.3, maxSwitches30d: 6, decisionHourUtc: 0,
-    closeAgreeBps: 100, poolAgreeBps: 300, usdcxPegBps: 100, exitMinOutBps: 100, maxUnverifiedForRiskOn: 3,
+    closeAgreeBps: 100, poolAgreeBps: 300, usdcxPegBps: 100, exitMinOutBps: 100, unverifiedRiskOnFrac: 0.05,
   };
 }
 
@@ -140,6 +141,7 @@ export interface TrendSources {
   btcSpotUsd: number | null; // fresh BTC/USD (the execution-time reference)
   poolUsdPerSbtc: number | null; // the sBTC/USDCx pool's active-bin price
   usdcxUsd: number | null; // USDCx/USD
+  usdcxSource?: string; // where usdcxUsd came from (trend-io.ts readUsdcx)
 }
 
 export interface TrendDecision {
@@ -176,7 +178,7 @@ export function decideTrend(closes: Close[], mem: TrendMemory, src: TrendSources
     ? { ok: bpsOff(src.poolUsdPerSbtc, src.btcSpotUsd) <= p.poolAgreeBps, text: `pool ${Math.round(src.poolUsdPerSbtc)} vs BTC ${Math.round(src.btcSpotUsd)} (${bpsOff(src.poolUsdPerSbtc, src.btcSpotUsd)}bps)` }
     : { ok: false, text: "pool or BTC/USD unreadable" };
   const pegCheck = src.usdcxUsd
-    ? { ok: bpsOff(src.usdcxUsd, 1) <= p.usdcxPegBps, text: `USDCx ${src.usdcxUsd.toFixed(4)} (${bpsOff(src.usdcxUsd, 1)}bps from $1)` }
+    ? { ok: bpsOff(src.usdcxUsd, 1) <= p.usdcxPegBps, text: `USDCx ${src.usdcxUsd.toFixed(4)} (${bpsOff(src.usdcxUsd, 1)}bps from $1${src.usdcxSource ? `, ${src.usdcxSource}` : ""})` }
     : { ok: false, text: "USDCx price unreadable" };
   const checks = { close: close ? `${close.verified ? "verified" : "single source"}: ${close.check ?? ""}`.trim() : "no close", pool: poolCheck.text, usdcx: pegCheck.text };
   const dayClosing = now.getUTCHours() >= 22; // a no-decision now ends the day undecided (nextMemory)
@@ -189,9 +191,12 @@ export function decideTrend(closes: Close[], mem: TrendMemory, src: TrendSources
   if (win.length < p.smaDays) return noDecision(`only ${win.length} closes, need ${p.smaDays}`);
   if (!contiguous(win)) return noDecision(`gap in the last ${p.smaDays} daily closes`);
   // An earlier close that never passed the exchange check stays in the window for 60 days, so it
-  // must not block decisions that long (review on #104). Asymmetric, like the rest: risk-off and
-  // hold ignore it (a wrong risk-off costs upside); risk-on tolerates a few, then waits.
+  // must not block decisions that long (R104-1). Asymmetric, like the rest: risk-off and hold ignore
+  // it (a wrong risk-off costs upside); risk-on tolerates 5% of the window, rounded down (3 of 60:
+  // three closes each 10% wrong move SMA60 by 0.5%, well inside the 2% buffer), then waits. Each
+  // unverified close is alerted the day it fails (trend-io.ts), long before the window holds three.
   const unverifiedEarlier = win.slice(0, -1).filter((c) => !c.verified).length;
+  const maxUnverified = Math.floor(p.unverifiedRiskOnFrac * p.smaDays);
 
   const sma = win.reduce((s, c) => s + c.price, 0) / win.length;
   const offLine = sma * (1 - p.buffer), onLine = sma * (1 + p.buffer);
@@ -204,7 +209,7 @@ export function decideTrend(closes: Close[], mem: TrendMemory, src: TrendSources
   }
   if (mem.state === "risk-off" && close.price > onLine) {
     if (!close.verified) return { ...noDecision("close above the risk-on line but not verified by the exchange (risk-on needs both sources)"), sma, offLine, onLine };
-    if (unverifiedEarlier > p.maxUnverifiedForRiskOn) return { ...noDecision(`close above the risk-on line but ${unverifiedEarlier} earlier closes in the window are unverified (risk-on allows ${p.maxUnverifiedForRiskOn})`), sma, offLine, onLine };
+    if (unverifiedEarlier > maxUnverified) return { ...noDecision(`close above the risk-on line but ${unverifiedEarlier} earlier closes in the window are unverified (risk-on allows ${maxUnverified})`), sma, offLine, onLine };
     if (!poolCheck.ok) return { ...noDecision(`close above the risk-on line but the sBTC pool check failed (${poolCheck.text})`), sma, offLine, onLine };
     return limit({ ...withLines, action: "to-risk-on", state: "risk-on", reason: `close ${Math.round(close.price)} > SMA${p.smaDays} ${Math.round(sma)} x ${1 + p.buffer}`, checks, alert: null }, mem, p, now);
   }
