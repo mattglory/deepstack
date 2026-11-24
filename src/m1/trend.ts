@@ -140,8 +140,26 @@ function contiguous(closes: Close[]): boolean {
 export interface TrendSources {
   btcSpotUsd: number | null; // fresh BTC/USD (the execution-time reference)
   poolUsdPerSbtc: number | null; // the sBTC/USDCx pool's active-bin price
-  usdcxUsd: number | null; // USDCx/USD
-  usdcxSource?: string; // where usdcxUsd came from (trend-io.ts readUsdcx)
+  usdcxReadings: number[]; // USDCx/USD from each source that could be read (trend-io.ts usdcxReadings)
+}
+
+/**
+ * The USDCx peg check (review on #104): the median of the readable sources. It blocks a switch into
+ * USDCx only when at least two sources are readable and their median is more than the bound off $1,
+ * so one drifting pool can't fake a depeg and block risk-off. A single off-peg reading, or too few
+ * readable sources, only alerts. Pure.
+ */
+export function usdcxPegCheck(readings: number[], boundBps: number): { ok: boolean; median: number | null; text: string; alert: string | null } {
+  const r = readings.filter((x) => x > 0).sort((a, b) => a - b);
+  if (r.length === 0) return { ok: true, median: null, text: "USDCx unreadable (no source)", alert: "USDCx peg unchecked: no source readable" };
+  const median = r.length % 2 ? r[(r.length - 1) / 2] : (r[r.length / 2 - 1] + r[r.length / 2]) / 2;
+  const off = (x: number) => Math.round(Math.abs(x - 1) * 10_000);
+  const spread = Math.round((r[r.length - 1] - r[0]) * 10_000);
+  const text = `USDCx median ${median.toFixed(4)} of ${r.length} (${off(median)}bps from $1, spread ${spread}bps)`;
+  const offCount = r.filter((x) => off(x) > boundBps).length;
+  if (r.length >= 2 && off(median) > boundBps) return { ok: false, median, text, alert: null };
+  const alert = r.length < 2 ? `USDCx peg from ${r.length} source only` : offCount > 0 ? `${offCount} USDCx source(s) off peg, median on peg` : null;
+  return { ok: true, median, text, alert };
 }
 
 export interface TrendDecision {
@@ -177,9 +195,7 @@ export function decideTrend(closes: Close[], mem: TrendMemory, src: TrendSources
   const poolCheck = src.poolUsdPerSbtc && src.btcSpotUsd
     ? { ok: bpsOff(src.poolUsdPerSbtc, src.btcSpotUsd) <= p.poolAgreeBps, text: `pool ${Math.round(src.poolUsdPerSbtc)} vs BTC ${Math.round(src.btcSpotUsd)} (${bpsOff(src.poolUsdPerSbtc, src.btcSpotUsd)}bps)` }
     : { ok: false, text: "pool or BTC/USD unreadable" };
-  const pegCheck = src.usdcxUsd
-    ? { ok: bpsOff(src.usdcxUsd, 1) <= p.usdcxPegBps, text: `USDCx ${src.usdcxUsd.toFixed(4)} (${bpsOff(src.usdcxUsd, 1)}bps from $1${src.usdcxSource ? `, ${src.usdcxSource}` : ""})` }
-    : { ok: false, text: "USDCx price unreadable" };
+  const pegCheck = usdcxPegCheck(src.usdcxReadings, p.usdcxPegBps);
   const checks = { close: close ? `${close.verified ? "verified" : "single source"}: ${close.check ?? ""}`.trim() : "no close", pool: poolCheck.text, usdcx: pegCheck.text };
   const dayClosing = now.getUTCHours() >= 22; // a no-decision now ends the day undecided (nextMemory)
   const noDecision = (reason: string): TrendDecision => ({ ...base, action: "no-decision", reason, checks, alert: dayClosing && mem.noDecisionStreak + 1 >= 2 ? `no decision for ${mem.noDecisionStreak + 1} days in a row` : null });

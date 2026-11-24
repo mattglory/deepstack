@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  usdcxPegCheck,
   closeAgrees, closeDayOf, decideTrend, decisionDue, defaultTrendParams, exitCapacity, freshMemory, isTrendMemory, mergeCloses, nextMemory,
   type Close, type TrendMemory, type TrendSources,
 } from "./trend.js";
@@ -18,7 +19,7 @@ function closes(n: number, price: number, last = price, end = "2026-11-20"): Clo
     return { day: new Date(t).toISOString().slice(0, 10), t: t / 1000, price: i === n - 1 ? last : price, verified: true };
   });
 }
-const GOOD: TrendSources = { btcSpotUsd: 60_000, poolUsdPerSbtc: 59_900, usdcxUsd: 0.9995 };
+const GOOD: TrendSources = { btcSpotUsd: 60_000, poolUsdPerSbtc: 59_900, usdcxReadings: [0.9995, 0.9990, 1.0001] };
 const mem = (over: Partial<TrendMemory> = {}): TrendMemory => ({ ...freshMemory(NOW), ...over });
 
 test("decideTrend: fewer closes than the SMA window → no decision", () => {
@@ -76,8 +77,10 @@ test("decideTrend: risk-off may use a single-source close when the pool agrees w
 
 test("decideTrend: risk-off needs USDCx within 1% of $1 (unreadable counts as failed)", () => {
   const cs = closes(60, 100_000, 90_000);
-  assert.match(decideTrend(cs, mem(), { ...GOOD, usdcxUsd: 0.985 }, P, NOW).reason, /USDCx check failed/);
-  assert.equal(decideTrend(cs, mem(), { ...GOOD, usdcxUsd: null }, P, NOW).action, "no-decision");
+  assert.match(decideTrend(cs, mem(), { ...GOOD, usdcxReadings: [0.985, 0.986, 1.0] }, P, NOW).reason, /USDCx check failed/, "median off peg, 3 sources");
+  assert.equal(decideTrend(cs, mem(), { ...GOOD, usdcxReadings: [0.985, 0.999, 1.0] }, P, NOW).action, "to-risk-off", "one drifting source can't block");
+  assert.equal(decideTrend(cs, mem(), { ...GOOD, usdcxReadings: [0.98] }, P, NOW).action, "to-risk-off", "one readable source only alerts");
+  assert.equal(decideTrend(cs, mem(), { ...GOOD, usdcxReadings: [] }, P, NOW).action, "to-risk-off", "none readable only alerts");
 });
 
 test("decideTrend: risk-on needs a verified close AND the sBTC pool check", () => {
@@ -185,4 +188,16 @@ test("exitCapacity: the fee counts against the min-out; a pool already below the
   assert.equal(withFee.xIn, 0);
   assert.equal(withFee.stoppedBy, "min-out");
   assert.equal(exitCapacity([bin(0, 0, 100)], 0, 100, 100).stoppedBy, "empty");
+});
+
+test("usdcxPegCheck: median of readable sources; blocks only with 2+ and the median off; alerts otherwise", () => {
+  assert.deepEqual({ ...usdcxPegCheck([0.9947, 0.9996, 1.0005], 100), text: "" }, { ok: true, median: 0.9996, text: "", alert: null });
+  const two = usdcxPegCheck([0.985, 0.987], 100);
+  assert.equal(two.ok, false, "two sources agree on a depeg: block");
+  assert.ok(Math.abs(two.median! - 0.986) < 1e-9);
+  assert.deepEqual({ ok: usdcxPegCheck([0.98, 1.0, 1.0], 100).ok, alert: usdcxPegCheck([0.98, 1.0, 1.0], 100).alert }, { ok: true, alert: "1 USDCx source(s) off peg, median on peg" });
+  assert.equal(usdcxPegCheck([0.98], 100).ok, true);
+  assert.match(usdcxPegCheck([0.98], 100).alert!, /1 source only/);
+  assert.equal(usdcxPegCheck([], 100).ok, true);
+  assert.match(usdcxPegCheck([], 100).text, /unreadable/);
 });

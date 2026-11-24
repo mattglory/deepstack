@@ -6,9 +6,9 @@
 //     00:00 UTC: each point is then the midnight close, as in the backtest, labelled by the day it
 //     closes (closeDayOf). Each is cross-checked against the Coinbase BTC-USD hourly candle containing it.
 //   - BTC/USD now: DefiLlama current price (at most 15 minutes old).
-//   - USDCx/USD (readUsdcx, R104-3/4): first the STX/USDCx pool's price against STX/USD, which is
-//     independent of the sBTC/USDCx pool the sBTC check reads; then DefiLlama's on-chain USDCx price;
-//     then the sBTC/USDCx pool against BTC/USD. The source used is recorded, and a fallback alerts.
+//   - USDCx/USD (usdcxReadings, R104-3/4 and the review answer): three sources, the STX/USDCx pool
+//     against STX/USD (independent of the sBTC pool), DefiLlama's on-chain price, and the sBTC/USDCx
+//     pool against BTC/USD. trend.ts usdcxPegCheck takes their median; all three are journalled.
 //   - the sBTC/USDCx HODLMM pool: active-bin price, fee and the bins below it (pinned tokens).
 // Files (atomic writes; an unreadable file means no decision and an alert, never a silent reset):
 //   journal/trend-closes.json  append-only close history
@@ -20,7 +20,7 @@ import { dirname } from "node:path";
 import { DLMM_POOLS, pinMismatch, readBinLiquidityStates, readDlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
 import {
-  closeAgrees, closeDayOf, decideTrend, decisionDue, exitCapacity, freshMemory, isTrendMemory, mergeCloses, nextMemory,
+  closeAgrees, closeDayOf, decideTrend, usdcxPegCheck, decisionDue, exitCapacity, freshMemory, isTrendMemory, mergeCloses, nextMemory,
   type Close, type TrendDecision, type TrendMemory, type TrendParams, type TrendSources, type SellBin, defaultTrendParams,
 } from "./trend.js";
 
@@ -236,11 +236,15 @@ async function stxPoolUsdcxPerStx(): Promise<number | null> {
  * alerted: DefiLlama's on-chain USDCx price, then the sBTC/USDCx pool against BTC/USD. Pure given its
  * inputs; all of them are logged.
  */
-export function pickUsdcx(inp: { stxUsd: number | null; usdcxPerStx: number | null; llamaUsdcx: number | null; poolUsdPerSbtc: number | null; btcUsd: number | null }): { usd: number | null; source: string; fallback: boolean } {
-  if (inp.stxUsd && inp.usdcxPerStx) return { usd: inp.stxUsd / inp.usdcxPerStx, source: "STX/USDCx pool vs STX/USD", fallback: false };
-  if (inp.llamaUsdcx) return { usd: inp.llamaUsdcx, source: "DefiLlama on-chain price", fallback: true };
-  if (inp.poolUsdPerSbtc && inp.btcUsd) return { usd: inp.btcUsd / inp.poolUsdPerSbtc, source: "sBTC/USDCx pool vs BTC/USD", fallback: true };
-  return { usd: null, source: "none readable", fallback: true };
+export function usdcxReadings(inp: { stxUsd: number | null; usdcxPerStx: number | null; llamaUsdcx: number | null; poolUsdPerSbtc: number | null; btcUsd: number | null }): {
+  readings: number[]; bySource: { stxPool: number | null; defillama: number | null; sbtcPool: number | null };
+} {
+  const bySource = {
+    stxPool: inp.stxUsd && inp.usdcxPerStx ? inp.stxUsd / inp.usdcxPerStx : null,
+    defillama: inp.llamaUsdcx && inp.llamaUsdcx > 0 ? inp.llamaUsdcx : null,
+    sbtcPool: inp.poolUsdPerSbtc && inp.btcUsd ? inp.btcUsd / inp.poolUsdPerSbtc : null,
+  };
+  return { readings: Object.values(bySource).filter((x): x is number => x !== null && x > 0), bySource };
 }
 
 export interface ObserveResult { ran: boolean; record?: Record<string, unknown>; decision?: TrendDecision; alert?: string | null }
@@ -303,10 +307,10 @@ async function observeDue(
     if (e instanceof OverBudget) throw e;
     poolError = (e as Error).message;
   }
-  const usdcx = pickUsdcx({ stxUsd, usdcxPerStx, llamaUsdcx, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, btcUsd: btcSpotUsd });
-  const usdcxUsd = usdcx.usd;
+  const usdcx = usdcxReadings({ stxUsd, usdcxPerStx, llamaUsdcx, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, btcUsd: btcSpotUsd });
+  const peg = usdcxPegCheck(usdcx.readings, p.usdcxPegBps);
 
-  const src: TrendSources = { btcSpotUsd, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, usdcxUsd, usdcxSource: usdcx.source };
+  const src: TrendSources = { btcSpotUsd, poolUsdPerSbtc: pool?.usdPerSbtc ?? null, usdcxReadings: usdcx.readings };
   const d = decideTrend(kept, due.mem, src, p, now);
   const mem = nextMemory(due.mem, d, now);
 
@@ -325,13 +329,13 @@ async function observeDue(
     d.alert,
     merged.corrections.length ? `source changed ${merged.corrections.length} stored close(s); not applied` : null,
     v.newlyFailed.length ? `close(s) failed the exchange check: ${v.newlyFailed.join("; ")}. Check and, if right, mark: npm run m1:trend -- mark-checked <day>` : null,
-    usdcx.fallback ? `USDCx price from fallback (${usdcx.source})` : null,
+    peg.alert,
   ].filter(Boolean) as string[];
   const record = {
     type: "trend-observe", mode: "observe",
     action: d.action, from: due.mem.state, state: d.state, reason: d.reason,
     close: d.close, sma: d.sma && Math.round(d.sma), offLine: d.offLine && Math.round(d.offLine), onLine: d.onLine && Math.round(d.onLine),
-    checks: d.checks, btcSpotUsd, usdcxUsd, usdcxSources: { used: usdcx.source, stxPool: stxUsd && usdcxPerStx ? stxUsd / usdcxPerStx : null, defillama: llamaUsdcx }, poolUsdPerSbtc: pool?.usdPerSbtc ?? null,
+    checks: d.checks, btcSpotUsd, usdcxUsd: peg.median, usdcxSources: usdcx.bySource, poolUsdPerSbtc: pool?.usdPerSbtc ?? null,
     exitCapacity: capacity, closesStored: kept.length, closesVerified: kept.filter((c) => c.verified).length,
     ...(merged.corrections.length ? { corrections: merged.corrections } : {}),
     noDecisionStreak: mem.noDecisionStreak, halted: mem.halted,

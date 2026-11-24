@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadCloses, loadTrendMemory, markChecked, pickUsdcx, trendObserveStep } from "./trend-io.js";
+import { loadCloses, loadTrendMemory, markChecked, usdcxReadings, trendObserveStep } from "./trend-io.js";
 
 const dir = mkdtempSync(join(tmpdir(), "trend-io-"));
 
@@ -50,16 +50,14 @@ test("over the time budget: no decision, nothing written, retried next cycle (R1
   }
 });
 
-test("pickUsdcx: the STX/USDCx pool first (independent of the sBTC pool), then alerted fallbacks (R104-3/4)", () => {
+test("usdcxReadings: all three sources, each only when its inputs are readable", () => {
   const all = { stxUsd: 0.25, usdcxPerStx: 0.2505, llamaUsdcx: 0.999, poolUsdPerSbtc: 60_000, btcUsd: 59_940 };
-  const a = pickUsdcx(all);
-  assert.equal(a.fallback, false);
-  assert.ok(Math.abs(a.usd! - 0.998) < 0.001);
-  assert.deepEqual(pickUsdcx({ ...all, usdcxPerStx: null }), { usd: 0.999, source: "DefiLlama on-chain price", fallback: true });
-  const b = pickUsdcx({ ...all, usdcxPerStx: null, llamaUsdcx: null });
-  assert.equal(b.source, "sBTC/USDCx pool vs BTC/USD");
-  assert.ok(Math.abs(b.usd! - 0.999) < 0.0001);
-  assert.deepEqual(pickUsdcx({ stxUsd: null, usdcxPerStx: null, llamaUsdcx: null, poolUsdPerSbtc: null, btcUsd: null }), { usd: null, source: "none readable", fallback: true });
+  const r = usdcxReadings(all);
+  assert.equal(r.readings.length, 3);
+  assert.ok(Math.abs(r.bySource.stxPool! - 0.998) < 0.001);
+  assert.ok(Math.abs(r.bySource.sbtcPool! - 0.999) < 0.0001);
+  assert.deepEqual(usdcxReadings({ ...all, usdcxPerStx: null, llamaUsdcx: null }).readings.length, 1);
+  assert.deepEqual(usdcxReadings({ stxUsd: null, usdcxPerStx: null, llamaUsdcx: null, poolUsdPerSbtc: null, btcUsd: null }).readings, []);
 });
 
 test("markChecked: counts an unverified close as verified, keeps its price, refuses unknown or verified days", () => {
