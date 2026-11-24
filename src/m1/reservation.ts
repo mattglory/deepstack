@@ -58,7 +58,11 @@ export function allocate(
     const totalClaims = VENUES.filter((v) => v !== "xyk").reduce((s, v) => s + claimed(v), 0n);
     const slack = ((usable * BigInt(tol.bps)) / 10_000n > tol.units ? (usable * BigInt(tol.bps)) / 10_000n : tol.units);
     if (totalClaims > usable + slack) {
-      problems.push(`over-claim on ${asset}: claims ${totalClaims} > usable ${usable} (balance ${bal} - gas ${gas})`);
+      // The claims can't all be right, so no venue's share of this asset can be trusted: nobody
+      // spends it until a human checks (review on #101). Not just the XYK, the residual owner.
+      problems.push(`over-claim on ${asset}: claims ${totalClaims} > usable ${usable} (balance ${bal} - gas ${gas}); no venue may spend it`);
+      for (const v of VENUES) available[v][asset] = 0n;
+      continue;
     }
     for (const v of VENUES) {
       if (v === "xyk") available.xyk[asset] = usable > totalClaims ? usable - totalClaims : 0n;
