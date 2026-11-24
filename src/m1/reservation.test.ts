@@ -34,7 +34,11 @@ test("over-claim beyond the dust tolerance is a problem; within it, not", () => 
   assert.deepEqual(allocate({ [SBTC]: 1_000_000n }, claims, {}).problems, []);
   assert.deepEqual(allocate({ [SBTC]: 999_999n }, claims, {}).problems, [], "1 unit short: indexer lag");
   assert.match(allocate({ [SBTC]: 900_000n }, claims, {}).problems[0], /over-claim on .*sbtc-token: claims 1000000 > usable 900000/);
-  assert.equal(allocate({ [SBTC]: 900_000n }, claims, {}).available.dlmm[SBTC], 900_000n, "never more than is there");
+  const over = allocate({ [SBTC]: 900_000n, [STX]: 100_000_000n }, claims, {});
+  assert.equal(over.available.dlmm[SBTC], 0n, "an over-claim stops every venue, the claimant too");
+  assert.equal(over.available.xyk[SBTC], 0n);
+  assert.equal(over.available.trend[SBTC], 0n);
+  assert.equal(over.available.xyk[STX], 100_000_000n, "other assets are unaffected");
 });
 
 test("an unreadable claim source fails closed: the residual owner (XYK) gets nothing", () => {
