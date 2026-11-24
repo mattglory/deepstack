@@ -26,6 +26,7 @@ import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandB
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
 import { xykHoldReasonForPendingReadd, loadPending, pendingStatePath } from "./dlmm-pending-state.js";
 import { allocate, pendingReaddClaims, reservationAlert, xykInventory, STX as STX_KEY } from "./reservation.js";
+import { readOwnerClaims } from "./owner-claims.js";
 import { existsSync as fileExists } from "node:fs";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
@@ -270,8 +271,9 @@ function reservationCycle(snap: Snapshot): { share: { x: bigint; y: bigint } | n
     const pending = loadPending(path);
     const unreadable = !pending && fileExists(path) ? [path] : [];
     const pin = pending ? DLMM_POOLS.find((p) => p.key === pending.pair)?.pin : undefined;
-    const claims = pendingReaddClaims(pending, pin, path);
-    const a = allocate(wallet, claims, { [STX_KEY]: stxFeeReserveUstx() }, unreadable);
+    const owner = readOwnerClaims(); // unallocated deposits and owner holds: nothing trades them
+    const claims = [...pendingReaddClaims(pending, pin, path), ...owner.claims];
+    const a = allocate(wallet, claims, { [STX_KEY]: stxFeeReserveUstx() }, [...unreadable, ...owner.unreadable]);
     const used = tradableInventory(snap.inv, !!cfg.y.native, stxFeeReserveUstx(), !!cfg.x.native);
     const xykWould = { x: a.available.xyk[key(cfg.x)] ?? 0n, y: a.available.xyk[key(cfg.y)] ?? 0n };
     const differs = xykWould.x !== used.xBase || xykWould.y !== used.yBase;

@@ -9,9 +9,20 @@
 // Run it where the live metrics file is (the VPS), like `dlmm-recenter-cli set-basis`:
 //   npm run m1:flow -- add <txid> [--note="owner withdrawal"]
 //   npm run m1:flow -- list
+//
+// Owner allocation (docs/WALLET_RESERVATION_DESIGN.md, the owner claim). A recorded deposit with no
+// `allocated` marker, and every owner hold, is reserved for the owner: no venue trades it.
+//   npm run m1:flow -- allocate <txid> <dlmm|xyk|trend>        a deposit has been given to a venue
+//   npm run m1:flow -- hold <sbtc|usdcx|stx> <amount> --note=..  set tokens aside (human units)
+//   npm run m1:flow -- release <hold-id>                       give a hold back to the venues
+//   npm run m1:flow -- holds                                   list holds
+// Run as the agent's user on the VPS (they write journal/).
 
 import { loadDotenv } from "./wallet.js";
-import { addCapitalFlow, loadCapitalFlows, METRICS_PATH } from "./metrics.js";
+import { addCapitalFlow, allocateCapitalFlow, loadCapitalFlows, METRICS_PATH } from "./metrics.js";
+import { loadOwnerHolds, saveOwnerHolds } from "./owner-claims.js";
+import { DLMM_POOLS } from "./dlmm-read.js";
+import { STX } from "./reservation.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 import { readFileSync } from "node:fs";
 
@@ -36,7 +47,47 @@ async function main(): Promise<void> {
     for (const f of flows) console.log(`${f.t}  ${f.stx > 0 ? "+" : ""}${f.stx} STX  ${f.txid}${f.note ? `  (${f.note})` : ""}`);
     return;
   }
-  if (cmd !== "add" || !pos[1]) throw new Error("usage: m1:flow -- add <txid> [--note=...] | list");
+  if (cmd === "allocate") {
+    const [txid, venue] = [pos[1], pos[2]];
+    if (!txid || !["dlmm", "xyk", "trend"].includes(venue ?? "")) throw new Error("usage: m1:flow -- allocate <txid> <dlmm|xyk|trend>");
+    const r = allocateCapitalFlow(txid.startsWith("0x") ? txid : `0x${txid}`, venue);
+    if (r !== "allocated") throw new Error(r === "not-found" ? `no recorded flow ${txid}` : `${txid} is not a deposit`);
+    return void console.log(`deposit ${txid} allocated to ${venue}; it is no longer an owner claim`);
+  }
+  if (cmd === "holds") {
+    const h = loadOwnerHolds();
+    if (!h.ok) throw new Error(h.reason);
+    if (h.value.length === 0) return void console.log("no owner holds");
+    for (const x of h.value) console.log(`${x.id}  ${x.t}  ${x.amount} base units of ${x.asset}${x.note ? `  (${x.note})` : ""}`);
+    return;
+  }
+  if (cmd === "hold") {
+    const pin = DLMM_POOLS.find((p) => p.key === "sbtc-usdcx")!.pin;
+    const assets: Record<string, [string, number]> = {
+      sbtc: [`${pin.xToken}::${pin.xAsset}`, pin.xDecimals],
+      usdcx: [`${pin.yToken}::${pin.yAsset}`, pin.yDecimals],
+      stx: [STX, 6],
+    };
+    const a = assets[(pos[1] ?? "").toLowerCase()];
+    const human = pos[2] ?? "";
+    if (!a || !/^[0-9]+([.][0-9]+)?$/.test(human)) throw new Error("usage: m1:flow -- hold <sbtc|usdcx|stx> <amount> --note=...");
+    const [whole, frac = ""] = human.split(".");
+    if (frac.length > a[1]) throw new Error(`${pos[1]} has ${a[1]} decimals`);
+    const amount = (BigInt(whole) * 10n ** BigInt(a[1]) + BigInt(frac.padEnd(a[1], "0") || "0")).toString();
+    const h = loadOwnerHolds();
+    if (!h.ok) throw new Error(h.reason);
+    const id = `hold-${Date.now()}`;
+    saveOwnerHolds([...h.value, { id, t: new Date().toISOString(), asset: a[0], amount, note }]);
+    return void console.log(`${id}: ${human} ${pos[1]} held for the owner; no venue trades it until released`);
+  }
+  if (cmd === "release") {
+    const h = loadOwnerHolds();
+    if (!h.ok) throw new Error(h.reason);
+    if (!h.value.some((x) => x.id === pos[1])) throw new Error(`no hold ${pos[1]}`);
+    saveOwnerHolds(h.value.filter((x) => x.id !== pos[1]));
+    return void console.log(`${pos[1]} released; its tokens go back to the XYK (the residual owner) unless another venue claims them`);
+  }
+  if (cmd !== "add" || !pos[1]) throw new Error("usage: m1:flow -- add <txid> [--note=...] | list | allocate | hold | release | holds");
 
   const wallet = (JSON.parse(readFileSync(METRICS_PATH, "utf8")) as { wallet?: string }).wallet;
   if (!wallet) throw new Error(`no wallet in ${METRICS_PATH}`);
