@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ownerClaims, readOwnerClaims } from "./owner-claims.js";
+import { holdAssets, loadOwnerHolds, ownerClaims, readOwnerClaims } from "./owner-claims.js";
 
 const SRC = { flows: "flows", holds: "holds" };
 
@@ -34,4 +34,15 @@ test("readOwnerClaims: missing files are empty; unreadable ones are reported (fa
     delete process.env.CAPITAL_FLOWS_PATH;
     delete process.env.OWNER_HOLDS_PATH;
   }
+});
+
+test("loadOwnerHolds: a hold on an unknown asset makes the file unreadable (fail closed, R113-3)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "owner-"));
+  const path = join(dir, "holds.json");
+  const sbtc = holdAssets().sbtc.asset;
+  writeFileSync(path, JSON.stringify([{ id: "a", t: "x", asset: sbtc, amount: "1975890" }]));
+  assert.equal(loadOwnerHolds(path).ok, true);
+  writeFileSync(path, JSON.stringify([{ id: "a", t: "x", asset: sbtc, amount: "1" }, { id: "b", t: "x", asset: "SP000::typo", amount: "1" }]));
+  const r = loadOwnerHolds(path);
+  assert.equal(r.ok, false);
 });

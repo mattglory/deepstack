@@ -17,7 +17,11 @@ export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json"
 // agent (the only writer of metrics.json) and a recording can never overwrite each other's
 // whole-file write (review of #20, 2026-10-23). journal/ survives deploys. The agent copies the
 // list into metrics.json on each sample so the dashboard keeps reading one file.
-export const CAPITAL_FLOWS_PATH = process.env.CAPITAL_FLOWS_PATH ?? "journal/capital-flows.json";
+// Read lazily by owner-claims.ts (its tests set the env after import), so the default lives in one place.
+export function capitalFlowsPath(): string {
+  return process.env.CAPITAL_FLOWS_PATH ?? "journal/capital-flows.json";
+}
+export const CAPITAL_FLOWS_PATH = capitalFlowsPath();
 // Agent wallet changes (key rotation), written only by rotate-key-cli. A recorded migration lets
 // the history continue on the new address instead of starting a fresh file; an unrecorded wallet
 // change still starts fresh, since that is a different agent.

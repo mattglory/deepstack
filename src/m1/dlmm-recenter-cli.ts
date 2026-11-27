@@ -47,7 +47,7 @@ import { killFilePresent, killPath } from "./kill.js";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, pinMismatch, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
-import { loadOwnerHolds, saveOwnerHolds } from "./owner-claims.js";
+import { holdAssets, loadOwnerHolds, saveOwnerHolds } from "./owner-claims.js";
 import { STX as STX_KEY } from "./reservation.js";
 import {
   distributeAcrossRange,
@@ -210,7 +210,11 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
         { id: `hold-${Date.now()}-x`, t, asset: key(xTok), amount: got.x.toString(), note: `DLMM wind-down ${r.txid}` },
         { id: `hold-${Date.now()}-y`, t, asset: key(yTok), amount: got.y.toString(), note: `DLMM wind-down ${r.txid}` },
       ].filter((x) => BigInt(x.amount) > 0n);
-      saveOwnerHolds([...h.value, ...add]);
+      // Only assets a hold may name (loadOwnerHolds rejects others). Any other token isn't one the
+      // XYK trades, so leaving it unheld is safe; say so rather than make the holds file invalid.
+      const known = new Set(Object.values(holdAssets()).map((a) => a.asset));
+      for (const x of add.filter((x) => !known.has(x.asset))) console.log(`  note: ${x.asset} is not a holdable asset; not held (no venue trades it)`);
+      saveOwnerHolds([...h.value, ...add.filter((x) => known.has(x.asset))]);
       console.log(`  held for the owner: ${Number(got.x) / xUnit} ${xTok.asset || "STX"} + ${Number(got.y) / yUnit} ${yTok.asset} (npm run m1:flow -- holds / release <id>)`);
     }
   }

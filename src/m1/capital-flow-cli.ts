@@ -13,6 +13,9 @@
 // Owner allocation (docs/WALLET_RESERVATION_DESIGN.md, the owner claim). A recorded deposit with no
 // `allocated` marker, and every owner hold, is reserved for the owner: no venue trades it.
 //   npm run m1:flow -- allocate <txid> <dlmm|xyk|trend>        a deposit has been given to a venue
+//     Until reservation stage 3 only the XYK claims loose tokens, so allocating a deposit releases it
+//     to the XYK whatever venue is named. For a NEW deposit meant for the DLMM: KILL on, open the
+//     DLMM while the deposit is still an owner claim, THEN allocate (review R113-1).
 //   npm run m1:flow -- hold <sbtc|usdcx|stx> <amount> --note=..  set tokens aside (human units)
 //   npm run m1:flow -- release <hold-id>                       give a hold back to the venues
 //   npm run m1:flow -- holds                                   list holds
@@ -20,9 +23,7 @@
 
 import { loadDotenv } from "./wallet.js";
 import { addCapitalFlow, allocateCapitalFlow, loadCapitalFlows, METRICS_PATH } from "./metrics.js";
-import { loadOwnerHolds, saveOwnerHolds } from "./owner-claims.js";
-import { DLMM_POOLS } from "./dlmm-read.js";
-import { STX } from "./reservation.js";
+import { holdAssets, loadOwnerHolds, saveOwnerHolds } from "./owner-claims.js";
 import { publishMetrics, isPublishConfigured } from "./publish.js";
 import { readFileSync } from "node:fs";
 
@@ -52,7 +53,9 @@ async function main(): Promise<void> {
     if (!txid || !["dlmm", "xyk", "trend"].includes(venue ?? "")) throw new Error("usage: m1:flow -- allocate <txid> <dlmm|xyk|trend>");
     const r = allocateCapitalFlow(txid.startsWith("0x") ? txid : `0x${txid}`, venue);
     if (r !== "allocated") throw new Error(r === "not-found" ? `no recorded flow ${txid}` : `${txid} is not a deposit`);
-    return void console.log(`deposit ${txid} allocated to ${venue}; it is no longer an owner claim`);
+    console.log(`deposit ${txid} allocated to ${venue}; it is no longer an owner claim`);
+    if (venue !== "xyk") console.log(`note: until reservation stage 3 nothing claims loose tokens for ${venue}, so the XYK may now trade them. For a new deposit, open the venue first, then allocate.`);
+    return;
   }
   if (cmd === "holds") {
     const h = loadOwnerHolds();
@@ -62,13 +65,8 @@ async function main(): Promise<void> {
     return;
   }
   if (cmd === "hold") {
-    const pin = DLMM_POOLS.find((p) => p.key === "sbtc-usdcx")!.pin;
-    const assets: Record<string, [string, number]> = {
-      sbtc: [`${pin.xToken}::${pin.xAsset}`, pin.xDecimals],
-      usdcx: [`${pin.yToken}::${pin.yAsset}`, pin.yDecimals],
-      stx: [STX, 6],
-    };
-    const a = assets[(pos[1] ?? "").toLowerCase()];
+    const ha = holdAssets()[(pos[1] ?? "").toLowerCase()];
+    const a: [string, number] | undefined = ha && [ha.asset, ha.decimals];
     const human = pos[2] ?? "";
     if (!a || !/^[0-9]+([.][0-9]+)?$/.test(human)) throw new Error("usage: m1:flow -- hold <sbtc|usdcx|stx> <amount> --note=...");
     const [whole, frac = ""] = human.split(".");

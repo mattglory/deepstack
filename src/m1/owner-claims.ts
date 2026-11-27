@@ -13,14 +13,23 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import type { Claim } from "./reservation.js";
 import { STX } from "./reservation.js";
+import { capitalFlowsPath } from "./metrics.js";
+import { DLMM_POOLS } from "./dlmm-read.js";
 
 export interface OwnerHold { id: string; t: string; asset: string; amount: string; note?: string }
 
 export function ownerHoldsPath(): string {
   return process.env.OWNER_HOLDS_PATH ?? "journal/owner-holds.json";
 }
-function flowsPath(): string {
-  return process.env.CAPITAL_FLOWS_PATH ?? "journal/capital-flows.json";
+
+/** The assets a hold may name (`m1:flow -- hold <key>`): asset id and decimals. */
+export function holdAssets(): Record<string, { asset: string; decimals: number }> {
+  const pin = DLMM_POOLS.find((p) => p.key === "sbtc-usdcx")!.pin;
+  return {
+    sbtc: { asset: `${pin.xToken}::${pin.xAsset}`, decimals: pin.xDecimals },
+    usdcx: { asset: `${pin.yToken}::${pin.yAsset}`, decimals: pin.yDecimals },
+    stx: { asset: STX, decimals: 6 },
+  };
 }
 
 type Load<T> = { ok: true; value: T } | { ok: false; reason: string };
@@ -36,8 +45,12 @@ function strictArray<T>(path: string, valid: (x: any) => boolean): Load<T[]> {
   }
 }
 
+// A hold on an asset the wallet doesn't hold (e.g. a mistyped key in a hand-edited file) would be an
+// over-claim on it. Reject the whole file instead, so it fails closed with an "unreadable" alert that
+// names the problem (review R113-3).
 export function loadOwnerHolds(path = ownerHoldsPath()): Load<OwnerHold[]> {
-  return strictArray<OwnerHold>(path, (h) => typeof h?.id === "string" && typeof h?.asset === "string" && /^\d+$/.test(h?.amount ?? ""));
+  const known = new Set(Object.values(holdAssets()).map((a) => a.asset));
+  return strictArray<OwnerHold>(path, (h) => typeof h?.id === "string" && known.has(h?.asset) && /^\d+$/.test(h?.amount ?? ""));
 }
 
 export function saveOwnerHolds(holds: OwnerHold[], path = ownerHoldsPath()): void {
@@ -66,7 +79,7 @@ export function ownerClaims(
 
 /** The owner's claims as the agent reads them each cycle, and any unreadable source. */
 export function readOwnerClaims(): { claims: Claim[]; unreadable: string[] } {
-  const fp = flowsPath(), hp = ownerHoldsPath();
+  const fp = capitalFlowsPath(), hp = ownerHoldsPath();
   const flows = strictArray<{ txid: string; stx: number; allocated?: string }>(fp, (f) => typeof f?.txid === "string" && typeof f?.stx === "number");
   const holds = loadOwnerHolds(hp);
   const unreadable = [!flows.ok && flows.reason, !holds.ok && holds.reason].filter(Boolean) as string[];
