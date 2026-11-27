@@ -8,7 +8,7 @@
 //   - BTC/USD now: DefiLlama current price (at most 15 minutes old).
 //   - USDCx/USD (usdcxReadings, R104-3/4 and the review answer): three sources, the STX/USDCx pool
 //     against STX/USD (independent of the sBTC pool), DefiLlama's on-chain price, and the sBTC/USDCx
-//     pool against BTC/USD. trend.ts usdcxPegCheck takes their median; all three are journalled.
+//     pool against BTC/USD. trend.ts usdcxPegCheck blocks only when two are each off the same way; all three are journalled.
 //   - the sBTC/USDCx HODLMM pool: active-bin price, fee and the bins below it (pinned tokens).
 // Files (atomic writes; an unreadable file means no decision and an alert, never a silent reset):
 //   journal/trend-closes.json  append-only close history

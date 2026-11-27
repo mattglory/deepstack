@@ -144,10 +144,11 @@ export interface TrendSources {
 }
 
 /**
- * The USDCx peg check (review on #104): the median of the readable sources. It blocks a switch into
- * USDCx only when at least two sources are readable and their median is more than the bound off $1,
- * so one drifting pool can't fake a depeg and block risk-off. A single off-peg reading, or too few
- * readable sources, only alerts. Pure.
+ * The USDCx peg check (reviews on #104, R104-6): it blocks a switch into USDCx only when at least two
+ * sources are EACH more than the bound off $1, in the same direction. With three sources that is the
+ * same as the median being off; with two it needs both (a median of two is their average, so one
+ * wild source could otherwise block alone). One off-peg reading, sources off in opposite directions,
+ * or fewer than two readable sources only alert. The median is still reported. Pure.
  */
 export function usdcxPegCheck(readings: number[], boundBps: number): { ok: boolean; median: number | null; text: string; alert: string | null } {
   const r = readings.filter((x) => x > 0).sort((a, b) => a - b);
@@ -156,9 +157,11 @@ export function usdcxPegCheck(readings: number[], boundBps: number): { ok: boole
   const off = (x: number) => Math.round(Math.abs(x - 1) * 10_000);
   const spread = Math.round((r[r.length - 1] - r[0]) * 10_000);
   const text = `USDCx median ${median.toFixed(4)} of ${r.length} (${off(median)}bps from $1, spread ${spread}bps)`;
-  const offCount = r.filter((x) => off(x) > boundBps).length;
-  if (r.length >= 2 && off(median) > boundBps) return { ok: false, median, text, alert: null };
-  const alert = r.length < 2 ? `USDCx peg from ${r.length} source only` : offCount > 0 ? `${offCount} USDCx source(s) off peg, median on peg` : null;
+  const below = r.filter((x) => x < 1 && off(x) > boundBps).length;
+  const above = r.filter((x) => x > 1 && off(x) > boundBps).length;
+  if (below >= 2 || above >= 2) return { ok: false, median, text, alert: null };
+  const offCount = below + above;
+  const alert = r.length < 2 ? `USDCx peg from ${r.length} source only` : offCount > 0 ? `${offCount} USDCx source(s) off peg, not two in the same direction` : null;
   return { ok: true, median, text, alert };
 }
 

@@ -190,12 +190,22 @@ test("exitCapacity: the fee counts against the min-out; a pool already below the
   assert.equal(exitCapacity([bin(0, 0, 100)], 0, 100, 100).stoppedBy, "empty");
 });
 
-test("usdcxPegCheck: median of readable sources; blocks only with 2+ and the median off; alerts otherwise", () => {
+test("usdcxPegCheck: blocks only when 2+ sources are each off, same direction; alerts otherwise", () => {
   assert.deepEqual({ ...usdcxPegCheck([0.9947, 0.9996, 1.0005], 100), text: "" }, { ok: true, median: 0.9996, text: "", alert: null });
   const two = usdcxPegCheck([0.985, 0.987], 100);
   assert.equal(two.ok, false, "two sources agree on a depeg: block");
   assert.ok(Math.abs(two.median! - 0.986) < 1e-9);
-  assert.deepEqual({ ok: usdcxPegCheck([0.98, 1.0, 1.0], 100).ok, alert: usdcxPegCheck([0.98, 1.0, 1.0], 100).alert }, { ok: true, alert: "1 USDCx source(s) off peg, median on peg" });
+  assert.deepEqual({ ok: usdcxPegCheck([0.98, 1.0, 1.0], 100).ok, alert: usdcxPegCheck([0.98, 1.0, 1.0], 100).alert }, { ok: true, alert: "1 USDCx source(s) off peg, not two in the same direction" });
+  // R104-6: with two readable, one wild source must not block (their average is 1.5% off).
+  const wild = usdcxPegCheck([0.97, 1.0], 100);
+  assert.equal(wild.ok, true);
+  assert.match(wild.alert!, /1 USDCx source/);
+  assert.equal(usdcxPegCheck([0.985, 0.988], 100).ok, false);
+  // opposite directions never block; two of three the same way do
+  assert.equal(usdcxPegCheck([0.98, 1.02], 100).ok, true);
+  assert.equal(usdcxPegCheck([0.98, 1.02, 1.0], 100).ok, true);
+  assert.equal(usdcxPegCheck([0.98, 0.985, 1.0], 100).ok, false);
+  assert.equal(usdcxPegCheck([1.02, 1.03, 1.0], 100).ok, false);
   assert.equal(usdcxPegCheck([0.98], 100).ok, true);
   assert.match(usdcxPegCheck([0.98], 100).alert!, /1 source only/);
   assert.equal(usdcxPegCheck([], 100).ok, true);
