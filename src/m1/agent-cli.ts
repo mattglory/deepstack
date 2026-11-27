@@ -25,7 +25,7 @@ import {
 import { decide, decideLp, tradableInventory, worthTrading, defaultParams, bandBpsFromVol, exceedsPoolShare, decideExecTiming, dlmmLiveGate, xykLiveGate, flashLiveGate, useFlashRoute, FLASH_RECEIVER_ADDS_CAPACITY, nextDlmmCounters, nextFlashCounters, type Inventory, type AgentParams } from "./agent.js";
 import { loadDlmmCounters, saveDlmmCounters } from "./dlmm-failstreak-state.js";
 import { xykHoldReasonForPendingReadd, loadPending, pendingStatePath } from "./dlmm-pending-state.js";
-import { allocate, pendingReaddClaims, STX as STX_KEY } from "./reservation.js";
+import { allocate, pendingReaddClaims, reservationAlert, xykInventory, STX as STX_KEY } from "./reservation.js";
 import { existsSync as fileExists } from "node:fs";
 import { loadFlashCounters, saveFlashCounters } from "./flash-failstreak-state.js";
 import { flashRebalanceOnce } from "../m2/flash-rebalance-exec.js";
@@ -124,6 +124,7 @@ interface Snapshot {
   yReserve: number;
   poolFeeBps: number;
   market: MarketState;
+  xykShare?: { x: bigint; y: bigint } | null; // the XYK's reservation share this cycle (reservationCycle)
   chainTipHeight?: number; // the block every chain read in this snapshot is pinned to (R105-1)
 }
 
@@ -250,10 +251,15 @@ function pendingReaddAmounts(): { dlmmPendingX?: number; dlmmPendingY?: number }
   return { dlmmPendingX: Number(p.xBase) / 10 ** dec[0], dlmmPendingY: Number(p.yBase) / 10 ** dec[1] };
 }
 
-// Reservation, stage 1 (docs/WALLET_RESERVATION_DESIGN.md): SHADOW ONLY. Logs what each venue
-// WOULD be allowed to spend under per-venue claims, next to what the XYK step sizes from today.
-// Changes nothing; never throws into the cycle.
-function reservationShadow(snap: Snapshot): void {
+// Reservation (docs/WALLET_RESERVATION_DESIGN.md). Stage 1 logged what each venue WOULD be allowed
+// to spend under per-venue claims; stage 2 (RESERVATION_MODE=enforce-xyk, the default) makes the XYK
+// step size from that share (act -> xykInventory). "shadow" goes back to logging only. Returns the
+// XYK's share, or null if it couldn't be computed (the XYK then sizes from nothing: fail closed).
+// Journals one "reservation" record per cycle; never throws into the cycle.
+const reservationMode = (): "shadow" | "enforce-xyk" => (process.env.RESERVATION_MODE === "shadow" ? "shadow" : "enforce-xyk");
+let overclaimStreak = 0; // consecutive cycles with an over-claim (reservationAlert)
+let ownTxLastCycle = false; // the previous cycle sent a transaction of ours (the one-cycle grace)
+function reservationCycle(snap: Snapshot): { share: { x: bigint; y: bigint } | null; alert: string | null } {
   try {
     const cfg = activePool();
     const key = (t: Token) => (t.native ? STX_KEY : `${t.address}.${t.name}::${t.asset}`);
@@ -269,23 +275,29 @@ function reservationShadow(snap: Snapshot): void {
     const used = tradableInventory(snap.inv, !!cfg.y.native, stxFeeReserveUstx(), !!cfg.x.native);
     const xykWould = { x: a.available.xyk[key(cfg.x)] ?? 0n, y: a.available.xyk[key(cfg.y)] ?? 0n };
     const differs = xykWould.x !== used.xBase || xykWould.y !== used.yBase;
+    const al = reservationAlert(a.problems, overclaimStreak, ownTxLastCycle);
+    overclaimStreak = al.streak;
+    const mode = reservationMode();
     if (differs || a.problems.length) {
       console.log(
-        `  [reserve-shadow] XYK would see ${xykWould.x} ${cfg.x.symbol} + ${xykWould.y} ${cfg.y.symbol} (sizes from ${used.xBase} + ${used.yBase} today)` +
+        `  [reservation ${mode}] XYK ${mode === "shadow" ? "would see" : "sizes from"} ${xykWould.x} ${cfg.x.symbol} + ${xykWould.y} ${cfg.y.symbol} (sizes from ${used.xBase} + ${used.yBase} today)` +
           (claims.length ? ` | claims: ${claims.map((c) => `${c.venue} ${c.amount} ${c.asset.split("::").pop()}`).join(", ")}` : "") +
-          (a.problems.length ? ` | ⚠ ${a.problems.join("; ")}` : ""),
+          (a.problems.length ? ` | ⚠ ${a.problems.join("; ")}${al.alert ? "" : " (first cycle after our own transaction: skipped quietly)"}` : ""),
       );
     }
     appendJournal({
-      t: new Date().toISOString(), type: "reservation-shadow",
+      t: new Date().toISOString(), type: "reservation", mode,
       wallet: Object.fromEntries(Object.entries(wallet).map(([k, v]) => [k, v.toString()])),
       claims: claims.map((c) => ({ ...c, amount: c.amount.toString() })),
       xykWould: { x: xykWould.x.toString(), y: xykWould.y.toString() },
       xykUses: { x: used.xBase.toString(), y: used.yBase.toString() },
-      differs, problems: a.problems,
+      differs, problems: a.problems, ...(al.alert ? { alert: "reservation" } : {}),
     });
+    return { share: xykWould, alert: al.alert ? a.problems.join("; ") : null };
   } catch (err) {
-    console.warn(`  [reserve-shadow] skipped: ${briefError((err as Error).message)}`);
+    console.warn(`  [reservation] could not compute (${briefError((err as Error).message)}); the XYK sizes from nothing this cycle`);
+    appendJournal({ t: new Date().toISOString(), type: "reservation", error: (err as Error).message });
+    return { share: null, alert: `reservation could not be computed: ${(err as Error).message}` };
   }
 }
 
@@ -502,7 +514,10 @@ async function act(
 
   // Free inventory minus the native-STX fee reserve: neither rule below may spend the gas the
   // agent needs for its next transactions (tradableInventory, agent.ts).
-  const inv = tradableInventory(s.inv, !!y.native, stxFeeReserveUstx(), !!x.native);
+  // Stage 2: the XYK sizes only from its reservation share, never more than the wallet less the fee
+  // reserve. In shadow mode it sizes as before. portfolioY still counts everything.
+  const tradable = tradableInventory(s.inv, !!y.native, stxFeeReserveUstx(), !!x.native);
+  const inv = reservationMode() === "shadow" ? tradable : xykInventory(tradable, s.xykShare ?? null);
 
   // 1) LP allocation (earns the pool fee) — only if enabled.
   if (params.targetLpFraction > 0) {
@@ -841,10 +856,14 @@ export async function main() {
     let dlmmFailedThisTick = false;
     // Same role as dlmmFailedThisTick, for the autonomous flash-rebalance path below.
     let flashFailedThisTick = false;
+    let reservationAlertThisTick = false; // an unreadable claim file, or an over-claim not explained by our own last transaction
     // Every chain read in the snapshot at one block (rpc.ts atChainTip, review R105-1): on
     // 2026-11-21 reads from two heights valued the DLMM position as empty and the halt fired.
-    const snap = await atChainTip(async (tip) => ({ ...(await readMarket(w)), chainTipHeight: tip.height }));
-    reservationShadow(snap);
+    const snap: Snapshot = await atChainTip(async (tip) => ({ ...(await readMarket(w)), chainTipHeight: tip.height }));
+    const reservation = reservationCycle(snap);
+    snap.xykShare = reservation.share;
+    if (reservation.alert) reservationAlertThisTick = true;
+    let ownTxThisCycle = false;
     if (sessionStart === 0 && baselineProblem === null && snap.portfolioY > 0) {
       sessionStart = snap.portfolioY;
       sessionStartT = new Date().toISOString();
@@ -941,6 +960,7 @@ export async function main() {
     try {
       const flashCtx = { live, circuitOk, failStreak: flashFailStreak, failStreakLimit: FLASH_FAIL_STREAK_LIMIT, attempts: flashAttempts, maxTrades: f.maxTrades };
       if (await act(w, snap, params, xykLiveGate({ live, circuitOk, trades, maxTrades: f.maxTrades }), sessionStart, f.interval, safety, flashCtx)) {
+        ownTxThisCycle = true;
         trades++;
         saveXykTrades(trades);
       }
@@ -1014,6 +1034,7 @@ export async function main() {
             { executed: res.executed, attempted },
           ));
           if (!res.executed && attempted) dlmmFailedThisTick = true;
+          if (attempted) ownTxThisCycle = true;
           // A pending re-add that couldn't finish: alert (health check) without counting a failed add.
           if (res.alert) dlmmFailedThisTick = true;
           if (attempted) saveDlmmCounters({ failStreak: dlmmFailStreak, recenters: dlmmRecenters });
@@ -1062,7 +1083,8 @@ export async function main() {
       // root cause and would have surfaced here too, had this existed then. A good XYK cycle
       // still pings "ok" even when DLMM, flash, or publish fails — a signal to look, not a
       // claim the whole tick failed.
-      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed || riskStateProblems.length ? "fail" : "ok");
+      ownTxLastCycle = ownTxThisCycle;
+      await pingHealthcheck(dlmmFailedThisTick || flashFailedThisTick || publishFailed || reservationAlertThisTick || riskStateProblems.length ? "fail" : "ok");
     }
   };
 

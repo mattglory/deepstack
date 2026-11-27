@@ -43,6 +43,7 @@ const ENV_KEYS_CLEARED = [
   "ALLOCATION_MODE", "EXPERIMENT_BAND_MODE", "MIN_TRADE_VALUE_Y", "STX_FEE_RESERVE", "EXEC_MIN_EDGE_BPS",
   "EXEC_MAX_DEFER", "MAX_CONSECUTIVE_FAILURES", "DLMM_FAIL_STREAK_LIMIT", "FLASH_FAIL_STREAK_LIMIT",
   "DLMM_HALF_WIDTH", "DLMM_TARGET_USD", "DLMM_PIN_HALF_WIDTH", "MAX_POOL_SHARE_BPS", "CYCLE_TIMEOUT_MS",
+  "RESERVATION_MODE",
 ];
 const ENV_BASE: Record<string, string> = {
   APP_DIR: join(TMP, "app"),
@@ -56,6 +57,7 @@ const ENV_BASE: Record<string, string> = {
   DRAWDOWN_BASELINE_PATH: join(TMP, "drawdown-baseline.json"),
   EXPERIMENT_STATE_PATH: join(TMP, "experiment.json"),
   DLMM_DEPOSIT_PATH: join(TMP, "dlmm-deposit.json"),
+  DLMM_PENDING_STATE_PATH: join(TMP, "dlmm-pending-readd.json"),
   STACKS_API: "https://rpc.invalid",
   STACKS_API_FALLBACKS: "",
 };
@@ -382,6 +384,7 @@ export async function loadAgent(): Promise<{ main: () => Promise<void> }> {
 export const STATE_FILES = [
   "DLMM_FAILSTREAK_STATE_PATH", "FLASH_FAILSTREAK_STATE_PATH", "EXPERIMENT_STATE_PATH",
   "XYK_TRADES_STATE_PATH", "DRAWDOWN_BASELINE_PATH", "CAPITAL_FLOWS_PATH", "WALLET_MIGRATIONS_PATH",
+  "DLMM_PENDING_STATE_PATH",
 ] as const;
 export const statePath = (k: (typeof STATE_FILES)[number]): string => ENV_BASE[k];
 

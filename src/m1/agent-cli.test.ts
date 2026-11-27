@@ -13,6 +13,7 @@ import { Cl, PostConditionMode, type PostCondition } from "@stacks/transactions"
 import { show, walletLines, XYK_POOL, SBTC } from "./post-conditions.testkit.js";
 import { minusSlippage } from "./quotes.js";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { savePending } from "./dlmm-pending-state.js";
 
 beforeEach(() => resetHarness());
 // The fake global fetch throws on anything but the tx-status poll; also fail loudly here in
@@ -415,12 +416,38 @@ test("risk-state files that need a human (unreadable / unrelated wallet / corrup
   assert.equal(onlyTick().alert, undefined);
 });
 
-test("reservation shadow (stage 1): journals what the XYK would see, and changes nothing", async () => {
+test("reservation stage 2: enforced by default; with no claims the XYK sizes exactly as before", async () => {
   resetHarness(baseWorld());
   await runAgent(LIVE);
-  const e = rec.journal.find((j) => j.type === "reservation-shadow");
-  assert.ok(e, "a reservation-shadow record each cycle");
+  const e = rec.journal.find((j) => j.type === "reservation");
+  assert.ok(e, "a reservation record each cycle");
+  assert.equal(e.mode, "enforce-xyk");
   assert.deepEqual(e.claims, [], "no pending re-add: no claims");
-  assert.equal(e.differs, false, "with no claims the XYK would see exactly what it uses today");
+  assert.equal(e.differs, false, "with no claims the XYK's share is exactly what it used before");
   assert.deepEqual(e.problems, []);
+  assert.equal(e.alert, undefined);
+  assert.deepEqual(rec.health, ["ok"]);
+  // ...and it still trades when out of band (the share is the whole tradable inventory).
+  resetHarness(outOfBandWorld());
+  await runAgent(LIVE);
+  assert.equal(rec.broadcasts.length, 1, "out of band with no claims: the XYK rebalances as before");
+});
+
+test("reservation: RESERVATION_MODE=shadow only logs", async () => {
+  resetHarness(baseWorld());
+  process.env.RESERVATION_MODE = "shadow";
+  await runAgent(LIVE);
+  assert.equal(rec.journal.find((j) => j.type === "reservation")?.mode, "shadow");
+});
+
+test("reservation: an over-claim with no transaction of ours to explain it alerts, and nothing trades", async () => {
+  // A pending re-add claiming 10x the sBTC in the wallet: an external transfer or a bug.
+  resetHarness(outOfBandWorld());
+  savePending({ pair: "sbtc-usdcx", xBase: world.xBase * 10n, yBase: 0n, before: { x: 0, y: 0 }, t: "2026-11-24T00:00:00Z", abortedSwaps: 0 }, statePath("DLMM_PENDING_STATE_PATH"));
+  await runAgent(LIVE);
+  const e = rec.journal.find((j) => j.type === "reservation")!;
+  assert.match((e.problems as string[])[0], /over-claim .*no venue may spend it/);
+  assert.equal(e.alert, "reservation");
+  assert.deepEqual(rec.health, ["fail"]);
+  assert.equal(rec.broadcasts.length, 0);
 });
