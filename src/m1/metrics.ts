@@ -17,7 +17,11 @@ export const METRICS_PATH = process.env.METRICS_PATH ?? "dashboard/metrics.json"
 // agent (the only writer of metrics.json) and a recording can never overwrite each other's
 // whole-file write (review of #20, 2026-10-23). journal/ survives deploys. The agent copies the
 // list into metrics.json on each sample so the dashboard keeps reading one file.
-export const CAPITAL_FLOWS_PATH = process.env.CAPITAL_FLOWS_PATH ?? "journal/capital-flows.json";
+// Read lazily by owner-claims.ts (its tests set the env after import), so the default lives in one place.
+export function capitalFlowsPath(): string {
+  return process.env.CAPITAL_FLOWS_PATH ?? "journal/capital-flows.json";
+}
+export const CAPITAL_FLOWS_PATH = capitalFlowsPath();
 // Agent wallet changes (key rotation), written only by rotate-key-cli. A recorded migration lets
 // the history continue on the new address instead of starting a fresh file; an unrecorded wallet
 // change still starts fresh, since that is a different agent.
@@ -82,7 +86,9 @@ export interface MetricsSample {
 // the outside world, not a trading result. `stx` is signed, in STX: negative = withdrawn.
 // Added 2026-10-22 after two owner withdrawals (65 STX on 10-14, 700 STX on 10-22) showed up as
 // losses on the dashboard's HODL comparison and as drawdown in the agent's own risk checks.
-export interface CapitalFlow { t: string; txid: string; stx: number; note?: string }
+// allocated: the venue an owner deposit was given to by an attended command (m1:flow -- allocate).
+// An unallocated deposit is an "owner" reservation claim: no venue trades it (owner-claims.ts).
+export interface CapitalFlow { t: string; txid: string; stx: number; note?: string; allocated?: string }
 // The same capital moved from one agent address to another. The transfers are not capital flows:
 // nothing entered or left the operation, it changed address.
 export interface WalletMigration { t: string; from: string; to: string; txids: string[]; note?: string }
@@ -269,6 +275,20 @@ export function loadCapitalFlows(): CapitalFlow[] {
   const byTx = new Map<string, CapitalFlow>();
   for (const f of [...(loadOrNull()?.capitalFlows ?? []), ...readFlowsFile()]) byTx.set(f.txid, f);
   return [...byTx.values()].sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
+}
+
+/** Marks a recorded deposit as allocated to a venue (attended). Writes the flows file atomically. */
+export function allocateCapitalFlow(txid: string, venue: string): "allocated" | "not-found" | "not-a-deposit" {
+  const flows = loadCapitalFlows();
+  const f = flows.find((x) => x.txid === txid);
+  if (!f) return "not-found";
+  if (!(f.stx > 0)) return "not-a-deposit";
+  f.allocated = venue;
+  mkdirSync(dirname(CAPITAL_FLOWS_PATH), { recursive: true });
+  const tmp = `${CAPITAL_FLOWS_PATH}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(flows, null, 2));
+  renameSync(tmp, CAPITAL_FLOWS_PATH);
+  return "allocated";
 }
 
 /** Records a flow once (deduplicated by txid), keeping the list in time order. */

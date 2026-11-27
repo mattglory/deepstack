@@ -58,6 +58,7 @@ const ENV_BASE: Record<string, string> = {
   EXPERIMENT_STATE_PATH: join(TMP, "experiment.json"),
   DLMM_DEPOSIT_PATH: join(TMP, "dlmm-deposit.json"),
   DLMM_PENDING_STATE_PATH: join(TMP, "dlmm-pending-readd.json"),
+  OWNER_HOLDS_PATH: join(TMP, "owner-holds.json"),
   STACKS_API: "https://rpc.invalid",
   STACKS_API_FALLBACKS: "",
 };
@@ -384,7 +385,7 @@ export async function loadAgent(): Promise<{ main: () => Promise<void> }> {
 export const STATE_FILES = [
   "DLMM_FAILSTREAK_STATE_PATH", "FLASH_FAILSTREAK_STATE_PATH", "EXPERIMENT_STATE_PATH",
   "XYK_TRADES_STATE_PATH", "DRAWDOWN_BASELINE_PATH", "CAPITAL_FLOWS_PATH", "WALLET_MIGRATIONS_PATH",
-  "DLMM_PENDING_STATE_PATH",
+  "DLMM_PENDING_STATE_PATH", "OWNER_HOLDS_PATH",
 ] as const;
 export const statePath = (k: (typeof STATE_FILES)[number]): string => ENV_BASE[k];
 

@@ -14,6 +14,7 @@ import { show, walletLines, XYK_POOL, SBTC } from "./post-conditions.testkit.js"
 import { minusSlippage } from "./quotes.js";
 import { readFileSync, writeFileSync, rmSync } from "node:fs";
 import { savePending } from "./dlmm-pending-state.js";
+import { saveOwnerHolds } from "./owner-claims.js";
 
 beforeEach(() => resetHarness());
 // The fake global fetch throws on anything but the tx-status poll; also fail loudly here in
@@ -450,4 +451,33 @@ test("reservation: an over-claim with no transaction of ours to explain it alert
   assert.equal(e.alert, "reservation");
   assert.deepEqual(rec.health, ["fail"]);
   assert.equal(rec.broadcasts.length, 0);
+});
+
+test("owner claim: a hold on the XYK's tokens stops it trading them (the 2026-11-24 wind-down case)", async () => {
+  // Out of band, the XYK would rebalance (see the stage 2 test). Hold all of its tradable STX and sBTC.
+  resetHarness(outOfBandWorld());
+  const sbtcKey = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-token::sbtc-token";
+  saveOwnerHolds([
+    { id: "h1", t: "2026-11-24T08:37:00Z", asset: sbtcKey, amount: world.xBase.toString(), note: "DLMM wind-down" },
+    { id: "h2", t: "2026-11-24T08:37:00Z", asset: "STX", amount: (world.nativeStxMicro - 50_000_000n > 0n ? world.nativeStxMicro - 50_000_000n : 0n).toString() },
+  ], statePath("OWNER_HOLDS_PATH"));
+  await runAgent(LIVE);
+  const e = rec.journal.find((j) => j.type === "reservation")!;
+  assert.equal((e.claims as { venue: string }[]).filter((c) => c.venue === "owner").length >= 1, true);
+  assert.deepEqual(e.problems, []);
+  assert.equal(rec.broadcasts.length, 0, "the XYK may not trade the owner's tokens");
+});
+
+test("owner claim: an unallocated recorded deposit is the owner's; an allocated one is not", async () => {
+  resetHarness(outOfBandWorld());
+  const dep = (allocated?: string) => [{ t: "2026-10-27T08:47:21.000Z", txid: "0xdep", stx: 1_000_000, note: "owner deposit", ...(allocated ? { allocated } : {}) }];
+  writeFileSync(statePath("CAPITAL_FLOWS_PATH"), JSON.stringify(dep()));
+  await runAgent(LIVE);
+  let e = rec.journal.find((j) => j.type === "reservation")!;
+  assert.match((e.problems as string[]).join(" "), /over-claim on STX/, "1M STX claimed, far more than the wallet: nothing trades STX");
+  resetHarness(outOfBandWorld());
+  writeFileSync(statePath("CAPITAL_FLOWS_PATH"), JSON.stringify(dep("dlmm")));
+  await runAgent(LIVE);
+  e = rec.journal.find((j) => j.type === "reservation")!;
+  assert.deepEqual(e.problems, [], "allocated to the DLMM: not an owner claim");
 });

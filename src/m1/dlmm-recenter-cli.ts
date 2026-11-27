@@ -47,6 +47,8 @@ import { killFilePresent, killPath } from "./kill.js";
 import { getWallet, getStxBalance, type Wallet } from "./wallet.js";
 import { DLMM_POOLS, readDlmmState, readBinLiquidityStates, readShareFloors, pinMismatch, type DlmmPool, type DlmmState } from "./dlmm-read.js";
 import { readUserPosition } from "./dlmm-position.js";
+import { holdAssets, loadOwnerHolds, saveOwnerHolds } from "./owner-claims.js";
+import { STX as STX_KEY } from "./reservation.js";
 import {
   distributeAcrossRange,
   buildAddLiquidity,
@@ -195,6 +197,27 @@ async function doWithdraw(w: Wallet, poolDef: DlmmPool, st: Awaited<ReturnType<t
   const res = await waitForTxResult(r.txid, (m) => console.log(m));
   if (res.status !== "success") return false;
   clearDeposit(); // the bins are gone; the next add records its own deposit
+  if (!readdLater) {
+    // A wind-down is the owner's decision: set what came back aside for the owner, so the XYK (the
+    // residual owner) doesn't trade it (review on #112, 2026-11-24). `m1:flow -- release` undoes it.
+    const got = sumWithdrawResult(res.repr ?? "") ?? { x: pos.totalX, y: pos.totalY };
+    const key = (tok: { principal: string; asset: string }) => (tok.asset === "" ? STX_KEY : `${tok.principal}::${tok.asset}`);
+    const h = loadOwnerHolds();
+    if (!h.ok) console.log(`  ⚠ owner holds unreadable (${h.reason}); record the hold by hand: npm run m1:flow -- hold ...`);
+    else {
+      const t = new Date().toISOString();
+      const add = [
+        { id: `hold-${Date.now()}-x`, t, asset: key(xTok), amount: got.x.toString(), note: `DLMM wind-down ${r.txid}` },
+        { id: `hold-${Date.now()}-y`, t, asset: key(yTok), amount: got.y.toString(), note: `DLMM wind-down ${r.txid}` },
+      ].filter((x) => BigInt(x.amount) > 0n);
+      // Only assets a hold may name (loadOwnerHolds rejects others). Any other token isn't one the
+      // XYK trades, so leaving it unheld is safe; say so rather than make the holds file invalid.
+      const known = new Set(Object.values(holdAssets()).map((a) => a.asset));
+      for (const x of add.filter((x) => !known.has(x.asset))) console.log(`  note: ${x.asset} is not a holdable asset; not held (no venue trades it)`);
+      saveOwnerHolds([...h.value, ...add.filter((x) => known.has(x.asset))]);
+      console.log(`  held for the owner: ${Number(got.x) / xUnit} ${xTok.asset || "STX"} + ${Number(got.y) / yUnit} ${yTok.asset} (npm run m1:flow -- holds / release <id>)`);
+    }
+  }
   if (readdLater) {
     // Record exactly what came back as a pending re-add, the same state the agent's own recenter
     // writes, so a later force-recenter (or the agent's next cycle) rebalances and re-adds it.

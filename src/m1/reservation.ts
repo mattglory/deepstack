@@ -11,7 +11,8 @@
 export type AssetKey = string;
 export const STX: AssetKey = "STX";
 
-export type Venue = "xyk" | "dlmm" | "trend";
+// "owner": capital the owner hasn't allocated to a venue yet (owner-claims.ts). Nothing trades it.
+export type Venue = "xyk" | "dlmm" | "trend" | "owner";
 
 export interface Claim {
   venue: Venue;
@@ -36,7 +37,7 @@ export interface Tolerance {
 // transaction is not dust; it gets a one-cycle grace instead (reservationAlert).
 export const DEFAULT_TOLERANCE: Tolerance = { bps: 10, units: 1n };
 
-const VENUES: Venue[] = ["xyk", "dlmm", "trend"];
+const VENUES: Venue[] = ["xyk", "dlmm", "trend", "owner"];
 
 /**
  * Split the wallet between venues. The XYK is the residual owner: it gets whatever no other venue
