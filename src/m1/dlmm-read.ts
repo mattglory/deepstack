@@ -125,6 +125,7 @@ export interface DlmmState {
   coreAddress: string;
   binChangeCount: number; // lifetime recenters — an activity signal
   initialPrice: bigint; // the pool's price anchor (PRICE_SCALE_BPS = 1e8 fixed point) — get-bin-price needs it
+  swapFeeBps?: number; // protocol + provider + variable fee, of FEE_SCALE_BPS = 10000 (the core's swap math)
 }
 
 export interface DlmmDepth {
@@ -292,6 +293,7 @@ export async function readDlmmState(pool: DlmmPoolRef): Promise<DlmmState | null
     coreAddress: String(t["core-address"]?.value ?? ""),
     binChangeCount: changeCount,
     initialPrice: BigInt(t["initial-price"]?.value ?? 0),
+    swapFeeBps: Number(t["protocol-fee"]?.value ?? NaN) + Number(t["provider-fee"]?.value ?? NaN) + Number(t["variable-fee"]?.value ?? NaN),
   };
 }
 

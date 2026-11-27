@@ -44,6 +44,7 @@ import { recordSample, loadHistory, adjustLpBasis, currentDrawdown, loadCapitalF
 import { loadXykTrades, saveXykTrades, loadDrawdownBaseline, saveDrawdownBaseline, baselineMismatch, drawdownBaselinePath, drawdownInputs } from "./risk-state.js";
 import { decideAllocation, defaultAllocationParams, type Regime } from "./allocation.js";
 import { decideHaven, defaultHavenParams } from "./haven.js";
+import { trendObserveStep } from "./trend-io.js";
 import { cacheAfterDeposit, checkEmptyPosition } from "./dlmm-value-guard.js";
 import { realizedVolDaily } from "./lvr.js";
 import { appendJournal, pingHealthcheck } from "./journal.js";
@@ -1045,6 +1046,28 @@ export async function main() {
       // is on the record; never executes until a route is ready (none today).
       const haven = decideHaven(lastRegime, xp.map((o) => ({ pool: o.pool, liqUsd: o.liqUsd })), defaultHavenParams());
       appendJournal({ t: new Date().toISOString(), type: "haven", ...haven });
+      // Capital-preservation mode (trend.ts, docs/CAPITAL_PRESERVATION_DESIGN.md): OBSERVE ONLY.
+      // Once a day, at a randomised minute, it logs what the trend rule would do, the exit capacity
+      // a risk-off switch would have had, and the peg checks. There is no live path: TREND_MODE=live
+      // is refused here, and TREND_MODE=off skips it. Its own try/catch, like the reads above: an
+      // observe-only addition never turns a trading cycle into a failure, and its alerts are logged,
+      // not sent to the health check.
+      const trendMode = process.env.TREND_MODE ?? "observe";
+      if (trendMode !== "off") {
+        try {
+          if (trendMode !== "observe") console.warn(`  [trend] TREND_MODE=${trendMode} is not built; running observe only`);
+          const capitalUsd = lastDlmmValueY > 0 && lastUsdPerStx > 0 ? lastDlmmValueY * lastUsdPerStx : null;
+          const tr = await trendObserveStep({ capitalUsd, owner: w.address });
+          if (tr.ran && tr.record) {
+            appendJournal({ t: new Date().toISOString(), ...tr.record });
+            const r = tr.record as any;
+            console.log(`  [trend] ${r.from ?? "?"} → ${r.action}: ${r.reason}${r.exitCapacity?.usd !== undefined ? ` | exit capacity ~$${r.exitCapacity.usd} at ${r.exitCapacity.minOutBps}bps min-out` : ""} (observe)`);
+          }
+          if (tr.alert) console.warn(`  ⚠ [trend] ${tr.alert}`);
+        } catch (e) {
+          appendJournal({ t: new Date().toISOString(), type: "trend-observe", error: (e as Error).message });
+        }
+      }
       // Pilot telemetry → public dashboard (gist mirror). Its own result now feeds the
       // dead-man's switch below (issue #1, external review) — previously a publish failure
       // was only a console.warn, never reaching alerting even as failStreak climbed. Gated
